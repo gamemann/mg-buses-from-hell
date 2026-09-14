@@ -25,7 +25,8 @@ game/
   bfh_client.gd     one local player. Never loaded by a server
   bfh.tscn          what you run
 props/              the crate, the barrel and the bus, as scenes
-examples/           headless_run (62 checks, one of them failing on purpose)
+assets/kenney/      three CC0 models and their atlases. See its own README
+examples/           headless_run (63 checks)
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -92,13 +93,29 @@ Every one of these was found by running it, and none of them errored.
 
 - **Two physics-timing lessons, for the third and fourth time in this tree.** An impulse is not readable in `linear_velocity` until the step that consumes it has run, so the barrel's shove measured zero. And the check that a crate *outside* the blast is not shoved passed a falling crate at 0.16 m/s: **a physics assertion that does not say what it is excluding is measuring gravity.**
 
-## The one that is not fixed
+## The bus, and the number that was two doors away from the symptom
 
-**A bus does not move under its own throttle**, and the suite says so rather than omitting it. `_test_bus_propulsion` asserts two things: that an impulse moves the body (it does, so nothing is pinning it) and that the throttle moves it (it does not). Four wheels report contact, `engine_force` is on the body, the scene has four `VehicleWheel3D` children all marked `use_as_traction`, and `bus.speed()` stays at 0.00 m/s.
+**A bus with four wheels on the ground and 26 kN of engine force behind it sat perfectly still**, and every other reading was correct: not frozen, not sleeping, mass right, steering right, engine force right, wheels in contact. An impulse moved it, so nothing was pinning it. It looked like the traction path.
 
-That leaves the traction path, which is Godot's own raycast vehicle, and it is where the next attempt should start. **The failing check is deliberate.** A suite that quietly tested only the working half would report that this game has a working vehicle.
+It was gravity. **This project runs at 20 m/s²** — `physics/3d/default_gravity` in `project.godot`, set that high because it is what the character movement wants and what every other 3D game in this family uses. A 2 tonne bus on four wheels therefore puts **10 kN through each wheel**, and `VehicleWheel3D.suspension_max_force` defaults to **6000 N**. The suspension could not lift the bus. It sank until its own hull rested on the ground, and the hull's friction held it there against everything the engine could do.
 
-Everything the bus does when something *else* moves it — colliding, running people over at closing speed, breaking crates it drives through, seating and ejecting a driver — is asserted and passes.
+Nothing in Godot warns about this, because nothing is wrong: a spring with a force cap is doing exactly what it was configured to do. The tell was in `describe()` all along — the body settled at y=0.09 when its wheels should have held it at 1.37 — and it took a raw-Godot reproduction with no addon in it to make that number the one being looked at.
+
+**So the regression guard is not "does it drive".** It is `the suspension holds the bus up rather than letting it rest on its hull`, because every symptom of this bug is downstream of the body being on the floor.
+
+Two more, both about a raycast vehicle rather than this one:
+
+- **A crate stops a bus, and no amount of tuning fixes it.** A wheel is a ray, not a collider, so a crate does not hit a wheel — it passes under one and lifts the corner. The bus high-centres with two wheels in the air and a crate wedged under the chassis, and the speed-gated impact rule cannot save it because by then it has no speed. Lowering the hull so it rams crates instead was tried and is worse: the hull drags. `_unstick` is the rule that works, and it is about *intent* rather than geometry — a bus asking for throttle and not moving is caught on something.
+- **The ramp was thirteen metres wide, which is a road.** The bot drove up it, beached on the lip at the top and spent the round being recovered. It is five metres now: the ledge is height for a runner to dodge from, and the buses start on the sand.
+
+## The art is Kenney's
+
+Three models — a crate, a barrel and a garbage truck standing in for the bus — from the CC0 bundle, in `assets/kenney/`. Two things about vendoring them are worth keeping:
+
+- **A Kenney GLB references its texture by relative URI** (`Textures/colormap.png`) rather than embedding it, so the atlas has to sit beside the model at exactly that path or the mesh loads untextured and falls back to its base colour — silently.
+- **The Survival Kit and the Car Kit each ship a `Textures/colormap.png`, and they are different files.** Flattening both kits into one folder paints the bus in the survival kit's palette, which is a plausible-looking wrong answer. Each kit gets its own folder.
+
+**The collision shapes stayed primitive.** The art is a box, a cylinder and a box; the physics is a box, a cylinder and a box. A convex hull off the model would be more faithful and much worse — dot-props already documents what loose triangles do to a sliding body, and a bus is the thing doing the sliding.
 
 ## Validating
 
@@ -107,7 +124,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 62 checks, 1 failing
+godot --headless --path . res://examples/headless_run.tscn   # 63 checks
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 ```
 

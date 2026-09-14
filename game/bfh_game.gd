@@ -65,6 +65,9 @@ var _next_entity_id: int = 1
 var _layout_seed: int = 0
 var _bus_ids: Array[int] = []
 
+## Instance id -> seconds this bus has been asking to move and not moving.
+var _bus_stuck: Dictionary = {}
+
 
 func _ready() -> void:
 	if config == null:
@@ -630,8 +633,14 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		# Wider than the default, because a bus is nine metres long: a waypoint radius
 		# tighter than the vehicle means it can never be "at" its target and it circles
 		# the spot for ever.
-		player.autopilot.arrive_radius = 6.0
-		player.autopilot.waypoint_radius = 8.0
+		# [b]Tiny, because arriving is the one thing this driver must never do.[/b]
+		# `DotVehicleDriver` slows down inside `arrive_radius` and stops at the
+		# waypoint, which is right for traffic and exactly wrong for a chase: at 6 m
+		# the bus coasted to a halt beside the runner and sat there with the throttle
+		# at zero. A bus is not trying to reach a person, it is trying to be where
+		# they are at speed.
+		player.autopilot.arrive_radius = 0.5
+		player.autopilot.waypoint_radius = 2.0
 
 	var quarry := _nearest_runner(bus.position())
 
@@ -641,7 +650,20 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		# that drives into the wall for the rest of the round.
 		return DotVehicleCommand.new()
 
-	player.autopilot.set_target(quarry.global_position)
+	# Aimed PAST them, not at them. The driver decides its speed from the distance to
+	# its target, so a target sitting on the runner is a target that is always nearly
+	# reached — the bus arrives gently. A point eight metres beyond them, along the
+	# line the bus is already on, keeps the throttle down through the moment that
+	# matters and is what makes a near miss look like one.
+	var line := quarry.global_position - bus.position()
+	line.y = 0.0
+
+	var beyond := (
+		quarry.global_position + line.normalized() * 8.0 if line.length() > 0.5
+		else quarry.global_position
+	)
+
+	player.autopilot.set_target(beyond)
 	return player.autopilot.drive(bus, delta)
 
 
@@ -667,7 +689,7 @@ func _nearest_runner(to: Vector3) -> BfhPlayer:
 ## parked bus is not being run over, and a bus reversing at 3 m/s into somebody who is
 ## running away from it at 6 is not either. Taking the bus's own speed makes both of
 ## those kills, which reads as the game being unfair in a way nobody can point at.
-func _check_bus_impacts(_delta: float) -> void:
+func _check_bus_impacts(delta: float) -> void:
 	for instance_id in _bus_ids:
 		var bus := vehicles.get_vehicle(instance_id)
 		if bus == null or not bus.is_alive():
@@ -693,7 +715,7 @@ func _check_bus_impacts(_delta: float) -> void:
 			# box and this is the sphere around it. Deliberately generous, because a
 			# miss that should have been a hit is the complaint this game would
 			# actually get, and a hit is checked against closing speed anyway.
-			if offset.length() > 5.6:
+			if offset.length() > 4.2:
 				continue
 
 			# [b]Along the offset, not against it.[/b] `offset` runs from the bus to
@@ -712,6 +734,7 @@ func _check_bus_impacts(_delta: float) -> void:
 			_bus_hit(player, driver_id, closing, offset)
 
 		_break_props_under(bus, bus_velocity.length(), driver_id)
+		_unstick(bus, driver_id, delta)
 
 
 func _bus_hit(player: BfhPlayer, by: StringName, closing: float, offset: Vector3) -> void:
@@ -734,11 +757,22 @@ func _bus_hit(player: BfhPlayer, by: StringName, closing: float, offset: Vector3
 
 
 ## Crates and barrels a moving bus has driven into.
+##
+## [b]The bus's own box, not a sphere around it, and the sphere was wrong in both
+## directions.[/b] A nine-metre bus has a centre five metres from its nose, so a radius
+## generous enough to catch what it is about to hit also catches everything beside and
+## behind it — a bus flattened a line of crates it merely drove past. Testing the prop
+## in the bus's local frame is the same arithmetic and answers the question actually
+## being asked: is this thing under the bus.
+const BUS_HALF_WIDTH := 1.5
+const BUS_HALF_LENGTH := 3.2
+
 func _break_props_under(bus: DotVehicleInstance, speed: float, by: StringName) -> void:
-	if speed < 2.0 or prop_damage == null:
+	if speed < 4.0 or prop_damage == null:
 		return
 
 	var body := bus.body()
+	var into_bus := body.global_transform.affine_inverse()
 
 	for prop in props.all_props():
 		if not prop.is_alive():
@@ -748,10 +782,86 @@ func _break_props_under(bus: DotVehicleInstance, speed: float, by: StringName) -
 		if prop_body == null:
 			continue
 
-		if prop_body.global_position.distance_to(body.global_position) > 6.0:
+		var local := into_bus * prop_body.global_position
+
+		if absf(local.x) > BUS_HALF_WIDTH or absf(local.z) > BUS_HALF_LENGTH:
+			continue
+
+		# Vertically too, or a bus passing under a ledge takes out whatever is standing
+		# on top of it.
+		if absf(local.y) > 2.5:
 			continue
 
 		prop_damage.impact(prop.instance_id, speed, by)
+
+
+## Seconds of asking to move before a bus is assumed to be caught on something.
+const STUCK_BREAK_SEC := 1.0
+
+## And before it is put back on its start line.
+const STUCK_RESET_SEC := 5.0
+
+
+## A bus that is throttling and going nowhere, and what to do about it.
+##
+## [b]A crate stops a bus, and it should not, and no amount of tuning fixes it.[/b] A
+## raycast vehicle has no wheel collider: each wheel is a ray, so a crate does not hit
+## a wheel, it passes under one and lifts the corner of the bus off the ground. The bus
+## ends up high-centred with two wheels in the air and a crate wedged under the
+## chassis, going nowhere — and the speed-gated impact rule cannot save it, because by
+## then it has no speed. Lowering the hull so it rams crates instead was tried and is
+## worse: the hull then drags on the ground and the bus barely moves at all.
+##
+## So the rule is about intent rather than geometry. A bus asking for throttle and not
+## moving is caught on something; after a second, whatever is under it stops existing,
+## and after five it goes back to its start line. That second rule is not a fallback
+## for the first — it is what recovers a bus that drove up the ramp and beached itself
+## on the ledge, where there is no prop to blame.
+func _unstick(bus: DotVehicleInstance, by: StringName, delta: float) -> void:
+	var asking := bus.command != null and absf(bus.command.throttle) > 0.3
+	var moving := bus.speed() > 1.0
+
+	if not asking or moving:
+		_bus_stuck.erase(bus.instance_id)
+		return
+
+	var held := float(_bus_stuck.get(bus.instance_id, 0.0)) + delta
+	_bus_stuck[bus.instance_id] = held
+
+	if held < STUCK_BREAK_SEC:
+		return
+
+	# Whatever is under it, at any speed. This is the one place the closing-speed rule
+	# is deliberately not applied: the bus is not hitting the crate, it is sitting on it.
+	if prop_damage != null:
+		var into_bus := bus.body().global_transform.affine_inverse()
+		for prop in props.all_props():
+			if not prop.is_alive() or prop.body() == null:
+				continue
+			var local := into_bus * prop.body().global_position
+			if absf(local.x) > BUS_HALF_WIDTH or absf(local.z) > BUS_HALF_LENGTH:
+				continue
+			if absf(local.y) > 2.5:
+				continue
+			prop_damage.break_now(prop.instance_id, by)
+
+	if held < STUCK_RESET_SEC:
+		return
+
+	var index := maxi(_bus_ids.find(bus.instance_id), 0)
+	var at := arena.bus_start(index, maxi(_bus_ids.size(), 1))
+	var facing := Vector3(-at.x, 0.0, -at.z)
+
+	var body := bus.body()
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(
+		Basis.looking_at(facing.normalized()) if facing.length() > 0.01 else Basis.IDENTITY,
+		at,
+	)
+
+	_bus_stuck.erase(bus.instance_id)
+	DotLog.info(CHANNEL, "a bus was put back on its start line", {"stuck_for": held})
 
 
 func _driver_of(instance_id: int) -> StringName:

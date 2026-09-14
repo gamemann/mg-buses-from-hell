@@ -8,7 +8,7 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](../dot-
 
 ```bash
 godot --path .                                       # play it
-godot --headless --path . res://examples/headless_run.tscn   # 62 checks
+godot --headless --path . res://examples/headless_run.tscn   # 63 checks
 tools/shot.sh                                        # render a frame and look at it
 ```
 
@@ -36,10 +36,16 @@ A character motor sweeps a shape and slides along whatever it hits, so a `RigidB
 
 `DotPropCarry` in dot-props is the half that was missing, and `DotPropDamage` beside it is what makes a crate breakable. Both are new, both are documented in [that project's own notes](../dot-props/CLAUDE.md), and both are covered by its suite.
 
+## The art
+
+The crate, the barrel and the bus are [Kenney's](https://kenney.nl), from the asset bundle in `assets/kenney/` — **CC0**, so more permissive than this repository's own licence. Three models and two texture atlases, nothing else vendored. See `assets/kenney/README.md` for why the two kits are in separate folders.
+
+Everything else is still drawn in code: the bowl, its wall, the ledge and a generated one-metre grid, because what a runner judges a bus by is how fast a pattern of a known size goes past.
+
 ## What does not work yet
 
-**The buses do not drive themselves.** They spawn, they seat a driver, they collide, they run people over and they break crates — all of that is asserted and all of it works. Under throttle the body does not accelerate: four wheels report contact, the chassis puts 26 kN on a 2 tonne body, and the speedometer reads zero. An impulse moves it, so the body is free; it is the traction path. `examples/headless_run.tscn` contains a deliberately failing check that says exactly this, so the suite reports it rather than hiding it.
-
 **There is no netcode.** The world is authoritative and tick-driven exactly as a dedicated server would run it, so the shape a `dot-net` bridge needs is the shape it has — but the bridge is not written, and there is no `dot-server` module.
+
+The bus's own wheel meshes do not turn or steer — the model's wheels are static geometry rather than bound to the `VehicleWheel3D` nodes. Cosmetic, and the next easy win.
 
 Neither of those is in the way of the rest of it.

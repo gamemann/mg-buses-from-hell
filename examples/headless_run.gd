@@ -18,7 +18,7 @@ extends Node
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 62
+const CHECKS := 63
 
 const TICK := 1.0 / 60.0
 
@@ -566,19 +566,23 @@ func _test_round_ends() -> void:
 	game.queue_free()
 
 
-# --- The one that does not pass --------------------------------------------
+# --- Driving ---------------------------------------------------------------
 
 func _test_bus_propulsion() -> void:
 	print("driving the bus")
 
-	# [b]This section contains a known failure and it is here on purpose.[/b] A bus
-	# spawns, seats a driver, collides, runs people over and breaks crates — all of
-	# which is asserted above and all of which works. What it does not do is move under
-	# its own throttle: the chassis reports four wheels in contact and 26 kN of engine
-	# force on a 2 tonne body, and the body does not accelerate. Two checks rather than
-	# one, because they separate the two possible causes, and a suite that simply
-	# omitted the broken half would be a suite that says this game has a working
-	# vehicle.
+	# [b]Three checks, and the middle one is the regression guard for the bug that
+	# took longest to find.[/b] A bus spawned, seated a driver, collided, ran people
+	# over and broke crates — and did not move under its own throttle. Four wheels
+	# reported contact, 26 kN of engine force sat on a 2 tonne body, and the
+	# speedometer read 0.00 m/s. The cause was not in the drive path at all: this
+	# project runs at 20 m/s² because that is what the character movement wants, so
+	# each wheel carries 10 kN, and `VehicleWheel3D.suspension_max_force` defaults to
+	# 6000 N. The suspension could not lift the bus. It sank until its own hull rested
+	# on the ground and the hull's friction held it there.
+	#
+	# So the check that matters is not "does it drive" but "is it standing on its
+	# wheels": every symptom of that bug is downstream of the body being on the floor.
 	var game := _world(func(c: BfhConfig) -> void:
 		c.crate_count = 0
 		c.barrel_count = 0
@@ -595,12 +599,19 @@ func _test_bus_propulsion() -> void:
 
 	if bus == null:
 		# Two checks are owed whatever happens, or the section counter hides the abort.
+		_check(false, "the suspension holds the bus up rather than letting it rest on its hull")
 		_check(false, "the body is free to move at all")
 		_check(false, "and the throttle moves it")
 		game.queue_free()
 		return
 
 	var body := bus.body()
+
+	# Hull bottom, from the scene: the collision box is 2.6 tall and sits 1.2 above the
+	# origin, so its underside is 0.1 below it. On its wheels the body rests near 1.37.
+	_check(body.global_position.y > 0.8,
+		"the suspension holds the bus up rather than letting it rest on its hull",
+		"y=%.2f" % body.global_position.y)
 
 	# Is the body pinned, or is it the drive? An impulse bypasses the wheels entirely.
 	body.linear_velocity = Vector3.ZERO
@@ -628,3 +639,4 @@ func _test_bus_propulsion() -> void:
 	_check(bus.speed() > 1.0, "and the throttle moves it", "%.2f m/s" % bus.speed())
 
 	game.queue_free()
+

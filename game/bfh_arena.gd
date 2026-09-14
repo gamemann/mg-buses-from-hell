@@ -33,6 +33,7 @@ const LEDGE_WIDTH := 22.0
 const RAMP_LENGTH := 26.0
 const RAMP_ANGLE := 18.0
 const RAMP_THICKNESS := 0.8
+const RAMP_WIDTH := 5.0
 
 var radius: float = 46.0
 
@@ -263,7 +264,13 @@ func _build_ledge() -> void:
 		# at a seam. A seam between two colliders is exactly the interior edge a
 		# sliding body catches on, which dot-props documents from the other direction.
 		Vector3(0.0, deck_top() - rise - RAMP_THICKNESS * 0.5, deck_front + run - 1.0),
-		Vector3(LEDGE_WIDTH * 0.6, RAMP_THICKNESS, RAMP_LENGTH),
+		# [b]Runner-wide, not vehicle-wide.[/b] At 0.6 of the deck it was thirteen
+		# metres across, which is a road: the bot drove up it on the way to anybody
+		# standing near the north edge, beached itself on the lip at the top, and spent
+		# the round being recovered by the stuck rule. Five metres reads as a walkway,
+		# which is what it is for — the ledge is height for a runner to dodge from, and
+		# the buses start on the sand.
+		Vector3(RAMP_WIDTH, RAMP_THICKNESS, RAMP_LENGTH),
 		Color(0.50, 0.44, 0.36),
 	)
 	ramp.rotation = Vector3(deg_to_rad(-RAMP_ANGLE), 0.0, 0.0)

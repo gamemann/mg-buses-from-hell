@@ -33,7 +33,13 @@ static func props(config: BfhConfig) -> DotPropCatalogue:
 	crate.max_health = 100.0
 	# Three swings of a hammer at 34. Deliberately not two and not four: two is a crate
 	# nobody can shelter behind and four is a crate nobody bothers with.
-	crate.break_impact_speed = config.bus_lethal_speed
+	# [b]Below the speed that kills a runner, and that ordering is the design.[/b] At
+	# the lethal speed a bus was fast enough to run somebody over and not fast enough
+	# to get through the crate they were hiding behind — so it climbed the crate
+	# instead, high-centred on it with two wheels off the ground, and sat there for the
+	# rest of the round. A bus at cruising speed has to go THROUGH the cover or the
+	# cover is a bus trap rather than cover.
+	crate.break_impact_speed = 5.0
 	catalogue.add(crate)
 
 	var barrel := DotPropDef.make(BARREL, BARREL_SCENE)
