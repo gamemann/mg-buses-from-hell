@@ -1,4 +1,3 @@
-class_name BfhTextures
 extends RefCounted
 
 ## A generated grid, because a flat colour has no speed in it.

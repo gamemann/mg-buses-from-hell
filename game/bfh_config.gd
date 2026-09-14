@@ -1,4 +1,3 @@
-class_name BfhConfig
 extends DotConfig
 
 ## Every cvar this game has, layered like every other [DotConfig] in the family.
@@ -50,6 +49,23 @@ extends DotConfig
 
 ## A runner's mass, which is what a crate feels when they stand on it.
 @export_range(20.0, 200.0, 1.0) var runner_mass: float = 80.0
+
+@export_group("The world")
+
+## Metres per second squared, for everything: the runners, the crates and the buses.
+##
+## [b]Here rather than in `project.godot`, because a project setting does not travel with
+## a delivered game.[/b] This game's `physics/3d/default_gravity` is 20 — high on purpose,
+## because it is what the character movement wants and what every other 3D game in this
+## family uses — and a pack mounted into the server tool's project runs at ITS setting,
+## which is Godot's 9.8. Nothing reports it. What it looks like is a game that plays
+## correctly on a developer's machine and floats everywhere it is deployed: crates that
+## drift down, a bus whose suspension was tuned against twice this force, and jumps that
+## hang.
+##
+## Applied to the world's own physics space by [BfhGame], so two worlds in one process —
+## a server and a client — each get it without either of them writing a global.
+@export_range(1.0, 60.0, 0.5) var gravity: float = 20.0
 
 @export_group("The hammer")
 

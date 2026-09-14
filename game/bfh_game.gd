@@ -1,5 +1,9 @@
-class_name BfhGame
 extends Node3D
+
+const BfhArena := preload("bfh_arena.gd")
+const BfhConfig := preload("bfh_config.gd")
+const BfhContent := preload("bfh_content.gd")
+const BfhPlayer := preload("bfh_player.gd")
 
 ## The simulation. Headless, authoritative, and the only thing that decides anything.
 ##
@@ -20,6 +24,41 @@ const CHANNEL := "bfh.game"
 const TEAM_DRIVERS := 1
 const TEAM_RUNNERS := 2
 
+## Where this world publishes itself, so a module can find it.
+##
+## [b]A registry name and not an autoload, which is the family rule and here also a
+## requirement.[/b] A server and a client in one editor session is two of these, and the
+## suite builds two worlds in one process on purpose -- see [method _build_random] for
+## what the other kind of global already cost this game.
+const SERVICE := &"bfh_game"
+
+## Snapshots a second. Twenty, against a sixty-tick simulation.
+##
+## [b]Lower than the games whose whole content is a person aiming at another person.[/b]
+## Nothing here is decided at the precision of a single frame: a bus is nine metres of
+## telegraphed intent, and what a runner reads off it is a direction and a speed rather
+## than a silhouette. The interpolator covers the rest, and the bandwidth goes to the
+## thirty-odd rigid bodies instead, which is where this game's snapshot actually is.
+const NET_SNAPSHOT_RATE := 20
+
+## How far a position may be from the origin, in metres, on the wire.
+##
+## [b]The bowl is 46 m across and this is 256.[/b] Not tidiness: a quantised position is
+## decoded against this range, so a client and a server that disagree about it do not
+## lose precision, they land somewhere else entirely. It is written here, once, and both
+## ends read it from here -- the arena client and the module said 256 and 128 in two
+## other games in this family and that is the bug being avoided.
+const NET_WORLD_EXTENT := 256.0
+
+## Somebody is in the world. The bridge answers this by making them an entity.
+signal player_added(player_id: StringName)
+
+## And is not any more.
+signal player_removed(player_id: StringName)
+
+## Every player changed sides. Round-numbered, because a client redraws its HUD from it.
+signal sides_swapped(round_number: int)
+
 ## A round began. The bowl has been re-laid by the time this fires.
 signal round_began(number: int)
 
@@ -38,6 +77,22 @@ signal barrel_exploded(at: Vector3, radius: float)
 @export var authoritative: bool = true
 
 @export_range(1, 240, 1) var tick_rate: int = 60
+
+## Whether something else drives the tick.
+##
+## [b]Set by the bridge on both ends, and it has to be both.[/b] A game's tick has to
+## happen INSIDE the netcode's -- between applying each peer's inputs and building the
+## snapshot -- so a world still running its own `_physics_process` moves every player
+## twice a tick, and what that looks like is a server running at double speed only while
+## somebody is connected. A client's is worse: it would simulate the local player twice
+## and dead-reckon every remote one from stale state.
+@export var external_tick: bool = false
+
+## Whether this world publishes itself under [constant SERVICE].
+##
+## Off on a client that shares a process with a server -- the suite, an editor session
+## running both -- because a registry name is global and the last one to register wins.
+@export var register_service: bool = true
 
 var arena: BfhArena = null
 var props: DotPropSpawner = null
@@ -59,6 +114,18 @@ var round_number: int = 0
 
 ## Simulated seconds since the round began. Never a wall clock.
 var round_elapsed: float = 0.0
+
+## What the server last said about the numbers a client cannot count for itself.
+##
+## [b]Negative means "count it yourself", which is what a server and an offline client
+## do.[/b] A client does not run the prop spawner — its crates are mirrored bodies with
+## no [DotPropInstance] behind them — so `crates_left()` there would count zero and the
+## HUD would tell every networked player that all the cover was gone. See
+## `BfhEvents.Kind.CLOCK`.
+var remote_cover: int = -1
+
+## And whether the server says there is somebody on each side.
+var remote_playable: bool = false
 
 var _tick: int = 0
 var _next_entity_id: int = 1
@@ -83,6 +150,7 @@ func _ready() -> void:
 
 	_layout_seed = config.arena_seed
 
+	_apply_gravity()
 	_build_random()
 	_build_arena()
 	_build_props()
@@ -90,7 +158,41 @@ func _ready() -> void:
 	_build_combat()
 	_build_match()
 
+	if register_service:
+		DotRegistry.register(SERVICE, self)
+
 	DotLog.info(CHANNEL, "world ready", config.describe())
+
+
+func _exit_tree() -> void:
+	# By instance, never by name. Unregistering the NAME from a world that lost the
+	# race to register it takes the other world's entry out with it, and the symptom is
+	# a module that cannot find a game that is sitting in the tree.
+	if register_service:
+		DotRegistry.unregister_instance(SERVICE, self)
+
+
+## Puts this world's physics space on the gravity the game was tuned for.
+##
+## [b]On the SPACE, not on `ProjectSettings`.[/b] Two worlds in one process is the normal
+## case here — a server and a client in one editor session, and every section of the
+## suite — and a global would be one of them deciding for the other. A space is a world's
+## own, so each gets the same answer independently.
+##
+## [b]And it is done at all because a project setting does not travel in a pack.[/b] See
+## [member BfhConfig.gravity]: delivered into the server tool's project, this game ran at
+## Godot's default 9.8 against numbers chosen for 20, and the only symptom was that
+## everything floated.
+func _apply_gravity() -> void:
+	var world := get_world_3d()
+
+	if world == null:
+		DotLog.warn(CHANNEL, "no world to set gravity on", {})
+		return
+
+	PhysicsServer3D.area_set_param(
+		world.space, PhysicsServer3D.AREA_PARAM_GRAVITY, config.gravity
+	)
 
 
 func _build_random() -> void:
@@ -157,13 +259,20 @@ func _build_vehicles() -> void:
 	vehicles.world_budget = 16
 	add_child(vehicles)
 
-	# [b]A RefCounted, not a Node, so it is held rather than added.[/b] dot-vehicle
-	# made it one deliberately: putting a rider in a seat means stopping their
-	# controller and reparenting their node, and neither of those is something this
-	# addon can do without naming dot-player-controller — which would make it fail to
-	# parse in a project that does not have it. The two callables below are that seam,
-	# and this game is the half that knows what a player is.
-	ride = DotVehicleRide.new()
+	# [b]The SPAWNER'S ride, not a second one.[/b] `DotVehicleSpawner` builds one in its
+	# own `_init` and uses it for three things: evacuating a vehicle that is destroyed
+	# with people in it, answering `vehicle_of_rider`, and reporting how many riders there
+	# are. This game used to construct its own beside it, so those three read an index
+	# that was always empty — `describe()` said nobody was driving while somebody was, and
+	# a destroyed bus released nobody, which is the "stuck aboard a bus that no longer
+	# exists" failure this game already had once from the other direction.
+	#
+	# It is a [RefCounted] rather than a Node, and dot-vehicle made it one deliberately:
+	# seating a rider means stopping their controller and reparenting their node, and
+	# neither is something that addon can do without naming dot-player-controller — which
+	# would make it fail to parse in a project that does not have it. The two callables
+	# below are that seam, and this game is the half that knows what a player is.
+	ride = vehicles.ride
 	ride.carry_rider_nodes = false
 	ride.on_seated = func(rider_id: StringName, _v: DotVehicleInstance, _s: DotVehicleSeat) -> void:
 		_set_riding(rider_id, true)
@@ -247,6 +356,8 @@ func add_player(
 	player.display_name = display_name
 	player.samples_input = samples_input
 	player.tick_rate = tick_rate
+	# Before `add_child`, because `_ready` is what builds the controller and its tunables.
+	player.config = config
 	player.mass_kg = config.runner_mass
 	player.carry = carry
 	add_child(player)
@@ -273,6 +384,11 @@ func add_player(
 		player.give_hammer(config)
 
 	DotLog.debug(CHANNEL, "player joined", {"id": String(player_id), "team": team})
+
+	# Last, after the hammer and the health: the bridge answers this by building the
+	# replicated entity and announcing the join, and an entity built over a half-made
+	# player replicates the half.
+	player_added.emit(player_id)
 	return player
 
 
@@ -302,6 +418,8 @@ func remove_player(player_id: StringName) -> void:
 	players.erase(player_id)
 	sides.erase(player_id)
 	player.queue_free()
+
+	player_removed.emit(player_id)
 
 
 ## Flips a player between walking and driving. Called by the ride, never directly.
@@ -408,6 +526,7 @@ func _swap_sides() -> void:
 		elif now == TEAM_DRIVERS:
 			player.hammer = null
 
+	sides_swapped.emit(round_number)
 	DotLog.info(CHANNEL, "sides swapped", {"round": round_number})
 
 
@@ -518,14 +637,35 @@ func _place_buses() -> void:
 # --- The tick --------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
-	if not authoritative or match_node == null:
+	if not authoritative or match_node == null or external_tick:
 		return
 	simulate(delta)
 
 
-## One simulated tick. Public so a headless suite can step it by hand.
+## One simulated tick, counted by this world. What an offline client and the suite use.
 func simulate(delta: float) -> void:
 	_tick += 1
+	_step(delta)
+
+
+## One simulated tick, numbered by the netcode. What the bridge uses.
+##
+## [b]The tick number comes from outside and the step does not.[/b] A snapshot is
+## stamped with the netcode's tick and a client reconciles against that number, so a
+## world counting its own would be replying about a different tick than the one it was
+## asked about. The STEP stays a fixed `1 / tick_rate` either way: a simulation stepped
+## by a frame's delta is a simulation that runs differently on a server having a bad
+## second, and this family has paid for that twice.
+func tick_once(tick: int) -> void:
+	if match_node == null:
+		return
+
+	_tick = tick
+	_step(delta_for_tick())
+
+
+## The step both entry points share.
+func _step(delta: float) -> void:
 	round_elapsed += delta
 
 	for id: StringName in players:
@@ -549,6 +689,33 @@ func simulate(delta: float) -> void:
 	match_node.tick(_tick)
 
 
+## The fixed step. One place, because three files were about to compute it.
+func delta_for_tick() -> float:
+	return 1.0 / float(maxi(tick_rate, 1))
+
+
+## Adopts a tick rate, on a client being told what the server runs at.
+##
+## [b]Every player's controller as well as this world, and that is the whole reason it
+## is a method.[/b] `tick_rate` is a plain property on a [BfhPlayer] with a setter that
+## forwards to the controller, so a world that changed only its own left every player
+## integrating at the old rate -- which is a client that walks at 60/128 of the speed
+## the server moves it at and is corrected on every snapshot for doing so.
+func set_tick_rate(rate: int) -> bool:
+	if rate <= 0 or rate == tick_rate:
+		return false
+
+	tick_rate = rate
+
+	for id: StringName in players:
+		(players[id] as BfhPlayer).tick_rate = rate
+
+	if match_node != null and match_node.config != null:
+		match_node.config.tick_rate = rate
+
+	return true
+
+
 ## Whether there is somebody on each side. See [method simulate].
 func sides_are_playable() -> bool:
 	var has_driver := false
@@ -560,6 +727,13 @@ func sides_are_playable() -> bool:
 				has_driver = true
 			TEAM_RUNNERS:
 				has_runner = true
+
+	if not authoritative:
+		# A client knows the sides from JOIN and TEAM, but not whether the server has
+		# decided a round is playable — and the answer is the whole of the HUD's "waiting
+		# for both sides" line, which is the only thing telling somebody on an empty
+		# server that nothing is broken.
+		return remote_playable
 
 	return has_driver and has_runner
 
@@ -704,7 +878,7 @@ func _check_bus_impacts(delta: float) -> void:
 			continue
 
 		var bus_velocity := bus.velocity()
-		var driver_id := _driver_of(instance_id)
+		var driver_id := driver_of(instance_id)
 
 		for id: StringName in players:
 			var player: BfhPlayer = players[id]
@@ -739,6 +913,7 @@ func _check_bus_impacts(delta: float) -> void:
 
 		_break_props_under(bus, bus_velocity.length(), driver_id)
 		_unstick(bus, driver_id, delta)
+		_upright(bus, delta)
 
 
 func _bus_hit(player: BfhPlayer, by: StringName, closing: float, offset: Vector3) -> void:
@@ -868,7 +1043,70 @@ func _unstick(bus: DotVehicleInstance, by: StringName, delta: float) -> void:
 	DotLog.info(CHANNEL, "a bus was put back on its start line", {"stuck_for": held})
 
 
-func _driver_of(instance_id: int) -> StringName:
+## Who is driving the bus with this instance id, or an empty name.
+##
+## Public because a bridge, a console command and a suite all ask it, and the alternative
+## is three copies of a loop over the ride's index.
+## Seconds a bus may lie on its roof before it is rolled back over.
+const INVERTED_RIGHT_SEC := 2.0
+
+## Instance id -> seconds this bus has been upside down.
+var _bus_inverted: Dictionary = {}
+
+
+## A bus that has rolled over, and why it is not left there.
+##
+## [b]A bus on its roof is a driver out of the round through no decision anybody made.[/b]
+## dot-vehicle's own tunables comment says it about the centre of mass; this is the other
+## half, because no amount of lowering the centre of mass makes a 2.6 m box on a 2.5 m
+## track impossible to flip — a ramp, a crate under one wheel and a hard turn will do it.
+## The round is three minutes long and there are two buses, so a driver spending one of
+## those minutes upside down is a quarter of the game's threat gone for reasons the
+## runners cannot see and did not cause.
+##
+## [b]Rolled over where it lies rather than put back on its start line.[/b] `_unstick` has
+## the start line for the case where the bus is somewhere it cannot get out of; this is
+## for the case where it is somewhere perfectly good and merely inverted, and teleporting
+## it across the bowl would take it away from the chase it was in the middle of. Its
+## heading is kept and its velocity is not: a bus that lands upright still carrying the
+## roll's momentum immediately flips again.
+func _upright(bus: DotVehicleInstance, delta: float) -> void:
+	if not bus.is_inverted():
+		_bus_inverted.erase(bus.instance_id)
+		return
+
+	var held := float(_bus_inverted.get(bus.instance_id, 0.0)) + delta
+	_bus_inverted[bus.instance_id] = held
+
+	if held < INVERTED_RIGHT_SEC:
+		return
+
+	var body := bus.body()
+
+	if body == null:
+		return
+
+	# The heading, flattened. `global_basis.z` on an upside-down body still points the way
+	# the bus was facing; what has to go is the roll and the pitch around it.
+	var facing := -body.global_basis.z
+	facing.y = 0.0
+
+	var orientation := (
+		Basis.looking_at(facing.normalized()) if facing.length() > 0.01
+		else Basis.IDENTITY
+	)
+
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(
+		orientation, body.global_position + Vector3(0.0, 1.0, 0.0)
+	)
+
+	_bus_inverted.erase(bus.instance_id)
+	DotLog.info(CHANNEL, "a bus was rolled back onto its wheels", {"upside_down_for": held})
+
+
+func driver_of(instance_id: int) -> StringName:
 	for id: StringName in players:
 		if ride.vehicle_id_of(id) == instance_id:
 			return id
@@ -943,6 +1181,9 @@ func alive_runners() -> int:
 
 
 func crates_left() -> int:
+	if not authoritative and remote_cover >= 0:
+		return remote_cover
+
 	var count := 0
 	for prop in props.all_props():
 		if prop.is_alive() and prop.def != null and prop.def.id == BfhContent.CRATE:
@@ -959,6 +1200,7 @@ func describe() -> Dictionary:
 		"crates": crates_left(),
 		"props": props.world_count() if props != null else 0,
 		"buses": _bus_ids.size(),
+		"gravity": "%.1f m/s2" % config.gravity,
 		"bus_at": _bus_report(),
 	}
 

@@ -20,4 +20,16 @@ run/main_scene="res://game/bfh.tscn"
 
 [rendering]
 
+; [b]The renderer the delivered client actually runs.[/b] This game is published as a
+; dot-cloud pack and played inside the client shell, and that shell is gl_compatibility
+; because the browser is its target — Forward+ does not run in one. A game project left on
+; Forward+ is a game whose lighting is tuned against a renderer no player uses: measured
+; here, the same bowl that read as sand in Forward+ was blown out to white under
+; Compatibility, on every delivered client, with nothing reporting anything.
+;
+; Three of the other four 3D games in this family already say this. This one did not, and
+; found out by looking at a screenshot of a real delivered client.
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+
 textures/canvas_textures/default_texture_filter=0

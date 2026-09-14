@@ -1,5 +1,11 @@
 extends Node
 
+const BfhArena := preload("../game/bfh_arena.gd")
+const BfhConfig := preload("../game/bfh_config.gd")
+const BfhContent := preload("../game/bfh_content.gd")
+const BfhGame := preload("../game/bfh_game.gd")
+const BfhPlayer := preload("../game/bfh_player.gd")
+
 ## Proves the bowl, the crates, the hammer, the barrels and the buses all actually work.
 ##
 ## [codeblock]
@@ -18,13 +24,16 @@ extends Node
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 74
+const CHECKS := 79
 
 const TICK := 1.0 / 60.0
 
 var _passed := 0
 var _failed := 0
 var _failures := PackedStringArray()
+
+## Every world this run has built and not yet taken down. See [method _dispose].
+var _worlds: Array[BfhGame] = []
 
 
 func _ready() -> void:
@@ -47,6 +56,14 @@ func _run() -> void:
 	await _test_bus()
 	await _test_round_ends()
 	await _test_bus_propulsion()
+	await _test_a_rolled_bus()
+
+	# Anything a section did not take down itself, before the counts are printed: a world
+	# freed after `quit()` is a world the engine reports as a leak.
+	for world in _worlds.duplicate():
+		await _dispose(world)
+
+	await get_tree().process_frame
 
 	print("")
 	print("%d passed, %d failed" % [_passed, _failed])
@@ -67,6 +84,61 @@ func _run() -> void:
 	get_tree().quit(1 if _failed > 0 else 0)
 
 
+## A bus on its roof rights itself.
+##
+## [b]Found by looking at a delivered client, not by a check.[/b] A screenshot of a real
+## server showed a bus lying on its roof at the foot of the ramp with a round still
+## running — a quarter of this game's whole threat removed, for a reason the runners can
+## neither see nor cause. Nothing in the simulation is wrong when that happens: an
+## inverted rigid body is a legitimate state and every number about it reads correctly.
+func _test_a_rolled_bus() -> void:
+	print("a bus on its roof")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.round_seconds = 120.0
+	)
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 20)
+
+	var buses := game.vehicles.all_vehicles()
+
+	if buses.is_empty():
+		_check(false, "there is a bus to roll")
+		_check(false, "which the game notices is upside down")
+		_check(false, "and puts back on its wheels")
+		await _dispose(game)
+		return
+
+	_check(true, "there is a bus to roll")
+
+	var bus: DotVehicleInstance = buses[0]
+	var body := bus.body()
+	var where := body.global_position
+
+	# Rolled onto its roof deliberately, which is what a ramp and a hard turn do.
+	body.global_transform = Transform3D(
+		Basis(Vector3.FORWARD, PI) * body.global_basis, where + Vector3(0.0, 1.0, 0.0)
+	)
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	await _step(game, 10)
+
+	_check(bus.is_inverted(), "which the game notices is upside down")
+
+	# Longer than INVERTED_RIGHT_SEC, plus the frames it takes to settle.
+	await _step(game, int(BfhGame.INVERTED_RIGHT_SEC * 60.0) + 40)
+
+	_check(
+		not bus.is_inverted(),
+		"and puts back on its wheels rather than leaving a driver out of the round",
+		"up=%.2f" % body.global_basis.y.y
+	)
+
+	await _dispose(game)
+
+
 func _check(ok: bool, what: String, detail: String = "") -> void:
 	if ok:
 		_passed += 1
@@ -78,11 +150,22 @@ func _check(ok: bool, what: String, detail: String = "") -> void:
 	print("  FAIL  %s" % line)
 
 
+## A world to run a section in, at the size the game actually ships.
+##
+## [b]The radius is the shipped default and used not to be, and that cost a whole feature
+## its coverage.[/b] This said 30 m — a reasonable-looking choice for keeping sections
+## tight — while `BfhConfig` ships 46, and the stacks are left out of any bowl under 34.
+## So every check in this file ran a map with no pillars in it, silently, and the two
+## sections that cared had to override the radius for themselves. Fixing the symptom in
+## those two left the trap in place for whatever is added to the arena next: the rule is
+## that a suite runs the shipped configuration unless a section says why not.
+##
+## The crate and barrel counts are still cut down, and that is a different kind of
+## decision: they change how MANY of a thing there is, not whether a feature exists.
 func _world(configure: Callable = Callable()) -> BfhGame:
 	var config := BfhConfig.new()
 	config.crate_count = 12
 	config.barrel_count = 3
-	config.arena_radius = 30.0
 	config.round_seconds = 20.0
 	config.intermission_seconds = 0.0
 	config.warmup_seconds = 0.0
@@ -94,10 +177,36 @@ func _world(configure: Callable = Callable()) -> BfhGame:
 	var game := BfhGame.new()
 	game.config = config
 	game.tick_rate = 60
+	# [b]Off, because this file builds a dozen worlds in one process.[/b] A registry name
+	# is global and the last one to register wins, so worlds that registered would take
+	# the name off each other — the same shape as the two `DotRandomManager`s that laid
+	# out two different bowls from one seed.
+	game.register_service = false
 	add_child(game)
 	# Stepped by hand from here on. See the class note.
 	game.set_physics_process(false)
+	_worlds.append(game)
 	return game
+
+
+## Takes a world down NOW rather than at the end of the frame.
+##
+## [b]`queue_free` was what this file used and it is why the run leaked.[/b] A queued free
+## happens on the next idle frame, and the last few sections are followed by `quit()` —
+## so the worlds they built were still alive when the engine tore down, which Godot
+## reports as leaked ObjectDB instances. It reads exactly like a reference cycle in the
+## game and is a test that stopped one line early.
+func _dispose(game: BfhGame) -> void:
+	if game == null or not is_instance_valid(game):
+		return
+
+	_worlds.erase(game)
+
+	if game.get_parent() == self:
+		remove_child(game)
+
+	game.free()
+	await get_tree().process_frame
 
 
 func _step(game: BfhGame, ticks: int) -> void:
@@ -113,6 +222,11 @@ func _test_config() -> void:
 
 	var config := BfhConfig.new()
 	_check(config.validate().ok, "the shipped defaults are usable")
+	_check(
+		config.gravity >= 19.0,
+		"and carry the gravity this game's numbers were chosen for",
+		"%.1f" % config.gravity
+	)
 
 	# The one cross-field rule, and the reason it is a rule: a bus that can never
 	# reach its own lethal speed is a bus that can never kill anybody, which reads as
@@ -139,6 +253,19 @@ func _test_world_builds() -> void:
 	await get_tree().physics_frame
 
 	_check(game.arena != null, "the bowl is built")
+
+	# [b]The game's gravity, on the world's own physics space.[/b] It used to be a line in
+	# `project.godot`, and a project setting does not travel with a delivered pack: mounted
+	# into the server tool's project this game ran at Godot's 9.8 against numbers chosen
+	# for 20, and the only symptom was that everything floated.
+	var space_gravity := float(PhysicsServer3D.area_get_param(
+		game.get_world_3d().space, PhysicsServer3D.AREA_PARAM_GRAVITY
+	))
+	_check(
+		absf(space_gravity - game.config.gravity) < 0.01,
+		"on a space carrying the game's gravity rather than the project's",
+		"%.1f" % space_gravity
+	)
 	_check(game.props != null and game.props.authoritative, "props are spawnable")
 	_check(game.prop_damage != null, "and breakable")
 	_check(game.carry != null, "and can be stood on")
@@ -154,7 +281,7 @@ func _test_world_builds() -> void:
 	_check(rules != null and rules.alive_fn.is_valid(),
 		"and the rule has been told how to ask who is alive")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 func _test_bowl_layout() -> void:
@@ -209,21 +336,20 @@ func _test_bowl_layout() -> void:
 			break
 	_check(inside, "every one of them inside the wall")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 ## The stacks, which are the only permanent geometry on the floor.
 ##
-## [b]At the shipped bowl radius, and every other section here is not.[/b] `_world`
-## builds a 30 m bowl to keep the other sections tight, and the stacks are left out
-## below 34 m on purpose -- so without this line every check in this file would run a
-## map the game never ships and the whole feature would be invisible to all of them.
+## [b]This section used to be the only one at the shipped bowl radius.[/b] `_world` built
+## a 30 m bowl, the stacks are left out below 34 m on purpose, and so every other check in
+## this file ran a map the game never ships. Overriding it here fixed the symptom and left
+## the trap; `_world` runs the shipped radius now, and this section no longer has anything
+## to say about it.
 func _test_the_stacks() -> void:
 	print("the stacks")
 
-	var game := _world(func(config: BfhConfig) -> void:
-		config.arena_radius = BfhConfig.new().arena_radius
-	)
+	var game := _world()
 	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
 	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
 	game.start()
@@ -321,7 +447,7 @@ func _test_the_stacks() -> void:
 		"and a clear line is left exactly as it was"
 	)
 
-	game.queue_free()
+	await _dispose(game)
 	await _test_driving_the_stacks()
 
 
@@ -334,7 +460,6 @@ func _test_the_stacks() -> void:
 ## BfhArena.steer_around] existed, standing behind a pillar deleted the bus chasing you.
 func _test_driving_the_stacks() -> void:
 	var game := _world(func(config: BfhConfig) -> void:
-		config.arena_radius = BfhConfig.new().arena_radius
 		# Long enough that the round cannot end underneath the measurement.
 		config.round_seconds = 120.0
 	)
@@ -399,7 +524,7 @@ func _test_driving_the_stacks() -> void:
 	_check(past, "and it comes round the pillar rather than wedging on it",
 		"%.1f m/s at the end" % bus.speed() if bus.is_alive() else "the bus was lost")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 func _test_sides() -> void:
@@ -427,7 +552,7 @@ func _test_sides() -> void:
 	_check((game.drivers()[0] as BfhPlayer).hammer == null,
 		"and a driver does not, because the bus is the weapon")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 # --- The join this game exists for -----------------------------------------
@@ -496,7 +621,7 @@ func _test_standing_on_a_crate() -> void:
 		"%.3f m apart" % player.controller.state.position.distance_to(player.global_position)
 	)
 
-	game.queue_free()
+	await _dispose(game)
 
 
 func _test_hammer() -> void:
@@ -573,7 +698,7 @@ func _test_hammer() -> void:
 	_check(not game.prop_damage.is_breakable(block.instance_id),
 		"a concrete block cannot be broken at all")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 func _test_barrel() -> void:
@@ -621,7 +746,7 @@ func _test_barrel() -> void:
 
 	_check(not barrel.is_alive(), "the barrel is gone")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 func _test_bus() -> void:
@@ -704,7 +829,7 @@ func _test_bus() -> void:
 	game._break_props_under(bus, 3.0, &"d")
 	_check(survivor.is_alive(), "while a bus crawling into one leaves it standing")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 func _test_round_ends() -> void:
@@ -754,7 +879,7 @@ func _test_round_ends() -> void:
 	_check((game.players[&"d"] as BfhPlayer).hammer != null,
 		"the new runner is handed a hammer")
 
-	game.queue_free()
+	await _dispose(game)
 
 
 # --- Driving ---------------------------------------------------------------
@@ -793,7 +918,7 @@ func _test_bus_propulsion() -> void:
 		_check(false, "the suspension holds the bus up rather than letting it rest on its hull")
 		_check(false, "the body is free to move at all")
 		_check(false, "and the throttle moves it")
-		game.queue_free()
+		await _dispose(game)
 		return
 
 	var body := bus.body()
@@ -829,5 +954,5 @@ func _test_bus_propulsion() -> void:
 
 	_check(bus.speed() > 1.0, "and the throttle moves it", "%.2f m/s" % bus.speed())
 
-	game.queue_free()
+	await _dispose(game)
 

@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://game/bfh_server.gd" id="1_server"]
+
+[node name="BusesServer" type="Node"]
+script = ExtResource("1_server")

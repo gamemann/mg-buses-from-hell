@@ -1,5 +1,6 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
+[ext_resource type="Script" path="res://props/bfh_prop_body.gd" id="script"]
 [ext_resource type="PackedScene" path="res://assets/kenney/survival/barrel.glb" id="art"]
 
 [sub_resource type="CylinderShape3D" id="shape"]
@@ -7,6 +8,7 @@ height = 1.19
 radius = 0.43
 
 [node name="Barrel" type="RigidBody3D"]
+script = ExtResource("script")
 mass = 45.0
 can_sleep = true
 contact_monitor = true

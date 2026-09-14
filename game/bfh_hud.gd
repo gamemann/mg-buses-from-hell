@@ -1,5 +1,7 @@
-class_name BfhHud
 extends CanvasLayer
+
+const BfhGame := preload("bfh_game.gd")
+const BfhPlayer := preload("bfh_player.gd")
 
 ## Health, the clock, and how much cover is left. Four numbers and a crosshair.
 ##
@@ -10,7 +12,10 @@ extends CanvasLayer
 ## blocks is a bowl where standing still stops working, and a player who can see that
 ## number drop starts moving before it is too late rather than after.
 
-const CHANNEL := "bfh.hud"
+# No `const CHANNEL`. This draws four numbers from state somebody else owns and has
+# nothing an operator would act on; the round, the deaths and the bowl are logged by
+# [BfhGame], which is where the decisions are. A channel declared and never used is a file
+# that meant to say something and does not.
 
 var game: BfhGame = null
 var player: BfhPlayer = null

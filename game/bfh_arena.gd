@@ -1,5 +1,6 @@
-class_name BfhArena
 extends Node3D
+
+const BfhTextures := preload("bfh_textures.gd")
 
 ## The bowl: a round sand floor, a wall around it, and a ledge the drivers look from.
 ##
@@ -111,6 +112,13 @@ var _pillars: PackedVector3Array = PackedVector3Array()
 func build(p_radius: float) -> void:
 	radius = maxf(p_radius, 8.0)
 
+	# [b]Cleared first, because building is also REBUILDING.[/b] A client is told the
+	# server's radius in the HELLO and rebuilds its bowl to match — the map here is one
+	# number, run through this function on both ends — and a second call that only added
+	# would leave a 46 m wall standing inside a 30 m one. The player then walks through
+	# the wall they can see into the wall they cannot.
+	_clear()
+
 	_build_light()
 	_build_floor()
 	_build_wall()
@@ -126,6 +134,20 @@ func build(p_radius: float) -> void:
 			"pillars": _pillars.size(),
 		}
 	)
+
+
+## Everything a previous [method build] put here.
+##
+## `free`, not `queue_free`: the next line builds the replacement, and a deferred free
+## would leave both in the tree for the rest of the frame — two floors, two walls and two
+## sets of colliders, which a body spawned in that frame can land on.
+func _clear() -> void:
+	for child in get_children():
+		remove_child(child)
+		child.free()
+
+	_floor_body = null
+	_pillars = PackedVector3Array()
 
 
 ## Where a runner may be put: anywhere on the floor, inside a margin.
@@ -203,7 +225,7 @@ func _build_light() -> void:
 	# amount of light, which is the flat look again with extra steps; a low sun is
 	# what makes the crates cast the long shadows a runner reads cover off.
 	sun.rotation = Vector3(deg_to_rad(-38.0), deg_to_rad(48.0), 0.0)
-	sun.light_energy = 1.15
+	sun.light_energy = 0.8
 	sun.light_color = Color(1.0, 0.94, 0.82)
 	sun.shadow_enabled = true
 	add_child(sun)
@@ -221,13 +243,13 @@ func _build_light() -> void:
 	env.sky = sky
 
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.9
+	env.ambient_light_energy = 0.15
 
 	# Filmic rather than Godot's default, which is not a tone map at all — it is a
 	# clip. game-g2gfast measured the difference over imported maps and it is the
 	# single largest change for the cost.
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_exposure = 1.0
+	env.tonemap_exposure = 0.75
 
 	# Enough to soften the far wall and give the bowl a sense of size, and far enough
 	# out that nothing a runner has to react to is hidden in it.

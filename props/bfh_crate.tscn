@@ -1,11 +1,13 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
+[ext_resource type="Script" path="res://props/bfh_prop_body.gd" id="script"]
 [ext_resource type="PackedScene" path="res://assets/kenney/survival/crate.glb" id="art"]
 
 [sub_resource type="BoxShape3D" id="shape"]
 size = Vector3(1, 1, 1)
 
 [node name="Crate" type="RigidBody3D"]
+script = ExtResource("script")
 mass = 30.0
 can_sleep = true
 contact_monitor = true

@@ -1,11 +1,13 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="PackedScene" path="res://assets/kenney/car/bus.glb" id="art"]
+[ext_resource type="Script" path="res://props/bfh_bus.gd" id="script"]
 
 [sub_resource type="BoxShape3D" id="hull"]
 size = Vector3(2.5, 1.8, 5.4)
 
 [node name="Bus" type="VehicleBody3D"]
+script = ExtResource("script")
 mass = 2000.0
 can_sleep = false
 contact_monitor = true
@@ -16,7 +18,7 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.6, 0)
 shape = SubResource("hull")
 
 [node name="Art" parent="." instance=ExtResource("art")]
-transform = Transform3D(1.56, 0, 0, 0, 1.56, 0, 0, 0, 1.56, 0, -0.88, 0)
+transform = Transform3D(-1.56, 0, 0, 0, 1.56, 0, 0, 0, -1.56, 0, -0.88, 0)
 
 [node name="Seat" type="Marker3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, -1.8)

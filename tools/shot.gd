@@ -1,5 +1,7 @@
 extends Node
 
+const BfhGame := preload("../game/bfh_game.gd")
+
 ## Renders the game from the local player's eyes and exits. The check no assertion makes.
 ##
 ## xvfb-run, never --headless: headless gives a null renderer and saves a frame of
@@ -13,6 +15,7 @@ func _run() -> void:
 	var out := "res://screenshots/bfh.png"
 	var look_at_bus := false
 	var look_at_stacks := false
+	var show_chat := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
 			seconds = float(arg.substr(10))
@@ -22,9 +25,23 @@ func _run() -> void:
 			look_at_bus = true
 		elif arg == "--stacks":
 			look_at_stacks = true
+		elif arg == "--chat":
+			show_chat = true
 
 	var client: Node = load("res://game/bfh.tscn").instantiate()
 	add_child(client)
+
+	# The chat box, with something in it. A box drawn empty says nothing about whether a
+	# line would be readable over a sand-coloured bowl in bright light, which is the only
+	# question a picture of it can answer.
+	if show_chat:
+		var chat: Node = client.get("chat")
+
+		if chat != null and chat.get("window") != null:
+			var window = chat.get("window")
+			window.add_said("Driver", "coming round the stacks", Color(0.55, 0.82, 0.95))
+			window.add_said("Ada", "north ramp, north ramp", Color(0.88, 0.90, 0.94))
+			window.add_text("Bus driver 1 was run over by nobody", Color(0.98, 0.72, 0.35))
 
 	var elapsed := 0.0
 	while elapsed < seconds:

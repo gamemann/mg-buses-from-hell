@@ -15,6 +15,7 @@ The drivers cannot lose except to the clock. The runners cannot win except on th
 ```
 game/
   bfh_config.gd     every cvar, in metres and seconds, layered like every DotConfig
+  bfh_paths.gd      where this game's own files are, wherever it is mounted
   bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks, sun and sky. In code
   bfh_textures.gd   the generated metre grid. Why a flat colour has no speed in it
   bfh_content.gd    the prop catalogue and the vehicle catalogue. The design, as data
@@ -22,11 +23,18 @@ game/
   bfh_hammer.gd     the only weapon, and it does not hurt people
   bfh_game.gd       the simulation: rounds, sides, props, buses, damage. Headless
   bfh_hud.gd        four numbers and a dot
-  bfh_client.gd     one local player. Never loaded by a server
+  bfh_client.gd     one local player, alone or against a server
+  bfh_client_chat.gd  the client's chat box and its microphone
+  bfh_services.gd   chat, voice and moderation. Sixty lines over dot-game's base
+  bfh_server.gd     what a DotServer loads as its game scene
+  bfh_module.gd     what a DotServer loads as its module. Ninety lines, over dot-game
   bfh.tscn          what you run
-props/              the crate, the barrel and the bus, as scenes
+  net/              the wire: the codec, the messages, the link, three behaviours,
+                    and the bridge that is the only file naming both halves
+props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
-examples/           headless_run (74 checks)
+scenes/             bfh_server.tscn, which is all a deployed server instantiates
+examples/           headless_run (79), headless_net (84), dedicated (37)
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -141,6 +149,65 @@ Three models — a crate, a barrel and a garbage truck standing in for the bus �
 
 **The collision shapes stayed primitive.** The art is a box, a cylinder and a box; the physics is a box, a cylinder and a box. A convex hull off the model would be more faithful and much worse — dot-props already documents what loose triangles do to a sliding body, and a bus is the thing doing the sliding.
 
+## Decision 7: no `class_name`, anywhere in this repository
+
+Every script here is reached by a relative `preload`, and every `res://` string this game writes about its own files goes through `BfhPaths.rebase()`. That is not a style: **a mounted dot-cloud pack's `class_name` globals are not registered in the host**, so a delivered game that used one would mount, load its scenes, and have every script in it dead with nothing reporting a thing.
+
+This game was written with seven of them and converted when it was added to the deployment. `dot-server-deploy/tools/check.sh` refuses a new one in any game repository, which is what keeps it converted.
+
+## Decision 8: the world sets its own gravity, and the renderer is the one players use
+
+Two things that live in `project.godot` do not travel with a delivered pack, and both were found by looking at a real client rather than by reading:
+
+- **`physics/3d/default_gravity` is 20 here and 9.8 in the shell**, so delivered, everything floated: crates drifting down, jumps hanging, and a bus whose suspension was tuned against twice the force actually on it. `BfhConfig.gravity` is the number now and `BfhGame._apply_gravity` writes it onto the world's own physics space — the space rather than the setting, because a server and a client in one process are two worlds and a global would be one of them deciding for the other.
+- **The client shell renders with `gl_compatibility`, because the browser is its target.** This project was on Forward+, so its lighting was tuned against a renderer no player uses: the same bowl that read as sand for a developer was blown out to white on every delivered client. The project says `gl_compatibility` now, and the sun, the ambient and the exposure were retuned under it.
+
+Neither had a symptom anybody could act on. Both are the family's own "produced correctly and consumed by nothing", in the shape where the thing that is not consumed is a *project setting*.
+
+## The netcode
+
+`game/net/` and `game/bfh_module.gd`. The bridge is the only file that names both the game and dot-net, and [BfhNetBridge]'s own class docs carry the reasoning; what is worth having here is the shape.
+
+**Everything except a runner's own feet is server-authoritative.** That is more of the screen than in any other game in this family: thirty-odd crates, nine barrels, a handful of blocks and two buses, all rigid bodies, all drawn by a client that never simulates one. Godot's solver is not reproducible across machines, and in *this* game that matters more than in most — a crate is COVER, and cover a few centimetres out on a client is a runner shot at through a wall they believe they are behind.
+
+**A driver is not predicted either, and the bus is what makes that acceptable.** While somebody is in a bus their controller has no answer to predict: the bus's position comes from the server. So a driver's keys go round trip — and four tonnes take about that long to respond to anything, so the latency lands inside the time the vehicle was going to ignore the input anyway. The same latency on a runner would be intolerable, which is exactly why the runner IS predicted.
+
+**The map is one number.** The bowl is `BfhArena.build(radius)` run on both ends, so what travels in the HELLO is a radius rather than a file — and a client that joined a server running a smaller bowl rebuilds its own to match. `build()` clears first for that reason: called twice without it, a 46 m wall stands inside a 30 m one and the player walks through the wall they can see into the wall they cannot.
+
+**The cover count is an event, not a property.** A client does not run the prop spawner, so `crates_left()` there counts zero — and that number is the most important thing on this game's HUD, because it is what tells a runner whether standing still is still an option. It rides in a CLOCK message twice a second with the round, the clock and how many runners are up.
+
+**The hammer is a BUTTON.** `BUTTON_USER_0` in the movement command, resolved on the server from the position and view that same command produced. As a reliable request it would arrive a round trip later, be resolved against a different position, and break the crate the player was no longer looking at.
+
+### What the module is, and what dot-game saved
+
+`bfh_module.gd` is ninety lines, and the other five games' modules are 837 to 1,816. The difference is `DotGameModule`, which this is the first game in the family to subclass: the netcode's four load-bearing settings, the bridge, the message seal, the identity layer, the roster, the authoritative tick and a teardown in the reverse order are all in the addon. Two of the five hand-written copies had the same line wrong and nobody could join those servers.
+
+What is left here is this game's own: `bfh_status` and `bfh_net`, seven cvars an operator turns between rounds, and the rule that keeps the driving seats full of bots — which no other game in this family needs, because no other game in this family is asymmetric. A deathmatch with one person in it is a person walking around a map; a bowl with nothing in it to run away from is a clock that never moves.
+
+## Decision 9: the sides are the conversation
+
+`bfh_services.gd`. Four channels — all, team, admin, whisper — and **team is the one that matters**, which is not true of any other game in this family. Two drivers against everybody else is a game about two conversations that must not overhear each other, and the drivers' half is three sentences long: who takes which half of the bowl, and who is going for whom. So team is also what **voice** defaults to, where every other game here defaults to the whole server.
+
+**No proximity channel.** The bowl is 46 m across; a proximity range worth having would be most of it, and a channel that reaches nearly everybody is a channel that lies about who can hear you. game-playground has one because a sandbox is a place with corners.
+
+**No backlog on the team channel, and that is the swap.** A backlog is handed to whoever joins — and everybody changes sides every third round, so a replayed team line is one side's plan handed to the people it was about.
+
+**Push to talk, in the one game here where it is not a preference.** A runner being chased by a bus is breathing into a microphone; open-mic voice on a side of six is six sets of breathing over the one thing anybody needs to hear, which is somebody saying which way it is coming.
+
+**Sixty lines, because the other five hundred are [DotGameServices](../dot-game/CLAUDE.md).** This game is the first to use that base — the second extraction dot-game's own notes asked for — and the one thing worth repeating here is the ordering it now owns: moderation is built BEFORE chat, because moderation publishes `dot_mute_source` and both routers look that name up when they *start*. A chat router built first finds nothing, warns once, and enforces no gag for the life of the server.
+
+## What the deployment found
+
+Every one of these was found by publishing the game as a pack and connecting a real client to a real server, and not one of them was visible to any suite in this repository.
+
+- **The bus art was on backwards.** Kenney's garbage truck faces +Z and this family's forward is -Z, so the bus chased people cab-last at 22 m/s. Every number about it was correct, and the first three screenshots of it did not show the direction of travel.
+- **`class_name` in seven files**, which is the one thing a delivered game may not have. See Decision 7.
+- **A Kenney GLB's texture is an external dependency recorded by UID and an absolute path**, and neither survives being mounted somewhere else. The crates' meshes loaded, their atlas did not, and the node the model was instanced under "vanished" — a game that plays perfectly and appears to have shipped without art. Fixed in dot-cloud, which now registers a mounted pack's own UIDs; `props/bfh_art.gd` is the game's own belt to that braces, and does nothing at all in a build.
+- **Gravity and the renderer**, both above.
+- **A client scene that will not compile inside a pack, from one `:=`.** `var config := BfhServices.voice_format()` infers fine in this project and fails in a mount: a script whose base class lives in the HOST build cannot hand its return type to a script in the pack. The same call spelled with an explicit type works in both. It was reached by a client that had just built a chat box — so the symptom was "chat does not exist on a real server", three layers from the cause.
+- **A stale class cache three repositories away.** Adding `DotGameServices` to dot-game left a dedicated server reporting *"Could not resolve script … bfh_services.gd"* — the deploy project's own cache had never heard of the base class. The addon was fine and the game was fine. Re-import every project that links a shared addon after adding a `class_name` to it; this family's own CLAUDE.md says so and it still cost a boot.
+- **A bus on its roof stayed there.** Seen in the first screenshot of a delivered client: a bus upside down at the foot of the ramp with the round still running, which is a quarter of this game's threat gone for a reason the runners can neither see nor cause. `_upright` rolls it back over where it lies after two seconds — not back to its start line, which would take it out of the chase it was in the middle of.
+
 ## Validating
 
 ```bash
@@ -148,9 +215,20 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 74 checks
+godot --headless --path . res://examples/headless_run.tscn   # 79 checks, the simulation
+godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
+godot --headless --path . res://examples/dedicated.tscn      # 46 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
+```
+
+**And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:
+
+```bash
+# in dot-server-deploy
+./server pack buses --source games/game-buses-from-hell
+./server --game buses
+# then connect the client shell to 127.0.0.1:6070
 ```
 
 The render is not optional. Four of the entries above — the flat lighting, the missing grid, the stacked HUD and the bus facing the wall — are invisible to every assertion in this repository and were each found by looking at a picture.

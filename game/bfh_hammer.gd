@@ -1,5 +1,6 @@
-class_name BfhHammer
 extends RefCounted
+
+const BfhConfig := preload("bfh_config.gd")
 
 ## The only weapon in the game, and it does not hurt people.
 ##
@@ -16,7 +17,9 @@ extends RefCounted
 ## of one is a catalogue that will be wrong the moment somebody adds a second entry
 ## and forgets the rules that went with it, so this is a plain object that swings.
 
-const CHANNEL := "bfh.hammer"
+# No `const CHANNEL`. This is a value object that swings and emits: `hit` and `missed` are
+# what a caller acts on, and a line per swing at two a second per player is a log nobody
+# can read. The one thing worth keeping — that a crate broke — is dot-props'.
 
 ## A swing landed on a prop.
 signal hit(instance_id: int, at: Vector3, broke: bool)
