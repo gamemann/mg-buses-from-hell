@@ -1,0 +1,24 @@
+[gd_scene load_steps=4 format=3]
+
+[sub_resource type="BoxShape3D" id="shape"]
+size = Vector3(1, 1, 1)
+
+[sub_resource type="BoxMesh" id="mesh"]
+size = Vector3(1, 1, 1)
+
+[sub_resource type="StandardMaterial3D" id="mat"]
+albedo_color = Color(0.68, 0.47, 0.25, 1)
+roughness = 0.9
+
+[node name="Crate" type="RigidBody3D"]
+mass = 30.0
+can_sleep = true
+contact_monitor = true
+max_contacts_reported = 4
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+shape = SubResource("shape")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("mesh")
+material_override = SubResource("mat")

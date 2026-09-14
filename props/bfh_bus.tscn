@@ -1,0 +1,75 @@
+[gd_scene load_steps=5 format=3]
+
+[sub_resource type="BoxShape3D" id="hull"]
+size = Vector3(2.5, 2.6, 9.0)
+
+[sub_resource type="BoxMesh" id="body_mesh"]
+size = Vector3(2.5, 2.6, 9.0)
+
+[sub_resource type="StandardMaterial3D" id="paint"]
+albedo_color = Color(0.92, 0.74, 0.17, 1)
+roughness = 0.6
+
+[sub_resource type="BoxMesh" id="nose_mesh"]
+size = Vector3(2.4, 1.0, 1.2)
+
+[node name="Bus" type="VehicleBody3D"]
+mass = 2000.0
+can_sleep = false
+contact_monitor = true
+max_contacts_reported = 8
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
+shape = SubResource("hull")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.2, 0)
+mesh = SubResource("body_mesh")
+material_override = SubResource("paint")
+
+[node name="Nose" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.35, -4.8)
+mesh = SubResource("nose_mesh")
+material_override = SubResource("paint")
+
+[node name="Seat" type="Marker3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.65, -3.2)
+
+[node name="WheelFrontLeft" type="VehicleWheel3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.2, -0.35, -3.1)
+use_as_traction = true
+use_as_steering = true
+wheel_radius = 0.6
+suspension_rest_length = 0.4
+wheel_friction_slip = 3.2
+suspension_travel = 0.3
+suspension_stiffness = 150.0
+
+[node name="WheelFrontRight" type="VehicleWheel3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.2, -0.35, -3.1)
+use_as_traction = true
+use_as_steering = true
+wheel_radius = 0.6
+suspension_rest_length = 0.4
+wheel_friction_slip = 3.2
+suspension_travel = 0.3
+suspension_stiffness = 150.0
+
+[node name="WheelRearLeft" type="VehicleWheel3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.2, -0.35, 3.0)
+use_as_traction = true
+wheel_radius = 0.6
+suspension_rest_length = 0.4
+wheel_friction_slip = 3.2
+suspension_travel = 0.3
+suspension_stiffness = 150.0
+
+[node name="WheelRearRight" type="VehicleWheel3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.2, -0.35, 3.0)
+use_as_traction = true
+wheel_radius = 0.6
+suspension_rest_length = 0.4
+wheel_friction_slip = 3.2
+suspension_travel = 0.3
+suspension_stiffness = 150.0

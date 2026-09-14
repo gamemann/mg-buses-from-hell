@@ -1,0 +1,630 @@
+extends Node
+
+## Proves the bowl, the crates, the hammer, the barrels and the buses all actually work.
+##
+## [codeblock]
+## godot --headless --path . res://examples/headless_run.tscn
+## [/codeblock]
+##
+## [b]The checks that matter are the ones that cross an addon boundary.[/b] dot-props,
+## dot-combat, dot-match and dot-vehicle are each tested in their own repository and
+## each of them passes there; what has never run before this game is the joins, and the
+## family's own record says that is where everything is found. So the sections here are
+## named after joins rather than after classes — a player standing on a crate, a hammer
+## against a prop's health, a barrel against a person's, a bus against both.
+##
+## [b]It steps the world by hand.[/b] `BfhGame._physics_process` drives itself on a
+## server; a suite that let it would be asserting against a tick count it does not
+## control, so `set_physics_process(false)` goes on first and every section advances
+## the world itself.
+
+const CHECKS := 62
+
+const TICK := 1.0 / 60.0
+
+var _passed := 0
+var _failed := 0
+var _failures := PackedStringArray()
+
+
+func _ready() -> void:
+	DotLog.set_level(DotLog.Level.ERROR)
+	_run.call_deferred()
+
+
+func _run() -> void:
+	print("buses-from-hell headless run")
+	print("")
+
+	_test_config()
+	await _test_world_builds()
+	await _test_bowl_layout()
+	await _test_sides()
+	await _test_standing_on_a_crate()
+	await _test_hammer()
+	await _test_barrel()
+	await _test_bus()
+	await _test_round_ends()
+	await _test_bus_propulsion()
+
+	print("")
+	print("%d passed, %d failed" % [_passed, _failed])
+
+	for line in _failures:
+		print("  FAIL  %s" % line)
+
+	# The total the section counter cannot be. A runtime error inside a section aborts
+	# that function and the section counter is satisfied, because the section had
+	# already announced itself. See docs/testing.md.
+	if _passed + _failed != CHECKS:
+		print("ERROR: %d checks ran, %d expected. A section aborted part-way." % [
+			_passed + _failed, CHECKS
+		])
+		get_tree().quit(1)
+		return
+
+	get_tree().quit(1 if _failed > 0 else 0)
+
+
+func _check(ok: bool, what: String, detail: String = "") -> void:
+	if ok:
+		_passed += 1
+		print("  ok    %s" % what)
+		return
+	_failed += 1
+	var line := what if detail == "" else "%s  (%s)" % [what, detail]
+	_failures.append(line)
+	print("  FAIL  %s" % line)
+
+
+func _world(configure: Callable = Callable()) -> BfhGame:
+	var config := BfhConfig.new()
+	config.crate_count = 12
+	config.barrel_count = 3
+	config.arena_radius = 30.0
+	config.round_seconds = 20.0
+	config.intermission_seconds = 0.0
+	config.warmup_seconds = 0.0
+	config.driver_count = 1
+
+	if configure.is_valid():
+		configure.call(config)
+
+	var game := BfhGame.new()
+	game.config = config
+	game.tick_rate = 60
+	add_child(game)
+	# Stepped by hand from here on. See the class note.
+	game.set_physics_process(false)
+	return game
+
+
+func _step(game: BfhGame, ticks: int) -> void:
+	for _i in range(ticks):
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+
+# --- The configuration -----------------------------------------------------
+
+func _test_config() -> void:
+	print("the configuration")
+
+	var config := BfhConfig.new()
+	_check(config.validate().ok, "the shipped defaults are usable")
+
+	# The one cross-field rule, and the reason it is a rule: a bus that can never
+	# reach its own lethal speed is a bus that can never kill anybody, which reads as
+	# the collision code being broken rather than as two numbers disagreeing.
+	config.bus_lethal_speed = config.bus_top_speed + 1.0
+	var refused := config.validate()
+	_check(not refused.ok, "a lethal speed above the top speed is refused")
+	_check(
+		refused.ok or refused.error.message.contains("bus_top_speed"),
+		"and the message names both numbers"
+	)
+
+	config.bus_lethal_speed = 9.0
+	config.round_seconds = 0.0
+	_check(not config.validate().ok, "so is a round with no clock")
+
+
+# --- The world -------------------------------------------------------------
+
+func _test_world_builds() -> void:
+	print("the world")
+
+	var game := _world()
+	await get_tree().physics_frame
+
+	_check(game.arena != null, "the bowl is built")
+	_check(game.props != null and game.props.authoritative, "props are spawnable")
+	_check(game.prop_damage != null, "and breakable")
+	_check(game.carry != null, "and can be stood on")
+	_check(game.vehicles != null, "there is a vehicle spawner")
+	_check(game.combat != null, "a combat manager")
+	_check(game.match_node != null, "and a match")
+
+	# The seam dot-match is built around: it has no idea what "alive" means, so the
+	# elimination rule asks. Unset, the round runs to the clock instead of ending on
+	# the last kill — which is the kind of wrong that looks like a tuning problem.
+	var rules := game.match_node.rules as DotRulesElimination
+	_check(rules != null, "the round is decided by elimination")
+	_check(rules != null and rules.alive_fn.is_valid(),
+		"and the rule has been told how to ask who is alive")
+
+	game.queue_free()
+
+
+func _test_bowl_layout() -> void:
+	print("laying the bowl out")
+
+	var game := _world()
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 8)
+
+	_check(game.round_number >= 1, "a round begins", "round %d" % game.round_number)
+	_check(game.crates_left() == 12, "the crates are laid out",
+		"%d" % game.crates_left())
+	_check(game.props.world_count() > 12,
+		"with barrels and blocks beside them", "%d props" % game.props.world_count())
+
+	# [b]Seeded, so two servers on the same seed lay the same round out.[/b] Asserted
+	# against the SCATTER rather than against where the crates ended up, and the first
+	# version of this check did the latter: it built a second world, stepped it, and
+	# compared prop positions. Two worlds in one process share one physics space, so
+	# the second world's crates landed on the first world's and settled a few
+	# millimetres elsewhere — and the check failed for a reason that had nothing to do
+	# with the seed. Where the seed puts a crate is the thing being tested; what
+	# gravity and its neighbours then do to it is not.
+	var left := DotRandomStream.new(4242, &"bowl")
+	var right := DotRandomStream.new(4242, &"bowl")
+	var drifted := DotRandomStream.new(4243, &"bowl")
+
+	var same := true
+	var differs := false
+	for _i in range(24):
+		var a := game.arena.scatter_point(left, 8.0, 0.6)
+		var b := game.arena.scatter_point(right, 8.0, 0.6)
+		var c := game.arena.scatter_point(drifted, 8.0, 0.6)
+		if a != b:
+			same = false
+		if a != c:
+			differs = true
+
+	_check(same, "and the same seed lays out the same bowl")
+	_check(differs, "while a different one does not")
+
+	var first: Array[Vector3] = []
+	for prop in game.props.all_props():
+		first.append(prop.position())
+
+	var inside := true
+	for at in first:
+		if Vector2(at.x, at.z).length() > game.arena.radius:
+			inside = false
+			break
+	_check(inside, "every one of them inside the wall")
+
+	game.queue_free()
+
+
+func _test_sides() -> void:
+	print("the two sides")
+
+	var game := _world(func(c: BfhConfig) -> void: c.driver_count = 2)
+	game.add_player(&"a", "A")
+	game.add_player(&"b", "B")
+	game.add_player(&"c", "C")
+	game.add_player(&"d", "D")
+	await get_tree().physics_frame
+
+	_check(game.drivers().size() == 2, "the seats fill first",
+		"%d drivers" % game.drivers().size())
+	_check(game.runners().size() == 2, "and everybody else runs",
+		"%d runners" % game.runners().size())
+
+	# Not a balancer: two against six is the design. A balancer that did not know
+	# that would move four people into two buses every round.
+	_check(not game.match_node.teams.force_balance,
+		"and nothing tries to even them up")
+
+	var runner: BfhPlayer = game.runners()[0]
+	_check(runner.hammer != null, "a runner carries a hammer")
+	_check((game.drivers()[0] as BfhPlayer).hammer == null,
+		"and a driver does not, because the bus is the weapon")
+
+	game.queue_free()
+
+
+# --- The join this game exists for -----------------------------------------
+
+func _test_standing_on_a_crate() -> void:
+	print("standing on a crate")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var player := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 4)
+
+	# Placed by hand rather than scattered, because what is being tested is the join
+	# and not the scatter.
+	var crate := game.props.spawn(BfhContent.CRATE, &"world", Vector3(0.0, 0.5, 0.0))
+	var body := crate.body()
+	body.freeze = false
+	# Gravity LEFT ON, and the first version of this check turned it off. A crate with
+	# no gravity still takes the player's weight — that is the whole point of
+	# `DotPropCarry.stand` — so it accelerates downward out from under them and they
+	# are carried for about four ticks. The floor is what holds a crate up; removing
+	# gravity removes the floor's half of that and measures the bug it was written to
+	# catch.
+	body.angular_velocity = Vector3.ZERO
+	body.linear_velocity = Vector3.ZERO
+
+	player.global_position = Vector3(0.0, 1.9, 0.0)
+	player.controller.state.position = player.global_position
+	player.controller.state.velocity = Vector3.ZERO
+
+	await _step(game, 30)
+
+	var ground_id := player.controller.state.ground_id
+	_check(ground_id != 0, "the player lands on something")
+	_check(game.carry.prop_under(ground_id) == crate,
+		"and what they are standing on is the crate")
+
+	# The half that is invisible when it is missing. A character motor sweeps a shape
+	# and slides, so a crate is exactly as solid as the floor and exactly as
+	# immovable — a player stands on one, it slides away, and they do not go with it.
+	var before := player.global_position
+
+	# Driven each tick rather than set once: a crate on the ground has friction with
+	# it, so one assignment is a crate that stops. What is being tested is whether a
+	# player on a MOVING crate moves with it, not how long a shove lasts.
+	for _i in range(30):
+		body.linear_velocity.x = 3.0
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+	var travelled := player.global_position.x - before.x
+	_check(travelled > 0.5, "and is carried when the crate moves",
+		"%.2f m" % travelled)
+	_check(player.carried_metres > 0.5, "which the player counts",
+		"%.2f m" % player.carried_metres)
+
+	# Written back into the state as well as onto the node: the controller starts the
+	# next tick from `state.position`, so a displacement applied only to the node is
+	# undone by the very next move and the player rides for one frame per tick and
+	# stands still overall.
+	_check(
+		player.controller.state.position.distance_to(player.global_position) < 0.01,
+		"with the motor's own state moved with them",
+		"%.3f m apart" % player.controller.state.position.distance_to(player.global_position)
+	)
+
+	game.queue_free()
+
+
+func _test_hammer() -> void:
+	print("the hammer")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var player := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 4)
+
+	var crate := game.props.spawn(BfhContent.CRATE, &"world", Vector3(0.0, 0.5, 4.0))
+	crate.body().freeze = true
+	await _step(game, 2)
+
+	var origin := Vector3(0.0, 0.5, 2.0)
+	var forward := Vector3(0.0, 0.0, 1.0)
+	var mask := 0xFFFFFFF
+
+	var health_before := game.prop_damage.health_of(crate.instance_id)
+	_check(health_before > 0.0, "a crate has health", "%.0f" % health_before)
+
+	var swung := player.hammer.swing(
+		game, origin, forward, game.props, game.prop_damage, game.carry, player.player_id, mask
+	)
+	_check(swung, "a swing happens")
+	_check(game.prop_damage.health_of(crate.instance_id) < health_before,
+		"and takes health off the crate",
+		"%.0f" % game.prop_damage.health_of(crate.instance_id))
+
+	# The cooldown is what stops a hammer being a chainsaw.
+	_check(
+		not player.hammer.swing(
+			game, origin, forward, game.props, game.prop_damage, game.carry,
+			player.player_id, mask
+		),
+		"a second swing on the same tick is refused"
+	)
+
+	player.hammer.cooldown = 0.0
+	player.hammer.swing(
+		game, origin, forward, game.props, game.prop_damage, game.carry, player.player_id, mask
+	)
+	player.hammer.cooldown = 0.0
+	player.hammer.swing(
+		game, origin, forward, game.props, game.prop_damage, game.carry, player.player_id, mask
+	)
+
+	_check(not crate.is_alive(), "three swings break it")
+	_check(player.hammer.breaks == 1, "and the hammer counts the break",
+		"%d" % player.hammer.breaks)
+
+	# A hammer that only deletes crates is a worse tool than one that also moves them.
+	var pushable := game.props.spawn(BfhContent.CRATE, &"world", Vector3(0.0, 0.5, 4.0))
+	var push_body := pushable.body()
+	push_body.freeze = false
+	push_body.gravity_scale = 0.0
+	push_body.linear_velocity = Vector3.ZERO
+	await _step(game, 2)
+
+	player.hammer.cooldown = 0.0
+	player.hammer.swing(
+		game, origin, forward, game.props, game.prop_damage, game.carry, player.player_id, mask
+	)
+	await _step(game, 2)
+
+	_check(push_body.linear_velocity.z > 0.05, "and a swing shoves what it does not break",
+		"%.2f m/s" % push_body.linear_velocity.z)
+
+	# The one thing in the bowl that is not a toy: whatever the drivers break, this
+	# much cover remains.
+	var block := game.props.spawn(BfhContent.BLOCK, &"world", Vector3(0.0, 0.5, 8.0))
+	_check(not game.prop_damage.is_breakable(block.instance_id),
+		"a concrete block cannot be broken at all")
+
+	game.queue_free()
+
+
+func _test_barrel() -> void:
+	print("a barrel")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var near := game.add_player(&"near", "Near", BfhGame.TEAM_RUNNERS)
+	var far := game.add_player(&"far", "Far", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 4)
+
+	var barrel := game.props.spawn(BfhContent.BARREL, &"world", Vector3(0.0, 0.6, 0.0))
+	barrel.body().freeze = true
+
+	near.global_position = Vector3(1.5, 1.0, 0.0)
+	near.controller.state.position = near.global_position
+	far.global_position = Vector3(20.0, 1.0, 0.0)
+	far.controller.state.position = far.global_position
+
+	await _step(game, 2)
+
+	var blasts: Array = []
+	game.barrel_exploded.connect(func(at: Vector3, radius: float) -> void:
+		blasts.append({"at": at, "radius": radius}))
+
+	var near_health := near.health.health
+	var far_health := far.health.health
+
+	game.prop_damage.break_now(barrel.instance_id, &"near")
+	await _step(game, 2)
+
+	_check(blasts.size() == 1, "breaking one sets it off", "%d" % blasts.size())
+	_check(near.health.health < near_health, "somebody beside it is hurt",
+		"%.0f -> %.0f" % [near_health, near.health.health])
+	_check(is_equal_approx(far.health.health, far_health),
+		"and somebody across the bowl is not",
+		"%.0f" % far.health.health)
+
+	# The one thing in the game that throws a runner UPWARD, which is the only way
+	# onto a crate stack the crates themselves do not offer.
+	_check(near.controller.state.velocity.y > 0.5, "and is thrown up by it",
+		"%.2f m/s" % near.controller.state.velocity.y)
+
+	_check(not barrel.is_alive(), "the barrel is gone")
+
+	game.queue_free()
+
+
+func _test_bus() -> void:
+	print("a bus")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.driver_count = 1)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 10)
+
+	_check(game._bus_ids.size() >= 1, "a bus is spawned for the driver",
+		"%d" % game._bus_ids.size())
+	_check(driver.riding, "and the driver is in it")
+
+	# Turned OFF rather than ignored: a controller simulating a player the vehicle is
+	# also moving is two authorities over one transform, which reads as the bus
+	# shaking itself apart at speed.
+	_check(driver.riding, "whose own movement is switched off while they drive")
+
+	var bus := (
+		game.vehicles.get_vehicle(game._bus_ids[0]) if not game._bus_ids.is_empty() else null
+	)
+	_check(bus != null and bus.chassis != null,
+		"the bus has a chassis, so it is a vehicle rather than a sliding crate")
+
+	# A slow bump is not a kill, or the drivers park in the spawn and the round is a
+	# formality.
+	var health_before := runner.health.health
+	runner.global_position = bus.body().global_position + Vector3(0.0, 0.0, 4.0)
+	runner.controller.state.position = runner.global_position
+	runner.controller.state.velocity = Vector3.ZERO
+	bus.body().linear_velocity = Vector3(0.0, 0.0, 2.0)
+
+	game._check_bus_impacts(TICK)
+
+	_check(runner.health.alive, "a slow bump does not kill")
+	_check(runner.health.health < health_before, "but it hurts",
+		"%.0f -> %.0f" % [health_before, runner.health.health])
+
+	runner.health.health = game.config.runner_health
+	runner.health.alive = true
+	runner.controller.state.velocity = Vector3.ZERO
+	bus.body().linear_velocity = Vector3(0.0, 0.0, 18.0)
+
+	game._check_bus_impacts(TICK)
+
+	_check(not runner.health.alive, "and a bus at speed kills outright")
+
+	# Closing speed, not the bus's speed: a runner sprinting into a parked bus is not
+	# being run over, and taking the bus's own number makes that a kill.
+	var third := game.add_player(&"x", "X", BfhGame.TEAM_RUNNERS)
+	await get_tree().physics_frame
+	third.global_position = bus.body().global_position + Vector3(0.0, 0.0, 4.0)
+	third.controller.state.position = third.global_position
+	third.controller.state.velocity = Vector3(0.0, 0.0, 18.0)
+	bus.body().linear_velocity = Vector3(0.0, 0.0, 18.0)
+
+	var before_third := third.health.health
+	game._check_bus_impacts(TICK)
+
+	_check(is_equal_approx(third.health.health, before_third),
+		"a runner moving with the bus is not run over by it",
+		"%.0f" % third.health.health)
+
+	# A bus at speed goes through the crates, which is how the cover disappears over
+	# a round.
+	var crate := game.props.spawn(
+		BfhContent.CRATE, &"world", bus.body().global_position + Vector3(0.0, 0.0, 3.0)
+	)
+	game._break_props_under(bus, 18.0, &"d")
+	_check(not crate.is_alive(), "and through a crate")
+
+	var survivor := game.props.spawn(
+		BfhContent.CRATE, &"world", bus.body().global_position + Vector3(0.0, 0.0, 3.0)
+	)
+	game._break_props_under(bus, 3.0, &"d")
+	_check(survivor.is_alive(), "while a bus crawling into one leaves it standing")
+
+	game.queue_free()
+
+
+func _test_round_ends() -> void:
+	print("ending a round")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.driver_count = 1
+		c.rounds_before_swap = 1)
+
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+
+	var ended: Array = []
+	game.round_over.connect(func(number: int, winner: int) -> void:
+		ended.append({"number": number, "winner": winner}))
+
+	game.start()
+	await _step(game, 10)
+
+	_check(game.alive_runners() == 1, "a round starts with the runners alive")
+
+	runner.health.alive = false
+	runner.health.health = 0.0
+
+	var round_before := game.round_number
+
+	await _step(game, 30)
+
+	# Not "the runner is still dead": the next round starts, `_place_players` puts
+	# everybody back on their feet, and asserting they stayed down would be asserting
+	# that respawning is broken. What is being tested is that the round turned over.
+	_check(game.round_number > round_before, "and the round turns over when the last one is gone",
+		"%d -> %d" % [round_before, game.round_number])
+	_check(not ended.is_empty(), "the round is reported over", "%d" % ended.size())
+	_check(
+		ended.is_empty() or int((ended[0] as Dictionary)["winner"]) == BfhGame.TEAM_DRIVERS,
+		"with the drivers winning"
+	)
+
+	# Driving is the fun half and there are two seats for it. A server that never
+	# swapped would be one where the same two people drive all night.
+	_check(game.team_of(&"d") == BfhGame.TEAM_RUNNERS,
+		"and the sides swap afterwards", "driver is now %d" % game.team_of(&"d"))
+	_check(game.team_of(&"r") == BfhGame.TEAM_DRIVERS, "both ways")
+	_check((game.players[&"d"] as BfhPlayer).hammer != null,
+		"the new runner is handed a hammer")
+
+	game.queue_free()
+
+
+# --- The one that does not pass --------------------------------------------
+
+func _test_bus_propulsion() -> void:
+	print("driving the bus")
+
+	# [b]This section contains a known failure and it is here on purpose.[/b] A bus
+	# spawns, seats a driver, collides, runs people over and breaks crates — all of
+	# which is asserted above and all of which works. What it does not do is move under
+	# its own throttle: the chassis reports four wheels in contact and 26 kN of engine
+	# force on a 2 tonne body, and the body does not accelerate. Two checks rather than
+	# one, because they separate the two possible causes, and a suite that simply
+	# omitted the broken half would be a suite that says this game has a working
+	# vehicle.
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.driver_count = 1)
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 30)
+
+	var bus := (
+		game.vehicles.get_vehicle(game._bus_ids[0]) if not game._bus_ids.is_empty() else null
+	)
+	_check(bus != null, "a bus is on the floor")
+
+	if bus == null:
+		# Two checks are owed whatever happens, or the section counter hides the abort.
+		_check(false, "the body is free to move at all")
+		_check(false, "and the throttle moves it")
+		game.queue_free()
+		return
+
+	var body := bus.body()
+
+	# Is the body pinned, or is it the drive? An impulse bypasses the wheels entirely.
+	body.linear_velocity = Vector3.ZERO
+	body.apply_central_impulse(Vector3(0.0, 0.0, 12000.0))
+	await _step(game, 4)
+
+	_check(body.linear_velocity.length() > 0.5, "the body is free to move at all",
+		"%.2f m/s" % body.linear_velocity.length())
+
+	# And now the same motion asked for through the throttle.
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	await _step(game, 4)
+
+	var command := DotVehicleCommand.new()
+	command.throttle = 1.0
+	bus.command = command
+
+	for _i in range(90):
+		if bus.chassis != null:
+			(bus.chassis as DotVehicleChassis).drive(command, TICK)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+	_check(bus.speed() > 1.0, "and the throttle moves it", "%.2f m/s" % bus.speed())
+
+	game.queue_free()
