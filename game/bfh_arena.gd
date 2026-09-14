@@ -35,6 +35,64 @@ const RAMP_ANGLE := 18.0
 const RAMP_THICKNESS := 0.8
 const RAMP_WIDTH := 5.0
 
+## THE STACKS: the permanent half of the bowl.
+##
+## [b]Everything else in this arena is either scenery a bus cannot reach or cover a bus
+## can remove.[/b] The crates are the game and they are also consumable — by the last
+## thirty seconds the drivers have flattened what they could, and the concrete blocks
+## are the floor under that, which is a handful of things to stand behind rather than
+## anywhere to go. So the bowl has one idea in it and the idea runs out.
+##
+## A pillar is the other thing a person on foot has against a vehicle, and this map did
+## not have one: [b]a turning circle[/b]. A bus is nine metres long and a runner turns on
+## the spot, so a cylinder a runner can orbit is cover that does not have to survive
+## anything — the driver has to come round it, and coming round is the gap the round is
+## played in. It is also the only obstacle shape a raycast vehicle handles honestly: a
+## crate passes under a wheel and lifts the corner (see [BfhGame]'s `_unstick`), where a
+## pillar is taller than the hull and simply stops it.
+##
+## [b]Laid out as a lane between two rows, not scattered.[/b] Scattered pillars are more
+## cover and less map: every gap is the same gap and a driver has no reason to prefer
+## one line through them to another. Two staggered rows leave a lane a bus can take at
+## full speed, which makes the stacks a place a runner is safe only as long as they stay
+## out of the middle of it — and the lane does not run clean through, because a pillar
+## sits across the far end of it. A driver who commits to the fast line has to get out of
+## it at the other end.
+const PILLAR_RADIUS := 1.2
+
+## Taller than the bus, so it meets the hull rather than a wheel ray.
+const PILLAR_HEIGHT := 5.4
+
+## Stack-local metres: [code]x[/code] runs along the lane, [code]z[/code] across it.
+## The two rows sit at +/- 4.6, so the lane is 7.6 m of clear floor between the pillar
+## faces -- comfortable for a three-metre bus at speed and not comfortable at all for a
+## driver who arrives at it crooked.
+const PILLAR_LAYOUT: Array[Vector2] = [
+	Vector2(-13.0, -4.6),
+	Vector2(-4.5, -4.6),
+	Vector2(4.0, -4.6),
+	Vector2(12.5, -4.6),
+	Vector2(-8.5, 4.6),
+	Vector2(0.0, 4.6),
+	Vector2(8.5, 4.6),
+	# The dog-leg. Offset rather than centred, so the lane closes to one side instead
+	# of plugging: there is a way out at speed and it is not the one you are pointing at.
+	Vector2(17.0, 1.6),
+]
+
+## Which way the lane points. Deliberately not aligned with anything: the ramp arrives
+## on the bowl's north-south axis, and a lane square to it would be a corridor a driver
+## can line up on from the moment they land.
+const STACK_YAW := 25.0
+
+## Where the cluster sits, as a fraction of the bowl radius, so a smaller bowl gets the
+## stacks in proportion. The pillar spacing itself does NOT scale -- it is sized to a
+## bus, and a bus is the same size in every bowl.
+const STACK_CENTRE := Vector2(-0.36, 0.14)
+
+## Below this the lane would not fit inside the floor and the stacks are left out.
+const STACK_MIN_RADIUS := 34.0
+
 var radius: float = 46.0
 
 ## Set before [method build]. The layers every piece of the world goes on.
@@ -42,6 +100,12 @@ var world_layer: int = 1
 var world_mask: int = 1
 
 var _floor_body: StaticBody3D = null
+
+## Where every pillar stands, on the floor plane. [b]One description, and everything
+## else is derived from it[/b] -- the meshes, the colliders, the scatter that must not
+## drop a crate inside one, and the steering that must not drive a bus into one. This
+## family has shipped the same list twice and watched the copies drift before.
+var _pillars: PackedVector3Array = PackedVector3Array()
 
 
 func build(p_radius: float) -> void:
@@ -51,9 +115,16 @@ func build(p_radius: float) -> void:
 	_build_floor()
 	_build_wall()
 	_build_ledge()
+	_build_stacks()
 
 	DotLog.info(
-		CHANNEL, "arena built", {"radius": "%.0f m" % radius, "segments": WALL_SEGMENTS}
+		CHANNEL,
+		"arena built",
+		{
+			"radius": "%.0f m" % radius,
+			"segments": WALL_SEGMENTS,
+			"pillars": _pillars.size(),
+		}
 	)
 
 
@@ -276,6 +347,167 @@ func _build_ledge() -> void:
 	ramp.rotation = Vector3(deg_to_rad(-RAMP_ANGLE), 0.0, 0.0)
 
 
+## The stacks, and the one list they all come out of.
+func _build_stacks() -> void:
+	_pillars = PackedVector3Array()
+
+	if radius < STACK_MIN_RADIUS:
+		# Said rather than skipped silently: a bowl configured small enough to lose a
+		# whole feature of the map should say which feature and why, or the next person
+		# to set `arena_radius` low is debugging a map that looks half-built.
+		DotLog.info(
+			CHANNEL,
+			"stacks left out, bowl too small",
+			{"radius": "%.0f m" % radius, "needs": "%.0f m" % STACK_MIN_RADIUS},
+		)
+		return
+
+	var stacks := Node3D.new()
+	stacks.name = "Stacks"
+	add_child(stacks)
+
+	var centre := Vector2(STACK_CENTRE.x * radius, STACK_CENTRE.y * radius)
+	var yaw := deg_to_rad(STACK_YAW)
+	var cosine := cos(yaw)
+	var sine := sin(yaw)
+
+	for i in range(PILLAR_LAYOUT.size()):
+		var local := PILLAR_LAYOUT[i]
+		var at := Vector3(
+			centre.x + local.x * cosine - local.y * sine,
+			0.0,
+			centre.y + local.x * sine + local.y * cosine,
+		)
+
+		_pillars.append(at)
+		_build_pillar(stacks, "Pillar%d" % i, at)
+
+
+func _build_pillar(parent: Node3D, node_name: String, at: Vector3) -> void:
+	var body := StaticBody3D.new()
+	body.name = node_name
+	body.position = at + Vector3(0.0, PILLAR_HEIGHT * 0.5, 0.0)
+	body.collision_layer = world_layer
+	body.collision_mask = world_mask
+
+	var shape := CylinderShape3D.new()
+	shape.radius = PILLAR_RADIUS
+	shape.height = PILLAR_HEIGHT
+
+	var collider := CollisionShape3D.new()
+	collider.shape = shape
+	body.add_child(collider)
+
+	var column := CylinderMesh.new()
+	column.top_radius = PILLAR_RADIUS
+	column.bottom_radius = PILLAR_RADIUS
+	column.height = PILLAR_HEIGHT
+	column.radial_segments = 16
+
+	var mesh := MeshInstance3D.new()
+	mesh.mesh = column
+	mesh.material_override = BfhTextures.surface(Color(0.66, 0.64, 0.60))
+	body.add_child(mesh)
+
+	# [b]A capital, and it is mesh only.[/b] A bare cylinder against a bare disc gives a
+	# player nothing to judge its height by until they are beside it, and height is the
+	# whole reason to run at one. A wider band at the top reads at distance. It carries
+	# no collider deliberately: the only body that could reach it is a bus, and a lip
+	# that catches a hull at 5 m is a way to stop a bus that nobody drew on the floor.
+	var cap := CylinderMesh.new()
+	cap.top_radius = PILLAR_RADIUS * 1.35
+	cap.bottom_radius = PILLAR_RADIUS * 1.35
+	cap.height = 0.45
+	cap.radial_segments = 16
+
+	var cap_mesh := MeshInstance3D.new()
+	cap_mesh.mesh = cap
+	cap_mesh.position = Vector3(0.0, PILLAR_HEIGHT * 0.5 - 0.22, 0.0)
+	cap_mesh.material_override = BfhTextures.surface(Color(0.47, 0.45, 0.42))
+	body.add_child(cap_mesh)
+
+	parent.add_child(body)
+
+
+## Where the pillars stand, on the floor plane. Empty on a bowl too small for them.
+func pillars() -> PackedVector3Array:
+	return _pillars
+
+
+## How far from a pillar's axis a bus has to pass to miss it.
+##
+## Its radius, plus half a bus, plus enough that clearing one does not mean grazing it.
+const PILLAR_CLEARANCE := 3.6
+
+
+## [param target], moved aside if driving straight at it would go through a pillar.
+##
+## [b]The stacks would not be playable without this and the failure is not the obvious
+## one.[/b] The bot driver aims at a point past its quarry and floors it; against a
+## pillar that is a bus wedged nose-on, going nowhere, asking for throttle -- which is
+## exactly the state [BfhGame]'s stuck rule reads as "caught on a crate". There is no
+## crate, so after five seconds the bus teleports back to its start line. A runner who
+## stood behind a pillar would make the bus chasing them vanish, which is a free escape
+## that looks precisely like a bug.
+##
+## So the driver goes round. The pillar in the way nearest the bus is the only one that
+## matters -- the next tick asks again from wherever it got to -- and it is passed on
+## the side the bus is already leaning towards, because the alternative is a bus that
+## changes its mind about which way round every time the quarry moves.
+##
+## This is a nudge and not a path. It cannot solve the stacks as a maze and is not meant
+## to: a bus that comes round a pillar and finds another one is a bus that has to come
+## round again, which is the whole reason there is a lane through the middle for a driver
+## who would rather not.
+func steer_around(from: Vector3, target: Vector3) -> Vector3:
+	if _pillars.is_empty():
+		return target
+
+	var line := target - from
+	line.y = 0.0
+
+	var distance := line.length()
+	if distance < 0.5:
+		return target
+
+	var forward := line / distance
+	# Right-hand normal in Godot's frame.
+	var right := Vector3(-forward.z, 0.0, forward.x)
+
+	var blocking := -1
+	var nearest := INF
+	var offset := 0.0
+
+	for i in range(_pillars.size()):
+		var to_pillar := _pillars[i] - from
+		to_pillar.y = 0.0
+
+		var along := to_pillar.dot(forward)
+		# Behind the bus, or past where it is going: not in the way.
+		if along <= 0.0 or along > distance:
+			continue
+
+		var side := to_pillar.dot(right)
+		if absf(side) > PILLAR_RADIUS + PILLAR_CLEARANCE:
+			continue
+
+		if along < nearest:
+			nearest = along
+			blocking = i
+			offset = side
+
+	if blocking < 0:
+		return target
+
+	# Pass on the far side from the pillar's own offset: a pillar sitting left of the
+	# line is one to go right of. Dead ahead is the one case with no answer in the
+	# geometry, so it picks a side rather than splitting the difference and hitting it.
+	var away := -signf(offset) if absf(offset) > 0.05 else 1.0
+	var beside := _pillars[blocking] + right * away * (PILLAR_RADIUS + PILLAR_CLEARANCE)
+
+	return Vector3(beside.x, target.y, beside.z)
+
+
 func _box(
 	parent: Node3D,
 	node_name: String,
@@ -321,10 +553,31 @@ func scatter_point(stream: DotRandomStream, margin: float, height: float) -> Vec
 	for _attempt in range(32):
 		var x := stream.next_range_f(-usable, usable)
 		var z := stream.next_range_f(-usable, usable)
-		if Vector2(x, z).length() <= usable:
-			return Vector3(x, height, z)
+		if Vector2(x, z).length() > usable:
+			continue
+		if _inside_a_pillar(x, z):
+			continue
+		return Vector3(x, height, z)
 
 	return Vector3(0.0, height, 0.0)
+
+
+## Metres of floor around a pillar that nothing is dropped into.
+##
+## The pillar's own radius plus the largest thing scattered, and then some. What this is
+## preventing is not a near miss, it is an OVERLAP: a crate whose spawn point is inside
+## a pillar is two solid bodies sharing a volume, and the physics resolves that by
+## flinging the lighter one across the bowl at the first step. A runner spawned there
+## gets the same treatment with a camera attached. It is also why the margin has to
+## cover a person and not only a crate.
+const PILLAR_KEEP_OUT := PILLAR_RADIUS + 2.2
+
+
+func _inside_a_pillar(x: float, z: float) -> bool:
+	for pillar in _pillars:
+		if Vector2(x - pillar.x, z - pillar.z).length() < PILLAR_KEEP_OUT:
+			return true
+	return false
 
 
 func describe() -> Dictionary:
@@ -332,4 +585,5 @@ func describe() -> Dictionary:
 		"radius": "%.0f m" % radius,
 		"wall": "%.0f m" % WALL_HEIGHT,
 		"ledge": str(ledge_centre()),
+		"pillars": _pillars.size(),
 	}

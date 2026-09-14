@@ -12,6 +12,7 @@ func _run() -> void:
 	var seconds := 3.0
 	var out := "res://screenshots/bfh.png"
 	var look_at_bus := false
+	var look_at_stacks := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
 			seconds = float(arg.substr(10))
@@ -19,6 +20,8 @@ func _run() -> void:
 			out = arg.substr(6)
 		elif arg == "--bus":
 			look_at_bus = true
+		elif arg == "--stacks":
+			look_at_stacks = true
 
 	var client: Node = load("res://game/bfh.tscn").instantiate()
 	add_child(client)
@@ -27,6 +30,29 @@ func _run() -> void:
 	while elapsed < seconds:
 		elapsed += get_process_delta_time()
 		await get_tree().process_frame
+
+	# Or stand over the stacks and look down the lane. A first-person camera dropped
+	# somewhere random on a 46 m disc shows the stacks only by luck, and "is this a map
+	# or a grey box" is a question about the whole cluster rather than about whichever
+	# pillar the spawn happened to face.
+	var world_for_stacks: BfhGame = client.get("game")
+	if look_at_stacks and world_for_stacks != null and world_for_stacks.arena != null:
+		var pillars := world_for_stacks.arena.pillars()
+		if not pillars.is_empty():
+			var middle := Vector3.ZERO
+			for pillar in pillars:
+				middle += pillar
+			middle /= float(pillars.size())
+
+			var cam := Camera3D.new()
+			add_child(cam)
+			# Low and off the end of the lane, which is a driver's view of it rather
+			# than a plan: what is being judged is whether a person can read a route
+			# through it at eye height, not whether the layout is tidy from above.
+			cam.global_position = middle + Vector3(-26.0, 11.0, -22.0)
+			cam.look_at(middle + Vector3(0.0, 2.0, 0.0), Vector3.UP)
+			cam.current = true
+			await get_tree().process_frame
 
 	# Optionally stand off and look at the bus instead of out of the player's eyes.
 	# The one thing a first-person camera cannot show is the vehicle chasing it.

@@ -663,7 +663,11 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		else quarry.global_position
 	)
 
-	player.autopilot.set_target(beyond)
+	# And round the stacks, because the driver has no idea they are there. A bus aimed
+	# through a pillar wedges nose-on and the stuck rule then teleports it back to its
+	# start line, which from the runner's side reads as hiding behind a pillar deleting
+	# the bus. See [method BfhArena.steer_around].
+	player.autopilot.set_target(arena.steer_around(bus.position(), beyond))
 	return player.autopilot.drive(bus, delta)
 
 

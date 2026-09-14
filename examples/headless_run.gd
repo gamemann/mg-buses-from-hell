@@ -18,7 +18,7 @@ extends Node
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 63
+const CHECKS := 74
 
 const TICK := 1.0 / 60.0
 
@@ -39,6 +39,7 @@ func _run() -> void:
 	_test_config()
 	await _test_world_builds()
 	await _test_bowl_layout()
+	await _test_the_stacks()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -207,6 +208,196 @@ func _test_bowl_layout() -> void:
 			inside = false
 			break
 	_check(inside, "every one of them inside the wall")
+
+	game.queue_free()
+
+
+## The stacks, which are the only permanent geometry on the floor.
+##
+## [b]At the shipped bowl radius, and every other section here is not.[/b] `_world`
+## builds a 30 m bowl to keep the other sections tight, and the stacks are left out
+## below 34 m on purpose -- so without this line every check in this file would run a
+## map the game never ships and the whole feature would be invisible to all of them.
+func _test_the_stacks() -> void:
+	print("the stacks")
+
+	var game := _world(func(config: BfhConfig) -> void:
+		config.arena_radius = BfhConfig.new().arena_radius
+	)
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 8)
+
+	var arena := game.arena
+	var pillars := arena.pillars()
+
+	_check(
+		pillars.size() == BfhArena.PILLAR_LAYOUT.size(),
+		"the stacks stand in the bowl",
+		"%d pillars" % pillars.size()
+	)
+
+	# Inside the floor a runner is allowed on, or a pillar is cover nobody can use --
+	# and one overlapping the wall is a collider pair grinding against each other for
+	# the lifetime of the server.
+	var reach := arena.runner_area_radius()
+	var outside := 0
+	for pillar in pillars:
+		if Vector2(pillar.x, pillar.z).length() + BfhArena.PILLAR_RADIUS > reach:
+			outside += 1
+	_check(outside == 0, "every one of them is on floor a runner can reach",
+		"%d outside %.0f m" % [outside, reach])
+
+	# The ramp is the only route between the ledge and the floor. A pillar at the
+	# bottom of it is a map with no way down, which no assertion elsewhere would notice
+	# because the bus would simply be found stationary and blamed on the suspension.
+	var foot := arena.ramp_foot()
+	var nearest_to_foot := INF
+	for pillar in pillars:
+		nearest_to_foot = minf(
+			nearest_to_foot, Vector2(pillar.x - foot.x, pillar.z - foot.z).length()
+		)
+	_check(nearest_to_foot > 8.0, "and none of them is on the ramp's landing",
+		"nearest %.1f m" % nearest_to_foot)
+
+	# The lane, asserted off the layout rather than off the built world, because the
+	# layout is the thing somebody edits.
+	var lane_half := INF
+	for local in BfhArena.PILLAR_LAYOUT:
+		if local.x < 14.0:
+			lane_half = minf(lane_half, absf(local.y))
+	_check(
+		lane_half - BfhArena.PILLAR_RADIUS >= 3.0,
+		"the lane between the rows is wide enough for a bus",
+		"%.1f m of clear floor either side of the centre" % (lane_half - BfhArena.PILLAR_RADIUS)
+	)
+
+	# And the half of the design that makes the lane a decision rather than a gift.
+	var plugged := false
+	for local in BfhArena.PILLAR_LAYOUT:
+		if local.x >= 14.0 and absf(local.y) < lane_half:
+			plugged = true
+	_check(plugged, "and it does not run clean through")
+
+	# Nothing shares a volume with a pillar. Two solid bodies in one place is resolved
+	# by the physics flinging the lighter one across the bowl on the first step, and
+	# with a runner in it that is a camera going with it.
+	var intruders := 0
+	for prop in game.props.all_props():
+		if prop.body() == null:
+			continue
+		var at := prop.body().global_position
+		for pillar in pillars:
+			if Vector2(at.x - pillar.x, at.z - pillar.z).length() < BfhArena.PILLAR_RADIUS:
+				intruders += 1
+	for player in game.runners():
+		for pillar in pillars:
+			var offset := player.global_position - pillar
+			if Vector2(offset.x, offset.z).length() < BfhArena.PILLAR_RADIUS:
+				intruders += 1
+	_check(intruders == 0, "and the round is laid out around them, not into them",
+		"%d overlapping" % intruders)
+
+	# --- The steering ------------------------------------------------------
+	var pillar := pillars[5]
+	var approach := pillar + Vector3(0.0, 0.0, -24.0)
+	var beyond := pillar + Vector3(0.0, 0.0, 12.0)
+
+	var steered := arena.steer_around(approach, beyond)
+	var miss := Vector2(steered.x - pillar.x, steered.z - pillar.z).length()
+	_check(
+		miss >= BfhArena.PILLAR_RADIUS + 1.0,
+		"a line through a pillar is steered off it",
+		"aim point %.1f m from the axis" % miss
+	)
+
+	# The other half, and the one that would be missed: a driver whose way is clear
+	# must be left alone, or every chase in the bowl is a bus weaving at nothing.
+	var clear_from := Vector3(0.0, 1.0, -reach + 2.0)
+	var clear_to := Vector3(0.0, 1.0, -reach + 20.0)
+	_check(
+		arena.steer_around(clear_from, clear_to) == clear_to,
+		"and a clear line is left exactly as it was"
+	)
+
+	game.queue_free()
+	await _test_driving_the_stacks()
+
+
+## The check the rest of this section cannot make: a bot bus actually gets past one.
+##
+## [b]The failure this guards against is not a bus that crashes, it is a bus that
+## vanishes.[/b] `_unstick` reads "throttle held, not moving" as caught on a crate, and
+## after five seconds it puts the bus back on its start line. Nose-on against a pillar
+## is that state exactly, with no crate to blame -- so before [method
+## BfhArena.steer_around] existed, standing behind a pillar deleted the bus chasing you.
+func _test_driving_the_stacks() -> void:
+	var game := _world(func(config: BfhConfig) -> void:
+		config.arena_radius = BfhConfig.new().arena_radius
+		# Long enough that the round cannot end underneath the measurement.
+		config.round_seconds = 120.0
+	)
+
+	# [b]`is_bot`, and nothing else in this file sets it.[/b] `add_player` leaves it
+	# false, so every other section's driver is a person who never presses anything --
+	# which is why the bus in them only ever moves when a check drives it by hand, and
+	# why `_autopilot` had no coverage at all until this section. A dedicated server
+	# with bot drivers is the deployment this game is for, and its steering was the one
+	# path in the drive loop nothing had ever executed.
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	driver.is_bot = true
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 8)
+
+	var arena := game.arena
+	var pillar := arena.pillars()[5]
+
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+
+	# Lined up on the pillar with the quarry directly behind it, which is the geometry
+	# a runner using one for cover creates and the one the bot has no answer to.
+	var start := pillar + Vector3(0.0, 1.4, -26.0)
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(Vector3(0.0, 0.0, 1.0)), start)
+
+	var quarry := game.runners()[0]
+	quarry.global_position = pillar + Vector3(0.0, 1.2, 14.0)
+
+	var home := arena.bus_start(0, 1)
+	var reset := false
+	var past := false
+	var top_speed := 0.0
+
+	for _i in range(300):
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+		if not bus.is_alive():
+			break
+
+		var at := bus.position()
+		top_speed = maxf(top_speed, bus.speed())
+
+		# Held in place, because the quarry is being pushed around by the round and the
+		# bus's own start line is a long way from here: a bus back on it has been reset.
+		quarry.global_position = pillar + Vector3(0.0, 1.2, 14.0)
+
+		if Vector2(at.x - home.x, at.z - home.z).length() < 4.0:
+			reset = true
+			break
+
+		if at.z > pillar.z + 1.0:
+			past = true
+			break
+
+	_check(not reset, "a bus chasing somebody behind a pillar is not sent home")
+	_check(top_speed > 4.0, "it gets moving at all", "%.1f m/s" % top_speed)
+	_check(past, "and it comes round the pillar rather than wedging on it",
+		"%.1f m/s at the end" % bus.speed() if bus.is_alive() else "the bus was lost")
 
 	game.queue_free()
 
