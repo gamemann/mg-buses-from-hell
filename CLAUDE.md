@@ -208,6 +208,16 @@ Every one of these was found by publishing the game as a pack and connecting a r
 - **A stale class cache three repositories away.** Adding `DotGameServices` to dot-game left a dedicated server reporting *"Could not resolve script … bfh_services.gd"* — the deploy project's own cache had never heard of the base class. The addon was fine and the game was fine. Re-import every project that links a shared addon after adding a `class_name` to it; this family's own CLAUDE.md says so and it still cost a boot.
 - **A bus on its roof stayed there.** Seen in the first screenshot of a delivered client: a bus upside down at the foot of the ramp with the round still running, which is a quarter of this game's threat gone for a reason the runners can neither see nor cause. `_upright` rolls it back over where it lies after two seconds — not back to its start line, which would take it out of the chase it was in the middle of.
 
+## The entity ids, and the leak that came with them
+
+`BfhGame` hands out entity ids from a `DotEntityTable` as `entities`. It used to be a `_next_entity_id` counter, which was correct arithmetic and did two things this does not.
+
+**Nothing ever called `DotCombatManager.forget()`.** Every player who disconnected left a `DotHealth` registered under their entity id for the life of the process — and the node was freed with the player, so the manager held a reference to a deleted object. dot-combat's own documentation says exactly what that costs. What made it invisible is that **a stale entity is never asked about**: nothing traces against somebody who left, so the leak has no symptom at all until the process runs out of memory. `remove_player` forgets and closes now, in that order, before the node goes.
+
+**And finding out who killed you walked every player on the server.** `_on_player_died` compared `damage.attacker` against every `BfhPlayer.entity_id` until it matched. The table keeps that reverse index so nobody has to, and on this game — where the dying is the whole point — it ran a lot.
+
+An attacker of `0` is dot-combat's "the world": a bus nobody was driving, a fall. The table returns an empty key for it, which is the same answer the scan gave and means the same thing.
+
 ## Validating
 
 ```bash

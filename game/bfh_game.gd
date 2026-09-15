@@ -128,7 +128,17 @@ var remote_cover: int = -1
 var remote_playable: bool = false
 
 var _tick: int = 0
-var _next_entity_id: int = 1
+
+## Every world object this game has an id for. See [DotEntityTable].
+##
+## Replaces a `_next_entity_id` counter that was correct and did two things this is
+## not: it had no reverse index, so finding out who an attacker was walked every
+## player on the server ([method _on_player_died]); and nothing ever closed anything,
+## so `DotCombatManager` kept a `DotHealth` for every player who had ever joined --
+## nodes that were freed with their player, leaving the manager holding references to
+## deleted objects for the life of the process. `forget()` is called now, from the one
+## place that knows a player has gone.
+var entities := DotEntityTable.new()
 var _layout_seed: int = 0
 var _bus_ids: Array[int] = []
 
@@ -362,8 +372,24 @@ func add_player(
 	player.carry = carry
 	add_child(player)
 
-	player.entity_id = _next_entity_id
-	_next_entity_id += 1
+	var opened := entities.open(
+		DotEntity.KIND_PLAYER,
+		player,
+		&"",
+		player_id,
+		float(_tick) / float(maxi(tick_rate, 1))
+	)
+
+	if not opened.ok:
+		# A refusal here means this player id is already an entity, which cannot
+		# happen -- `add_player` returns early on a duplicate. Logged rather than
+		# ignored because arming them anyway would register a second health record
+		# against one body, and the symptom of that is a player taking half damage.
+		DotLog.error(CHANNEL, "could not open an entity for a player", {
+			"id": String(player_id), "why": opened.error.message,
+		})
+
+	player.entity_id = (opened.value as DotEntityHandle).id if opened.ok else 0
 
 	var health := DotHealth.new()
 	health.name = "Health"
@@ -414,6 +440,15 @@ func remove_player(player_id: StringName) -> void:
 
 	if ride != null and ride.is_riding(player_id):
 		ride.exit(vehicles.get_vehicle(ride.vehicle_id_of(player_id)), player_id, true)
+
+	# Before the node goes. dot-combat keyed a `DotHealth` on this entity and NOTHING
+	# in this game had ever told it to let go -- so every player who had ever joined
+	# left a health record behind, pointing at a node freed with them. The manager's
+	# own documentation says what that costs; what made it invisible is that a stale
+	# entity is never asked about, because nothing traces against a player who left.
+	if combat != null and is_instance_valid(combat) and player.entity_id != 0:
+		combat.forget(player.entity_id)
+		entities.close(player.entity_id, DotEntityTable.REASON_OWNER_LEFT)
 
 	players.erase(player_id)
 	sides.erase(player_id)
@@ -1160,11 +1195,14 @@ func _on_prop_exploded(
 
 
 func _on_player_died(player: BfhPlayer, damage: DotDamage) -> void:
-	var by := &""
-	for id: StringName in players:
-		if (players[id] as BfhPlayer).entity_id == damage.attacker:
-			by = id
-			break
+	# One dictionary read. This walked every player on the server comparing ints,
+	# which is the reverse index [DotEntityTable] keeps so nobody has to -- and it
+	# ran on every death, which on this game is a lot of them.
+	#
+	# An attacker of 0 is dot-combat's "the world" -- a bus that nobody was driving,
+	# a fall -- and the table returns an empty key for it, which is the same answer
+	# the scan gave and means the same thing.
+	var by := entities.key_for_id(damage.attacker)
 
 	player_died.emit(player.player_id, by)
 	DotLog.debug(CHANNEL, "player died", {"id": String(player.player_id), "by": String(by)})

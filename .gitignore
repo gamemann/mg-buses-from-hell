@@ -10,6 +10,7 @@
 # from these lines rather than keeping a second copy, because the repository that
 # gains a dependency is the repository that has to ignore its link.
 /addons/dot_core
+/addons/dot_entity
 /addons/dot_physics
 /addons/dot_player
 /addons/dot_player_controller
