@@ -296,6 +296,26 @@ func _build_combat() -> void:
 	combat = DotCombatManager.new()
 	combat.name = "Combat"
 	combat.is_authority = authoritative
+
+	# [b]Said out loud, because the inherited default says the opposite of what this game
+	# does.[/b] [DotDamageRules] defaults `friendly_fire` to false, and a reader who found
+	# that here would conclude that a runner cannot hurt another runner. A runner very much
+	# can: [method _on_prop_exploded] filters a barrel blast on dead-or-riding and on nothing
+	# else, and a blast that asked whose side you were on would not be a blast.
+	#
+	# [b]And `team_of` stays unset deliberately.[/b] dot-combat decides friendly fire through
+	# a `team_of` [Callable] and treats a missing one as "nobody is anybody's team mate" —
+	# which is a real trap, and cost another game in this family a round where friendly fire
+	# was on in a game whose rules said it was off. It is not a trap HERE, because the one
+	# damage path that could hit your own side already does the side test itself before it
+	# calls in: a bus skips every driver by key, so a bus cannot run over a driver even after
+	# its own driver has been evacuated onto foot. Wiring `team_of` now would not fix
+	# anything; it would silently start refusing the barrel splash that is meant to be
+	# indiscriminate.
+	var rules := DotDamageRules.new()
+	rules.friendly_fire = true
+	combat.rules = rules
+
 	add_child(combat)
 
 

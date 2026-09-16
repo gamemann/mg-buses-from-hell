@@ -39,7 +39,36 @@ static func root() -> String:
 ## Format specifiers survive: only the prefix is replaced, so
 ## `rebase("res://maps/%s.json") % name` works exactly as it read before.
 static func rebase(path: String) -> String:
+	return rebase_onto(path, root())
+
+
+## [method rebase], against a root given rather than discovered.
+##
+## [b]This split exists so the mounted case can be TESTED from a build.[/b] Built in,
+## [method root] is [code]res://[/code] and every [code]res://[/code] path is already under
+## it — so every property of [method rebase] that only matters inside a pack is a tautology
+## here, and a suite asserting one passes whatever the body says. That is measured rather
+## than argued: in another game the idempotence below was asserted, the guard was removed,
+## and the suite reported 101 passed and 0 failed with the bug back in place.
+static func rebase_onto(path: String, here: String) -> String:
 	if not path.begins_with("res://"):
 		return path
 
-	return root().path_join(path.substr(6))
+	# [b]Idempotent, and the seventh form of this family's one delivery bug.[/b] The
+	# publisher REWRITES every [code]res://[/code] string inside a [code].tscn[/code], a
+	# [code].tres[/code] and a [code].import[/code] onto the mount prefix before it signs the
+	# pack — it has to, because a scene's [code]ext_resource[/code] paths would otherwise
+	# point at the host — and it does NOT rewrite the ones inside a [code].gd[/code], because
+	# a script is not a resource file it can parse. So a delivered game holds both kinds: a
+	# [code]const[/code] in a script that still says [code]res://props/x.tscn[/code] and
+	# needs rebasing, and an exported property on a node that arrives already absolute and
+	# must not be. Rebasing the second produces
+	# [code]res://dot_cloud/<id>/<version>/dot_cloud/<id>/<version>/…[/code], which fails to
+	# load with a path long enough that the doubling reads as noise.
+	#
+	# Built in, [param here] is [code]res://[/code] and every [code]res://[/code] path is
+	# already under it, so this returns its argument unchanged — which is what it did before.
+	if path.begins_with(here):
+		return path
+
+	return here.path_join(path.substr(6))
