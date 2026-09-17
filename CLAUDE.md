@@ -34,7 +34,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (79), headless_net (84), dedicated (37)
+examples/           headless_run (82), headless_net (101), dedicated (46)
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -120,13 +120,25 @@ Two more, both about a raycast vehicle rather than this one:
 
 Everything on the floor was either consumable or scenery. The crates are the game and the drivers flatten them; the concrete blocks are the floor under that, and a handful of things to stand behind is not anywhere to *go*. By the last thirty seconds the map had told a player everything it had.
 
-**The stacks** are eight concrete pillars in the western half: 1.2 m across, 5.4 m tall, permanent. They are the other thing a person on foot has against a vehicle and this map did not have one — **a turning circle**. A bus is nine metres long and a runner turns on the spot, so a cylinder a runner can orbit is cover that does not have to survive anything. The driver has to come round it, and coming round is the gap the round is played in.
+**The stacks** are eleven concrete pillars in the western half: 1.2 m across, 5.4 m tall, permanent. They are the other thing a person on foot has against a vehicle and this map did not have one — **a turning circle**. A bus is nine metres long and a runner turns on the spot, so a cylinder a runner can orbit is cover that does not have to survive anything. The driver has to come round it, and coming round is the gap the round is played in.
 
 A pillar is also the only obstacle shape a raycast vehicle handles honestly. A crate does not hit a wheel, it passes *under* one and lifts the corner — which is the whole reason `_unstick` exists. A pillar is taller than the hull, so it simply stops the bus, in the one way this game's physics is willing to be stopped.
 
-**Two staggered rows with a 7.6 m lane between them, not a scatter.** Scattered pillars are more cover and less map: every gap is the same gap, so a driver has no reason to prefer one line through them to another. A lane a bus can take at full speed makes the middle of the stacks the most dangerous floor in the bowl and the edges of it the safest, which is a decision a runner makes every few seconds. And the lane **does not run clean through** — a ninth position across the far end, offset rather than centred, means a driver who commits to the fast line has to get out of it at the other end.
+**Two staggered rows with a 6.8 m lane between them, not a scatter.** Scattered pillars are more cover and less map: every gap is the same gap, so a driver has no reason to prefer one line through them to another. A lane a bus can take at full speed makes the middle of the stacks the most dangerous floor in the bowl and the edges of it the safest, which is a decision a runner makes every few seconds. And the lane **does not run clean through** — a ninth position across the far end, offset rather than centred, means a driver who commits to the fast line has to get out of it at the other end.
 
 The cluster is placed as a fraction of `arena_radius` so a smaller bowl gets it in proportion, but **the spacing does not scale**: it is sized to a bus, and a bus is the same size in every bowl. Below 34 m the lane does not fit and the stacks are left out, with a log line saying so rather than silently.
+
+### The hook, and the rule that no gap here may be one a bus cannot take
+
+The lane ended in a decision and then in nothing. A driver who took the fast line had to get out of it at the dog-leg, and what was on the other side of the dog-leg was open floor — so the whole feature was one move long and the move was always the same one. **The hook** is three more pillars past it, arranged as an arc rather than a row: a runner in it has three things to orbit within six metres of each other, which is the only place on this map where losing a bus does not mean crossing open ground to the next pillar, and a driver's problem is that whichever gap they come in by is not the one their quarry will leave by.
+
+**Every gap in the stacks is wide enough for a bus, and that is a rule rather than a happy accident.** Two pillars closer together than `2 * PILLAR_CLEARANCE` leave a gap `steer_around` will not take a bus through, and the floor behind such a pair is somewhere a runner is safe **by standing still** — which in a game of two drivers against everybody on foot is a win condition nobody designed. `BfhArena.narrowest_pillar_gap()` is the measurement and `headless_run` asks it of the whole layout. The check that was already there asks it of `local.x < 14.0`: it is about the two rows, it was written when the two rows were all there was, and it goes on passing about them however many pillars are added past the dog-leg.
+
+#### What the hook found in `steer_around`
+
+**The waypoint beside one pillar was chosen without asking what else was standing there.** `steer_around` picked the side the bus was already leaning towards and returned the point one bus-width off the blocking pillar's shoulder — which is correct exactly as long as no pillar is within a bus-width of another pillar's shoulder. Two staggered rows are never that. An arc is, and the bus then drove at a point it could not occupy, arrived, stopped, and held the throttle: the state `_unstick` reads as caught on a crate, so it teleported the bus to its start line. **A steering bug whose symptom is a bus vanishing**, which is the same symptom the pillars produced before `steer_around` existed at all.
+
+Both sides are scored now by how much room is actually there, with the geometry-indicated side winning a tie — so a layout that never had the problem gets exactly the answer it got before. The regression guard is a second bot drive, at the hook rather than at the lane, because the lane is two tidy rows and every avoidance in it is sideways into open floor: **the shape that exposed the bug is the shape the check has to use.**
 
 ### What the stacks broke, and the rule that came out of it
 
@@ -225,7 +237,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 79 checks, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 82 checks, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 46 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8

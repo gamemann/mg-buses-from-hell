@@ -24,7 +24,7 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 79
+const CHECKS := 82
 
 const TICK := 1.0 / 60.0
 
@@ -399,6 +399,21 @@ func _test_the_stacks() -> void:
 		"%.1f m of clear floor either side of the centre" % (lane_half - BfhArena.PILLAR_RADIUS)
 	)
 
+	# [b]And the same question of the WHOLE layout, which the check above cannot ask.[/b]
+	# That one filters on `local.x < 14.0` -- it is about the two rows, it was written
+	# when the two rows were all there was, and it goes on passing about them however
+	# many pillars are added past the dog-leg. A pair anywhere on this map closer than
+	# 2 * PILLAR_CLEARANCE is a gap `steer_around` will not take a bus through, and the
+	# floor behind it is somewhere a runner is safe by standing still. Two drivers
+	# against everybody on foot is not a game a runner may win by not moving.
+	var tightest := BfhArena.narrowest_pillar_gap()
+	_check(
+		tightest >= BfhArena.PILLAR_CLEARANCE * 2.0,
+		"and no pair anywhere in the stacks is too tight for a bus to pass between",
+		"%.2f m between the closest two, against the %.2f a bus needs"
+			% [tightest, BfhArena.PILLAR_CLEARANCE * 2.0]
+	)
+
 	# And the half of the design that makes the lane a decision rather than a gift.
 	var plugged := false
 	for local in BfhArena.PILLAR_LAYOUT:
@@ -523,6 +538,54 @@ func _test_driving_the_stacks() -> void:
 	_check(top_speed > 4.0, "it gets moving at all", "%.1f m/s" % top_speed)
 	_check(past, "and it comes round the pillar rather than wedging on it",
 		"%.1f m/s at the end" % bus.speed() if bus.is_alive() else "the bus was lost")
+
+	# --- Through the hook ---------------------------------------------------
+	#
+	# [b]The same drive against the hook, where the bus has to come round TWO pillars
+	# rather than one.[/b] The lane is two tidy rows and every avoidance in it is
+	# sideways into open floor; the hook is an arc, so the waypoint beside its first
+	# pillar has its second one standing near it. That is the case `steer_around` got
+	# wrong until the hook existed to expose it — it chose a side without asking what
+	# else was there, drove the bus at a point it could not occupy, and left it holding
+	# the throttle against a pillar, which `_unstick` reads as a crate and answers by
+	# teleporting the bus to its start line. A steering bug whose symptom is a bus
+	# vanishing.
+	var hook := arena.pillars()[BfhArena.PILLAR_LAYOUT.size() - 3]
+
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(
+		Basis.looking_at(Vector3(0.0, 0.0, 1.0)), hook + Vector3(0.0, 1.4, -26.0)
+	)
+	quarry.global_position = hook + Vector3(0.0, 1.2, 14.0)
+
+	var through := false
+	var hook_reset := false
+
+	for _i in range(360):
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+		if not bus.is_alive():
+			break
+
+		quarry.global_position = hook + Vector3(0.0, 1.2, 14.0)
+		var here := bus.position()
+
+		if Vector2(here.x - home.x, here.z - home.z).length() < 4.0:
+			hook_reset = true
+			break
+
+		if here.z > hook.z + 1.0:
+			through = true
+			break
+
+	_check(not hook_reset, "a bus in the hook is not sent home either")
+	_check(
+		through,
+		"and it comes round the hook's pillars rather than wedging between two of them",
+		"%.1f m/s at the end" % bus.speed() if bus.is_alive() else "the bus was lost"
+	)
 
 	await _dispose(game)
 

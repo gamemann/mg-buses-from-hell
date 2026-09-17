@@ -65,7 +65,7 @@ const PILLAR_RADIUS := 1.2
 const PILLAR_HEIGHT := 5.4
 
 ## Stack-local metres: [code]x[/code] runs along the lane, [code]z[/code] across it.
-## The two rows sit at +/- 4.6, so the lane is 7.6 m of clear floor between the pillar
+## The two rows sit at +/- 4.6, so the lane is 6.8 m of clear floor between the pillar
 ## faces -- comfortable for a three-metre bus at speed and not comfortable at all for a
 ## driver who arrives at it crooked.
 const PILLAR_LAYOUT: Array[Vector2] = [
@@ -79,6 +79,31 @@ const PILLAR_LAYOUT: Array[Vector2] = [
 	# The dog-leg. Offset rather than centred, so the lane closes to one side instead
 	# of plugging: there is a way out at speed and it is not the one you are pointing at.
 	Vector2(17.0, 1.6),
+
+	# --- The hook, past the dog-leg -------------------------------------
+	#
+	# [b]The lane ended in a decision and then in nothing.[/b] A driver who took the
+	# fast line had to get out of it at the dog-leg, and what was on the other side
+	# of the dog-leg was open floor -- so the whole feature was one move long, and
+	# the move was always the same one. Past the last pillar the map went back to
+	# being a bowl with a lane in the corner of it.
+	#
+	# Three pillars in a triangle, entered through three gaps rather than one. It is
+	# the tightest cluster on the map: a runner inside it has three things to orbit
+	# within six metres of each other, which is the only place here where losing a
+	# bus does not mean crossing open ground to the next pillar. A driver gets the
+	# opposite problem -- whichever gap they come in by is not the one their quarry
+	# will leave by, and coming round one pillar puts the next between them.
+	#
+	# [b]Every gap is wide enough for a bus, and that is a rule rather than a
+	# happy accident.[/b] Two pillars closer than 2 * PILLAR_CLEARANCE leave a gap a
+	# bus cannot take, which would make the space behind them somewhere a runner is
+	# safe by standing still -- and a game whose runners win by standing still is
+	# not this game. `narrowest_pillar_gap` is the measurement and
+	# `headless_run` asks it of the whole layout, not of the hook.
+	Vector2(22.5, -6.2),
+	Vector2(27.5, 0.0),
+	Vector2(23.0, 6.6),
 ]
 
 ## Which way the lane points. Deliberately not aligned with anything: the ramp arrives
@@ -456,6 +481,30 @@ func pillars() -> PackedVector3Array:
 	return _pillars
 
 
+## The tightest gap between any two pillar axes, in metres. INF when there are none.
+##
+## [b]The one number this map's layout has to be held to, and it is about what a bus can
+## do rather than about what looks right.[/b] Two pillars closer together than
+## 2 * [constant PILLAR_CLEARANCE] leave a gap [method steer_around] will not take a bus
+## through, so the floor behind them is somewhere a runner is safe by standing still --
+## and this game is two drivers against everybody on foot, so a runner who cannot be
+## reached at all has won by not moving.
+##
+## [b]Measured off [constant PILLAR_LAYOUT] rather than off the built world, because the
+## layout is the thing somebody edits[/b] and because the answer must not depend on a
+## bowl having been built at a radius that includes the stacks at all. The spacing does
+## not scale with the bowl -- it is sized to a bus, and a bus is the same size in every
+## bowl -- so one answer covers every radius.
+static func narrowest_pillar_gap() -> float:
+	var narrowest := INF
+
+	for i in range(PILLAR_LAYOUT.size()):
+		for j in range(i + 1, PILLAR_LAYOUT.size()):
+			narrowest = minf(narrowest, PILLAR_LAYOUT[i].distance_to(PILLAR_LAYOUT[j]))
+
+	return narrowest
+
+
 ## How far from a pillar's axis a bus has to pass to miss it.
 ##
 ## Its radius, plus half a bus, plus enough that clearing one does not mean grazing it.
@@ -525,9 +574,49 @@ func steer_around(from: Vector3, target: Vector3) -> Vector3:
 	# line is one to go right of. Dead ahead is the one case with no answer in the
 	# geometry, so it picks a side rather than splitting the difference and hitting it.
 	var away := -signf(offset) if absf(offset) > 0.05 else 1.0
-	var beside := _pillars[blocking] + right * away * (PILLAR_RADIUS + PILLAR_CLEARANCE)
 
-	return Vector3(beside.x, target.y, beside.z)
+	# [b]And then the side is checked against the OTHER pillars, which it was not.[/b]
+	# This used to return the point beside the blocking pillar without asking what else
+	# was standing there, which is correct exactly as long as no pillar is within a
+	# bus-width of another pillar's shoulder. Two staggered rows are never that; the hook
+	# past the dog-leg is three pillars in a triangle, and the waypoint beside one of them
+	# is inside the next. The bus then drives at a point it cannot occupy, arrives, stops,
+	# and holds the throttle -- which `_unstick` reads as caught on a crate, so the
+	# symptom of a steering bug is a bus teleporting back to its start line.
+	#
+	# Both sides are scored by how much room is actually there and the indicated one wins
+	# a tie, so a layout that never had the problem gets exactly the answer it got before.
+	var preferred := _beside(blocking, right, away)
+	var other := _beside(blocking, right, -away)
+
+	if _room_at(other, blocking) > _room_at(preferred, blocking) + 0.01:
+		preferred = other
+
+	return Vector3(preferred.x, target.y, preferred.z)
+
+
+## The waypoint one bus-width to [param away] of pillar [param blocking].
+func _beside(blocking: int, right: Vector3, away: float) -> Vector3:
+	return _pillars[blocking] + right * away * (PILLAR_RADIUS + PILLAR_CLEARANCE)
+
+
+## How far [param at] is from the nearest pillar that is not [param blocking].
+##
+## The blocking one is excluded because the waypoint is deliberately placed at exactly its
+## clearance; including it would make every candidate score the same number and the test
+## above decide nothing.
+func _room_at(at: Vector3, blocking: int) -> float:
+	var room := INF
+
+	for i in range(_pillars.size()):
+		if i == blocking:
+			continue
+
+		room = minf(
+			room, Vector2(at.x - _pillars[i].x, at.z - _pillars[i].z).length()
+		)
+
+	return room
 
 
 func _box(
