@@ -1,4 +1,4 @@
-# game-buses-from-hell
+# mg-buses-from-hell
 
 Two people drive buses at everybody else. Everybody else has a hammer that cannot hurt them.
 
@@ -248,7 +248,7 @@ xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seco
 
 ```bash
 # in dot-server-deploy
-./server pack buses --source games/game-buses-from-hell
+./server pack buses --source games/mg-buses-from-hell
 ./server --game buses
 # then connect the client shell to 127.0.0.1:6070
 ```

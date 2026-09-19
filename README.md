@@ -1,4 +1,4 @@
-# game-buses-from-hell
+# mg-buses-from-hell
 
 A round of this is two people in buses and everybody else on foot, in a walled sand bowl with crates and exploding barrels in it. The drivers try to run the runners over. The runners have a hammer, and the hammer does not hurt anybody — it breaks crates and shoves them. That is the whole game.
 
@@ -54,7 +54,7 @@ It is a dedicated-server game, delivered the way every other game in this family
 
 ```bash
 # in dot-server-deploy
-./server pack buses --source games/game-buses-from-hell
+./server pack buses --source games/mg-buses-from-hell
 ./server --game buses
 ```
 
