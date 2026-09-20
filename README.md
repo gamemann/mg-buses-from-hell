@@ -1,8 +1,21 @@
-# mg-buses-from-hell
+This is a **game** built on TMC's **Dot** collection, rather than a piece of it. It is the asymmetric one: two drivers in buses against everybody else on foot, in a walled sand bowl.
+
+The **Dot** collection is a set of open source Godot 4 assets that provide modular building blocks for games and applications in the TMC ecosystem, covering core functionality, networking, authentication, cloud integration, and more. This project is built out of them, so it doubles as a worked example of what they look like in a real game rather than in a demo.
+
+**This project and the assets under it are COMPLETELY OPEN SOURCE**. You are free to use, modify, and distribute them under the terms of the MIT license. The only thing not open source is the back-end web infrastructure. So if you opt into using your own authentication backend instead of integrating with TMC, you will need to build and integrate your own back-end infrastructure.
+
+## From Maintainer & WARNING
+This project, along with every asset it is built on, was built initially with **Claude Code** and will continue to be maintained and extended using it. This is because I (`gamemann`) cannot build the entire TMC platform alone (I wish I could lol).
+
+**Please treat this as partially tested.** It has its own headless test suite and that suite passes, but very little of this has been in front of real players yet. Expect rough edges, and please report anything you run into.
+
+I intend on reviewing code, testing, and editing documentation regularly. If you're interested in helping out, please let me know!
+
+## Two Buses Against Everybody Else
 
 A round of this is two people in buses and everybody else on foot, in a walled sand bowl with crates and exploding barrels in it. The drivers try to run the runners over. The runners have a hammer, and the hammer does not hurt anybody — it breaks crates and shoves them. That is the whole game.
 
-It is a first-person game built on the `dot-*` addon family: [dot-props](../dot-props) for the crates and barrels, [dot-vehicle](../dot-vehicle) for the buses, [dot-combat](../dot-combat) for health and damage, [dot-match](../dot-match) for the round and the two sides, [dot-player-controller](../dot-player-controller) for the movement, [dot-net](../dot-net) for the replication and [dot-game](../dot-game) for the server wiring.
+It is a first-person game built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for the crates and barrels, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the buses, [dot-combat](https://github.com/modcommunity/dot-combat) for health and damage, [dot-match](https://github.com/modcommunity/dot-match) for the round and the two sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication and [dot-game](https://github.com/modcommunity/dot-game) for the server wiring.
 
 ## Running it
 
@@ -38,7 +51,7 @@ This is the mechanic the game exists for, and it needed work in dot-props to be 
 
 A character motor sweeps a shape and slides along whatever it hits, so a `RigidBody3D` crate is exactly as solid as the floor and exactly as immovable: a player stands on one and it does not sink, does not tip, and does not carry them anywhere when a bus shoves it out from under them. Every number involved is correct; there is nothing to notice except standing on a crate and expecting something.
 
-`DotPropCarry` in dot-props is the half that was missing, and `DotPropDamage` beside it is what makes a crate breakable. Both are new, both are documented in [that project's own notes](../dot-props/CLAUDE.md), and both are covered by its suite.
+`DotPropCarry` in dot-props is the half that was missing, and `DotPropDamage` beside it is what makes a crate breakable. Both are new, both are documented in [that project's own notes](https://github.com/modcommunity/dot-props/blob/main/CLAUDE.md), and both are covered by its suite.
 
 ## The art
 
@@ -88,7 +101,7 @@ There is no proximity channel, and that is a decision about the map: the bowl is
 
 Moderation is dot-moderation's, keyed on the account rather than the connection — a gag that lasted until the gagged player pressed reconnect would be no gag at all. An admin's own channel ignores one, because a gag is about a player's speech and an admin who has been gagged has a bigger problem than chat.
 
-All of it is [dot-game](../dot-game)'s `DotGameServices`, which this game is the first to use: sixty lines here against 557–718 in each of the other five, and the ordering that has a bug behind it — moderation before chat, because moderation is what publishes the mute source both routers look up when they start — lives in the addon now.
+All of it is [dot-game](https://github.com/modcommunity/dot-game)'s `DotGameServices`, which this game is the first to use: sixty lines here against 557–718 in each of the other five, and the ordering that has a bug behind it — moderation before chat, because moderation is what publishes the mute source both routers look up when they start — lives in the addon now.
 
 ## What does not work yet
 
@@ -97,3 +110,9 @@ There are no profiles and no avatars: `dot-game` reports the missing identity la
 Nothing is drawn for a barrel going off. The server decides the blast and tells every client where it was; what a client does with that is a log line.
 
 There is no scoreboard. Rounds are scored by dot-match and nobody can see the score.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
+
+The art under `assets/kenney/` is the exception, and it is a more permissive one: those models and texture atlases are [Kenney's](https://kenney.nl), released under CC0 1.0, which is public domain with no attribution required. Each kit's own licence text ships unchanged beside the files it covers.
