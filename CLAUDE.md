@@ -34,7 +34,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (82), headless_net (101), dedicated (46)
+examples/           headless_run (92), headless_net (101), dedicated (46)
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -152,6 +152,37 @@ Both sides are scored now by how much room is actually there, with the geometry-
 
 Finding the above meant writing the first check in this repository that sets `is_bot`. `add_player` leaves it false and nothing else in the suite sets it, so **every driver in all 63 previous checks was a person who never pressed anything**, and the bus only ever moved when a check drove it by hand. `_autopilot` — the only thing that drives a bus on a dedicated server, which is the deployment this game is for — had no coverage at all.
 
+## Decision 10: the tank farm, because half a bowl had one idea and the other half had none
+
+The stacks answered "the map runs out of things to do" for the **western** half. Everything east of the ramp was still sand, crates and a handful of blocks, so a round that drifted that way was the game as it was before Decision 6 — and in a bowl 92 m across, "go and stand in the other half" is most of a round.
+
+**Four storage tanks, 2.6 to 4.4 m in radius and 6.8 m tall, around a courtyard.** They are cover in the same way a pillar is — permanent, taller than a hull, a thing a bus has to come round — and they ask a different question, which is the reason they are not four more pillars.
+
+**A pillar is cover you can see through and a tank is cover you cannot.** Behind a 1.2 m column a runner watches the bus pick a side the whole way in, and the west half is therefore about reaction: you can see everything through the stacks from thirty metres, and the skill is moving at the right moment. A 4.4 m drum hides a nine-metre bus completely. Nobody in the east half knows which side it is coming round, and the driver does not know which way the runner will break, so the same piece of cover is now a guess by both people at once. Two halves of a bowl asking for different things is two things for a round to be about.
+
+**A courtyard, not a cluster.** Four drums in a loose diamond leave open floor about a dozen metres across in the middle with four lanes into it. That floor is the east's version of the middle of the lane: cover on every side, and no way to know which gap the bus is in. The lanes are 5.4, 6.6, 8.2 and 9.5 m of clear floor, every one of them wide enough for a bus, because a courtyard a bus could not enter is a place a runner wins the round by standing still in.
+
+**Four sizes, not one.** Four drums of one radius are one obstacle drawn four times. What a runner is choosing between at this end of the bowl is how much floor a piece of cover hides: the 4.4 m tank is somewhere to lose a bus entirely, and the 2.6 m one is somewhere to make it commit.
+
+**No yaw, where the stacks have 25°.** The stacks are a lane, and a lane square to the ramp is a corridor a driver lines up on from the moment they land. A ring of drums has no axis to hide — it reads the same from every approach, which is what it is for.
+
+### What a second obstacle size broke, and it was every rule written for the first
+
+The stacks got away with a great deal by being eleven copies of one cylinder. Every measurement in this map was a **centre distance compared against a constant**, which is exactly right when every radius is 1.2 m and wrong in a way nothing reports the moment one of them is 4.4.
+
+- **`steer_around` would have driven a bus into the middle of the biggest tank.** Its corridor test and its waypoint were both `PILLAR_RADIUS + PILLAR_CLEARANCE` — 4.8 m off the axis, which is *inside* a 4.4 m drum with a bus on it. The driver would have been told its line was clear, aimed at a point it could not occupy, arrived, held the throttle, and been teleported home by the stuck rule: the hook's bug again, with a different cause and the same symptom. Both are `_clearance(i)` now, which is `radius + PILLAR_CLEARANCE` and is the identical number for every pillar in the stacks.
+- **`_room_at` ranked the two candidate sides by distance to an AXIS.** With one radius that is the same ordering as distance to a surface, off by a constant; with a 4.4 m drum and a 2.6 m one in the same list it picks the side that is actually tighter. It measures to the surface now.
+- **The scatter keep-out was `PILLAR_RADIUS + 2.2`**, which is 1.4 m inside the biggest tank. A crate dropped there shares a volume with a static body, and the physics resolves that by throwing it across the bowl on the first step.
+- **`narrowest_pillar_gap()` cannot answer the question it is named after any more.** It is static, stack-local and radius-blind: it knows nothing about a tank, and nothing about how close the two clusters are — which is not a constant, because both are placed as a *fraction* of the bowl radius and a smaller bowl walks them towards each other. `narrowest_gap()` is the map-wide rule, measured **face to face on the built arena**, and it is the one measurement here that cannot be taken off the constants somebody edits.
+
+**The gap rule is now a gap rather than a spacing, and it is the same number it always was.** `BUS_GAP := 2 * (PILLAR_CLEARANCE - PILLAR_RADIUS)` is 4.8 m of clear floor — exactly what two pillars at the old centre-distance rule left between them — so the stacks are held to precisely the rule they were built under, and a drum of any size is held to the same one. Writing it as the spacing was what made it unusable for a second shape.
+
+**And `TANK_MIN_RADIUS` is not about fitting inside the wall.** Both features scale their *position* with the bowl and neither scales its *spacing*, so the binding limit on a small bowl is the floor between the two clusters closing, not the farm running out of sand. `headless_run` builds a second arena at exactly that radius and asks the map-wide rule of it, because a constant nobody checks is a number somebody guessed.
+
+### One description, still
+
+`PILLAR_LAYOUT` and `TANK_LAYOUT` are two descriptions of two features, and they meet immediately: `build` appends both into one `_obstacles` array with a radius each, and the steering, the scatter keep-out and the gap rule ask for **that** and never for either feature. `pillars()` and `tanks()` are views onto it for the map's own checks and for a camera that wants to look at one of them. Nothing that reasons about the physics of the floor is allowed to care which feature a cylinder belongs to, because a bus wedged nose-on does not.
+
 ## The art is Kenney's
 
 Three models — a crate, a barrel and a garbage truck standing in for the bus — from the CC0 bundle, in `assets/kenney/`. Two things about vendoring them are worth keeping:
@@ -237,11 +268,12 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 82 checks, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 92 checks, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 46 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
+tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
 ```
 
 **And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:

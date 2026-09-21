@@ -24,7 +24,7 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 82
+const CHECKS := 92
 
 const TICK := 1.0 / 60.0
 
@@ -49,6 +49,7 @@ func _run() -> void:
 	await _test_world_builds()
 	await _test_bowl_layout()
 	await _test_the_stacks()
+	await _test_the_tank_farm()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -585,6 +586,227 @@ func _test_driving_the_stacks() -> void:
 		through,
 		"and it comes round the hook's pillars rather than wedging between two of them",
 		"%.1f m/s at the end" % bus.speed() if bus.is_alive() else "the bus was lost"
+	)
+
+	await _dispose(game)
+
+
+## The tank farm, which is the east half of the bowl and a different question from the
+## stacks.
+##
+## [b]Four drums of four sizes, and the checks over them are about what a bus can do
+## rather than about where they are.[/b] The stacks got away with a fixed-radius rule
+## because every pillar in them is 1.2 m across; the moment one obstacle on this floor is
+## 4.4 m and another 2.6, every measurement written as a centre distance is answering a
+## question about the wrong thing. So this section asks the two questions
+## [BfhArena.narrowest_gap] exists for -- is there a gap here a bus cannot take, and is
+## there anywhere behind these that a bus cannot get to -- and it asks them of the built
+## map rather than of the layout, because the two clusters are both placed as a fraction
+## of the radius and the floor between them is therefore a function of it.
+func _test_the_tank_farm() -> void:
+	print("the tank farm")
+
+	var game := _world()
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 8)
+
+	var arena := game.arena
+	var farm := arena.tanks()
+
+	_check(
+		farm.size() == BfhArena.TANK_LAYOUT.size(),
+		"the tanks stand in the bowl",
+		"%d tanks" % farm.size()
+	)
+
+	# Each of them on floor a runner can reach, measured to the SURFACE. A tank is 4 m
+	# of radius and the pillar version of this check -- axis distance plus a constant --
+	# would clear a drum overlapping the wall by three metres.
+	var reach := arena.runner_area_radius()
+	var outside := 0
+	var nearest_to_ramp := INF
+	var foot := arena.ramp_foot()
+	for i in range(farm.size()):
+		var at := farm[i]
+		var tank_radius := arena.obstacle_radius(arena.pillars().size() + i)
+		if Vector2(at.x, at.z).length() + tank_radius > reach:
+			outside += 1
+		nearest_to_ramp = minf(
+			nearest_to_ramp,
+			Vector2(at.x - foot.x, at.z - foot.z).length() - tank_radius
+		)
+	_check(outside == 0, "every one of them on floor a runner can reach",
+		"%d outside %.0f m" % [outside, reach])
+	_check(nearest_to_ramp > 8.0, "and none of them across the ramp's landing",
+		"nearest surface %.1f m" % nearest_to_ramp)
+
+	# [b]The courtyard, and the reason it is the point of the farm.[/b] Four tanks in a
+	# diamond leave open floor in the middle, and open floor surrounded by cover is only
+	# a place worth standing if the thing chasing you can come into it. Every one of the
+	# four lanes between neighbouring tanks is asked directly rather than inferred from
+	# the map-wide minimum, because the map-wide minimum is currently a pair in the
+	# stacks and would go on passing if the courtyard sealed itself shut.
+	var pillar_count := arena.pillars().size()
+	var lanes: Array[Vector2i] = [Vector2i(0, 1), Vector2i(1, 2), Vector2i(2, 3), Vector2i(3, 0)]
+	var tightest_lane := INF
+	for lane in lanes:
+		var a := farm[lane.x]
+		var b := farm[lane.y]
+		tightest_lane = minf(
+			tightest_lane,
+			Vector2(a.x - b.x, a.z - b.z).length()
+				- arena.obstacle_radius(pillar_count + lane.x)
+				- arena.obstacle_radius(pillar_count + lane.y)
+		)
+	_check(
+		tightest_lane >= BfhArena.BUS_GAP,
+		"and a bus can come into the courtyard by any of its four lanes",
+		"%.2f m of floor in the tightest, against the %.2f a bus needs"
+			% [tightest_lane, BfhArena.BUS_GAP]
+	)
+
+	# The whole map, both features at once, face to face. This is the question
+	# `narrowest_pillar_gap` cannot ask: it is static and stack-local, so it knows
+	# nothing about a tank and nothing about how close the two clusters are.
+	var tightest := arena.narrowest_gap()
+	_check(
+		tightest >= BfhArena.BUS_GAP,
+		"no two obstacles anywhere on the map are closer than a bus can pass",
+		"%.2f m between the closest two, against the %.2f a bus needs"
+			% [tightest, BfhArena.BUS_GAP]
+	)
+
+	# [b]And the same question at the smallest bowl that has both features, which is the
+	# one nobody would think to ask.[/b] Both clusters are positioned as a fraction of
+	# the radius, so shrinking the bowl walks them towards each other while the width a
+	# bus needs stays 4.8 m of absolute floor. `TANK_MIN_RADIUS` is that limit written
+	# down; an arena built exactly at it has to still be playable, or the constant is a
+	# number somebody guessed.
+	var small := BfhArena.new()
+	add_child(small)
+	small.build(BfhArena.TANK_MIN_RADIUS)
+	var squeezed := small.narrowest_gap()
+	var small_tanks := small.tanks().size()
+	remove_child(small)
+	small.free()
+
+	_check(
+		small_tanks == BfhArena.TANK_LAYOUT.size() and squeezed >= BfhArena.BUS_GAP,
+		"and they are still that far apart on the smallest bowl that has both features",
+		"%.2f m at %.0f m radius, %d tanks"
+			% [squeezed, BfhArena.TANK_MIN_RADIUS, small_tanks]
+	)
+
+	# Nothing is dropped inside a drum. The keep-out used to be a flat
+	# `PILLAR_RADIUS + 2.2`, which is 1.4 m INSIDE the biggest tank -- and a crate
+	# sharing a volume with a static body is resolved by the physics throwing it across
+	# the bowl on the first step.
+	var intruders := 0
+	for prop in game.props.all_props():
+		if prop.body() == null:
+			continue
+		var at := prop.body().global_position
+		for i in range(farm.size()):
+			var tank_radius := arena.obstacle_radius(pillar_count + i)
+			if Vector2(at.x - farm[i].x, at.z - farm[i].z).length() < tank_radius:
+				intruders += 1
+	_check(intruders == 0, "and the round is laid out around the tanks, not into them",
+		"%d overlapping" % intruders)
+
+	# --- The steering, at a radius the constant does not cover ---------------
+	#
+	# [b]The failure mode here is not a bus that misses by too little, it is an aim
+	# point inside the drum.[/b] `steer_around` offset its waypoint by
+	# `PILLAR_RADIUS + PILLAR_CLEARANCE` -- 4.8 m, a metre and a half less than the
+	# radius of the biggest tank plus a bus -- so a driver told to come round this one
+	# would have been sent at a point in the middle of it, arrived nowhere, held the
+	# throttle, and been teleported home by the stuck rule. The stacks' own version of
+	# this check cannot see it: every pillar is narrower than the offset.
+	var big := farm[0]
+	var big_radius := arena.obstacle_radius(pillar_count)
+	var steered := arena.steer_around(
+		big + Vector3(0.0, 0.0, -30.0), big + Vector3(0.0, 0.0, 16.0)
+	)
+	var miss := Vector2(steered.x - big.x, steered.z - big.z).length()
+	_check(
+		miss >= big_radius + 1.5,
+		"a line through a tank is steered off it by more than the tank is wide",
+		"aim point %.1f m from the axis of a %.1f m drum" % [miss, big_radius]
+	)
+
+	await _dispose(game)
+	await _test_driving_the_farm()
+
+
+## The check the rest of that section cannot make: a bot bus gets round a drum.
+##
+## [b]The same drive as the stacks and the hook, at the shape neither of them is.[/b] A
+## pillar is narrower than the bus coming round it and a tank is wider, which changes
+## the one thing the driver is doing -- the waypoint beside a 4.4 m drum is eight metres
+## off its axis, so the bus turns earlier, further and for longer, and it does all of
+## that with the quarry out of sight behind the thing it is going round. Nothing in this
+## repository had ever asked the autopilot to come round something bigger than itself.
+func _test_driving_the_farm() -> void:
+	var game := _world(func(config: BfhConfig) -> void:
+		config.round_seconds = 120.0
+	)
+
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	driver.is_bot = true
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 8)
+
+	var arena := game.arena
+	var tank := arena.tanks()[0]
+
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+
+	# Lined up on the drum with the quarry hidden directly behind it: the geometry a
+	# runner using it for cover creates, and the one the bot has to solve blind.
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(
+		Basis.looking_at(Vector3(0.0, 0.0, 1.0)), tank + Vector3(0.0, 1.4, -30.0)
+	)
+
+	var quarry := game.runners()[0]
+	var hide := tank + Vector3(0.0, 1.2, 16.0)
+	quarry.global_position = hide
+
+	var home := arena.bus_start(0, 1)
+	var reset := false
+	var past := false
+	var top_speed := 0.0
+
+	for _i in range(420):
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+		if not bus.is_alive():
+			break
+
+		quarry.global_position = hide
+		var at := bus.position()
+		top_speed = maxf(top_speed, bus.speed())
+
+		if Vector2(at.x - home.x, at.z - home.z).length() < 4.0:
+			reset = true
+			break
+
+		if at.z > tank.z + 1.0:
+			past = true
+			break
+
+	_check(not reset, "a bus chasing somebody behind a tank is not sent home")
+	_check(
+		past,
+		"and it comes round the drum rather than wedging on it",
+		"%.1f m/s top, %.1f m/s at the end"
+			% [top_speed, bus.speed() if bus.is_alive() else 0.0]
 	)
 
 	await _dispose(game)

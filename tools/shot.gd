@@ -15,6 +15,7 @@ func _run() -> void:
 	var out := "res://screenshots/bfh.png"
 	var look_at_bus := false
 	var look_at_stacks := false
+	var look_at_tanks := false
 	var show_chat := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
@@ -25,6 +26,8 @@ func _run() -> void:
 			look_at_bus = true
 		elif arg == "--stacks":
 			look_at_stacks = true
+		elif arg == "--tanks":
+			look_at_tanks = true
 		elif arg == "--chat":
 			show_chat = true
 
@@ -68,6 +71,33 @@ func _run() -> void:
 			# through it at eye height, not whether the layout is tidy from above.
 			cam.global_position = middle + Vector3(-26.0, 11.0, -22.0)
 			cam.look_at(middle + Vector3(0.0, 2.0, 0.0), Vector3.UP)
+			cam.current = true
+			await get_tree().process_frame
+
+	# Or stand in the mouth of one of the tank farm's lanes and look through it.
+	#
+	# [b]Not from above and not from the middle.[/b] What has to be judged about the
+	# farm is the one thing a plan view cannot show: whether a drum actually hides a
+	# bus. A camera at a runner's height, at the lip of a lane, is the view the whole
+	# feature was designed around -- if the tanks read as bollards from there, they are
+	# not doing the job they were put in for.
+	var world_for_tanks: BfhGame = client.get("game")
+	if look_at_tanks and world_for_tanks != null and world_for_tanks.arena != null:
+		var farm := world_for_tanks.arena.tanks()
+		if not farm.is_empty():
+			var middle := Vector3.ZERO
+			for tank in farm:
+				middle += tank
+			middle /= float(farm.size())
+
+			var cam := Camera3D.new()
+			add_child(cam)
+			# Off the north-west mouth of the farm and clear of the RAMP, which is the
+			# one thing in this bowl a camera can end up standing inside: it runs down
+			# the middle at x = 0, so a viewpoint pulled further back to see more of the
+			# farm sees a grey slab filling a quarter of the frame instead.
+			cam.global_position = middle + Vector3(-19.0, 4.5, -14.0)
+			cam.look_at(middle + Vector3(1.0, 2.5, 0.0), Vector3.UP)
 			cam.current = true
 			await get_tree().process_frame
 
