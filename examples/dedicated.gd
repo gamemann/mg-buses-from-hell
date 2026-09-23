@@ -20,7 +20,7 @@ const BfhGame := preload("../game/bfh_game.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 46
+const CHECKS := 48
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -60,6 +60,7 @@ func _run() -> void:
 		await _test_the_bots()
 		_test_the_services()
 		await _test_it_unloads_cleanly()
+		_test_no_message_preloads_itself()
 
 	print("")
 	print("%d passed, %d failed" % [_passed, _failed])
@@ -159,6 +160,66 @@ func _said(lines: PackedStringArray, text: String) -> bool:
 	for line in lines:
 		if line.findn(text) >= 0:
 			return true
+	return false
+
+
+## [b]The one line that made this suite leak its whole script graph at exit.[/b]
+##
+## A script that `extends DotNetMessage` and preloads ITSELF, first loaded from a module a
+## running [DotServer] loads — which is how every deployed server loads this game — left
+## 111 scripts, the grid textures in `bfh_textures.gd`'s static cache and eight texture
+## RIDs alive at exit, on 4.7.2. `bfh_event.gd` and `bfh_request.gd` both did it, for a
+## typed `of()` factory. `headless_run` and `headless_net` preload the same files at scene
+## load and never saw it.
+##
+## [b]Asserted on the source, because the symptom is where no check can reach.[/b] The
+## leak is reported after `quit()`, by the engine, as warnings a CI filter already
+## treats as noise; an assertion here runs before any of it exists. So this checks the
+## cause instead: every message script in `game/`, read as text.
+func _test_no_message_preloads_itself() -> void:
+	print("exiting clean")
+
+	var messages := PackedStringArray()
+	var offenders := PackedStringArray()
+	var pending: Array[String] = ["res://game"]
+
+	while not pending.is_empty():
+		var dir_path: String = pending.pop_back()
+
+		for sub in DirAccess.get_directories_at(dir_path):
+			pending.append(dir_path.path_join(sub))
+
+		for file in DirAccess.get_files_at(dir_path):
+			if not file.ends_with(".gd"):
+				continue
+
+			var path := dir_path.path_join(file)
+			var source := FileAccess.get_file_as_string(path)
+
+			if not _extends_message(source):
+				continue
+
+			messages.append(path)
+
+			if source.contains('preload("%s")' % file) or source.contains('preload("%s")' % path):
+				offenders.append(path)
+
+	_check(
+		messages.size() >= 2,
+		"this game's message scripts are found, so the next check is about something",
+		", ".join(messages)
+	)
+	_check(
+		offenders.is_empty(),
+		"and none of them preloads itself, which leaks every script at exit",
+		", ".join(offenders)
+	)
+
+
+func _extends_message(source: String) -> bool:
+	for line in source.split("\n"):
+		if line.begins_with("extends "):
+			return line.contains("DotNetMessage") or line.contains("dot_net_message.gd")
 	return false
 
 

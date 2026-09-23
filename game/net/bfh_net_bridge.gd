@@ -982,7 +982,7 @@ func _tell(peer_id: int, kind: int, body: PackedByteArray) -> void:
 	if peer_id <= 0 or net == null or body.is_empty():
 		return
 
-	net.send(BfhEvent.of(kind, body), peer_id)
+	net.send(BfhEvent.new(kind, body), peer_id)
 
 
 # --- Client: what it does with all that ------------------------------------
@@ -1009,7 +1009,7 @@ func _ask(kind: int, body: PackedByteArray) -> void:
 	if net == null or net.is_server:
 		return
 
-	net.send(BfhRequest.of(kind, body), 1)
+	net.send(BfhRequest.new(kind, body), 1)
 
 
 func _on_event(message: DotNetMessage) -> void:

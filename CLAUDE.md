@@ -34,7 +34,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (99), headless_net (101), dedicated (46)
+examples/           headless_run (99), headless_net (101), dedicated (48)
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -272,6 +272,27 @@ Every one of these was found by publishing the game as a pack and connecting a r
 
 An attacker of `0` is dot-combat's "the world": a bus nobody was driving, a fall. The table returns an empty key for it, which is the same answer the scan gave and means the same thing.
 
+## The leak that was one line of a message
+
+**`dedicated` passed every check and then leaked the whole script graph at exit**: 160 ObjectDB instances, 102 resources, a VariantPools page and eight dummy texture RIDs. `headless_run` had been made clean on 2026-09-14 by a fix in dot-vehicle, and `headless_net` was clean too, so the natural reading was that the server path had a teardown of its own that stopped short. It did not.
+
+`--verbose` says what leaked and not why: 111 `GDScript`s, 32 native class wrappers, eight `Image`/`ImageTexture` pairs, and one bare `RefCounted`. The textures are the grid cache in `bfh_textures.gd`'s `static var`, so they are a passenger — a static is freed with its script, and the script never was. That list is "every script still loaded", which says something is holding the graph up and says nothing about what.
+
+**Bisected rather than read**, with a throwaway subclass of the suite that stops after any section and a module subclass that switches off the netcode, the services and the game load one at a time. The world on its own under a server: clean. A bare `DotModule`, a bare `DotGameModule`: clean. `bfh_module.gd` with everything switched off: the full leak. A bare `DotGameModule` whose only difference was `preload("net/bfh_net_bridge.gd")` — never instantiated — reproduced it, and so did preloading `bfh_event.gd` or `bfh_request.gd` alone. Both began:
+
+```gdscript
+extends DotNetMessage
+const BfhEvent := preload("bfh_event.gd")   # for a typed `static func of() -> BfhEvent`
+```
+
+**The two-line reproduction is exactly that: a script that `extends DotNetMessage` and preloads itself.** Base by name or by path, same result. A self-preload over `RefCounted`, `DotResult` or `DotNetBehaviour` does not do it, nor does a two-script cycle through `DotNetMessage`, nor does the same file loaded from a bare scene with no server running. It has to be first loaded **at runtime, by a module a running `DotServer` loads** — which is how every deployed server loads a game, and why the two suites that preload the bridge at scene load never saw it. The script that triggers it is not itself in the leaked list, so what it breaks is the engine's teardown of everything else. The mechanism is inside Godot 4.7.2 and was not chased further; the trigger is measured and the fix is not to have one.
+
+`bfh_event.gd` and `bfh_request.gd` are built with `new(kind, body)` now — an `_init` whose arguments both default, because dot-net's registry decodes with a bare `new()` — and neither preloads itself. `dedicated` exits with no warning at all.
+
+**The check is on the source, and that is deliberate.** The symptom is reported after `quit()`, by the engine, as lines dot-ci's filter already treats as noise; no assertion can run where it happens. So `dedicated`'s last section reads every `DotNetMessage` script under `game/` as text and fails on a self-preload — and with the line put back it fails, and the leak comes back with it.
+
+**Every other game in this family has the same line**, in its event and its request: `game-arena`, `game-g2gfast`, `game-hungario`, `game-playground`, `game-simple-lobby` and `mg-smash-copter`, twelve files. It is the first thing to try on hungario's `[leak-1]`.
+
 ## Validating
 
 ```bash
@@ -281,7 +302,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . res://examples/headless_run.tscn   # 99 checks, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
-godot --headless --path . res://examples/dedicated.tscn      # 46 checks, as a server
+godot --headless --path . res://examples/dedicated.tscn      # 48 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
