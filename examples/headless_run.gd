@@ -24,7 +24,7 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 92
+const CHECKS := 99
 
 const TICK := 1.0 / 60.0
 
@@ -56,6 +56,7 @@ func _run() -> void:
 	await _test_barrel()
 	await _test_bus()
 	await _test_round_ends()
+	await _test_a_driver_arrives_mid_round()
 	await _test_bus_propulsion()
 	await _test_a_rolled_bus()
 
@@ -832,6 +833,29 @@ func _test_sides() -> void:
 	_check(not game.match_node.teams.force_balance,
 		"and nothing tries to even them up")
 
+	# [b]And nothing REFUSES them either, which `force_balance` alone does not say.[/b]
+	# dot-match's team manager has a second rule, `max_difference`, that refuses a join
+	# putting one side more than one ahead — so the fifth person here was left on no team
+	# in dot-match while `sides` called them a runner. The elimination rule counts
+	# survivors off dot-match's teams, so a round ended as soon as the runners it KNEW
+	# about were down, with the rest still on their feet. Two against four is the smallest
+	# server that shows it.
+	game.add_player(&"e", "E")
+	game.add_player(&"f", "F")
+	var unknown := PackedStringArray()
+	for id: StringName in game.sides:
+		if game.match_node.teams.team_of(String(id)) != game.team_of(id):
+			unknown.append(String(id))
+	_check(unknown.is_empty(), "dot-match puts every runner on the runners' side",
+		"it disagrees about %s" % ", ".join(unknown))
+
+	# Somebody leaving leaves dot-match too, or they go on counting as present — towards
+	# `min_players` and on the side they left from.
+	game.remove_player(&"f")
+	_check(game.match_node.scoreboard.present_count() == game.players.size(),
+		"and somebody who leaves is not still counted by it",
+		"%d present, %d players" % [game.match_node.scoreboard.present_count(), game.players.size()])
+
 	var runner: BfhPlayer = game.runners()[0]
 	_check(runner.hammer != null, "a runner carries a hammer")
 	_check((game.drivers()[0] as BfhPlayer).hammer == null,
@@ -1164,10 +1188,70 @@ func _test_round_ends() -> void:
 	_check((game.players[&"d"] as BfhPlayer).hammer != null,
 		"the new runner is handed a hammer")
 
+	# [b]And the round AFTER the swap is decided by the sides as they are now.[/b] The
+	# elimination rule reads teams off dot-match's scoreboard, not off `sides`, so a swap
+	# that only flipped `sides` left the rule scoring the old ones: the drivers ran the new
+	# runner down and the round was announced as the RUNNERS' win, because the team that
+	# had nobody left alive was the one the scoreboard still called the drivers. Every
+	# round after the first swap of a server's life had its winner backwards.
+	_check(game.match_node.teams.team_of("d") == BfhGame.TEAM_RUNNERS,
+		"dot-match is told about the swap too",
+		"it has d on %d" % game.match_node.teams.team_of("d"))
+
+	var new_runner: BfhPlayer = game.players[&"d"]
+	new_runner.health.alive = false
+	new_runner.health.health = 0.0
+	await _step(game, 30)
+
+	_check(
+		ended.size() >= 2 and int((ended[1] as Dictionary)["winner"]) == BfhGame.TEAM_DRIVERS,
+		"and the round after it is still the drivers' when the runner goes down",
+		"%s" % [ended]
+	)
+
 	await _dispose(game)
 
 
 # --- Driving ---------------------------------------------------------------
+
+## A driver who arrives mid-round gets the bus that is standing empty.
+##
+## [b]The bot rule is what makes this the common case rather than a corner.[/b] When a
+## person driving disconnects, their bus stays where it is with nobody in it, and the
+## module puts a bot in the seat within two seconds -- in `sides`. Seating only ever
+## happened at the top of a round, so that bot stood on the sand as an untouchable
+## pedestrian and the bus sat still for the rest of the round: half the drivers' threat
+## gone for up to three minutes, from one dropped connection.
+func _test_a_driver_arrives_mid_round() -> void:
+	print("a driver arriving mid-round")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.round_seconds = 120.0
+		c.crate_count = 0
+		c.barrel_count = 0)
+
+	game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 20)
+
+	_check(game.ride.is_riding(&"d"), "the first driver is in the bus")
+
+	game.remove_player(&"d")
+	var relief := game.add_player(&"d2", "Relief", BfhGame.TEAM_DRIVERS)
+	await _step(game, 5)
+
+	_check(game.ride.is_riding(&"d2") and relief.riding,
+		"and whoever takes the seat mid-round is put in the bus that is standing empty")
+
+	# And never a second driver into an occupied one, which `enter` would refuse anyway --
+	# checked because the refusal is quiet.
+	var extra := game.add_player(&"d3", "Extra", BfhGame.TEAM_DRIVERS)
+	await _step(game, 2)
+	_check(not extra.riding, "while a driver with no empty bus is left out of one")
+
+	await _dispose(game)
+
 
 func _test_bus_propulsion() -> void:
 	print("driving the bus")

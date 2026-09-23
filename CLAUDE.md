@@ -34,7 +34,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (92), headless_net (101), dedicated (46)
+examples/           headless_run (99), headless_net (101), dedicated (46)
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -100,6 +100,17 @@ Every one of these was found by running it, and none of them errored.
 - **A probe that hangs has already printed its answer and lost it.** Two runs were spent on a diagnostic script that timed out with no output; stdout to a pipe is fully buffered and a process that never exits never flushes. The answer was to put the diagnostic in `describe()` — which is what this family's `describe()` convention is *for* — and read it from a tool that exits.
 
 - **Two physics-timing lessons, for the third and fourth time in this tree.** An impulse is not readable in `linear_velocity` until the step that consumes it has run, so the barrel's shove measured zero. And the check that a crate *outside* the blast is not shoved passed a falling crate at 0.16 m/s: **a physics assertion that does not say what it is excluding is measuring gravity.**
+
+## Two rules about who is on which side, and dot-match had its own copy of both
+
+**`sides` is this game's answer to who is on which side, and dot-match's elimination rule never read it.** It counts survivors off its own scoreboard's teams, which were set once at join and then left alone — so two things were wrong for as long as the game had existed, and every suite section was built small enough to miss both:
+
+- **`DotTeamManager.max_difference` defaults to 1 and refuses a join that puts one side more than one ahead.** `force_balance = false` turns off the *mover* and not the *refuser*, so on a shipped server the second driver and every runner past the drivers' count plus one sat on no team in dot-match. The round was handed to the drivers the moment the runners dot-match knew about were down, with the rest still standing. The suite's own four-player section was exactly balanced, which is why it never saw it.
+- **`_swap_sides` flipped `sides` and told dot-match nothing.** Every round after the first swap of a server's life was scored on the old sides, so a bus running the last runner down was announced as the runners' win. The suite's round section checked the winner of round one and stopped.
+
+`max_difference` is 0 now, a refused join is logged at ERROR, a swap goes through `switch_team`, and a player who leaves leaves dot-match too — before that they went on counting as present. `headless_run` checks a 2-against-4 server and the round after a swap, which are the two shapes that show it.
+
+**And a driver who arrived mid-round was never put in a bus.** Seating happened at the top of a round and nowhere else, and the bots make mid-round the common case: a person driving disconnects, the module fills the seat within two seconds, and the bot stood on the sand as a pedestrian nothing can run over while the bus it should have been in sat still for the rest of the round. `add_player` now seats a new driver into any bus nobody is driving.
 
 ## The bus, and the number that was two doors away from the symptom
 
@@ -268,7 +279,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 92 checks, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 99 checks, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 46 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8

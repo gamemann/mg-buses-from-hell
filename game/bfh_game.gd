@@ -364,6 +364,14 @@ func _build_match() -> void:
 	# round and there are two seats.
 	match_node.teams.force_balance = false
 	match_node.teams.allow_choice = true
+	# [b]And off in the second place dot-match balances, which `force_balance` does not
+	# reach.[/b] `max_difference` defaults to 1 and REFUSES any join that puts a side more
+	# than one ahead — so on a shipped server the second driver and every runner past the
+	# drivers' count plus one were on no team at all in dot-match, while `sides` had them
+	# placed correctly. The elimination rule counts survivors off dot-match's teams, so a
+	# round was handed to the drivers the moment the runners it knew about were down, with
+	# the others still standing. `sides` decides who is on which side; dot-match is told.
+	match_node.teams.max_difference = 0
 
 
 # --- Players ---------------------------------------------------------------
@@ -424,7 +432,15 @@ func add_player(
 	players[player_id] = player
 	sides[player_id] = team
 
-	match_node.add_player(String(player_id), display_name, _tick, team)
+	var joined := match_node.add_player(String(player_id), display_name, _tick, team)
+
+	if not joined.ok:
+		# Not fatal to the join -- they can still move and be seen -- but the round rule
+		# cannot count them, which is a round decided without them. Said out loud because
+		# the last time this was refused, nothing did.
+		DotLog.error(CHANNEL, "dot-match refused a player's side", {
+			"id": String(player_id), "team": team, "why": joined.error.message,
+		})
 
 	if team == TEAM_RUNNERS:
 		player.give_hammer(config)
@@ -435,7 +451,34 @@ func add_player(
 	# replicated entity and announcing the join, and an entity built over a half-made
 	# player replicates the half.
 	player_added.emit(player_id)
+
+	# After the announcement, because seating fires `ride.entered` and the bridge answers
+	# that by writing to the entity it has just built.
+	if authoritative and team == TEAM_DRIVERS:
+		_seat_in_an_empty_bus(player)
+
 	return player
+
+
+## Puts a driver who arrived after the buses were placed into one nobody is driving.
+##
+## [b]Seating used to happen only at the top of a round, and the bots made that a real
+## gap.[/b] A person driving disconnects, their bus stays where it stopped, and the module
+## fills the seat with a bot inside two seconds -- in `sides`, and nowhere else. The bot
+## then stood on the sand as a pedestrian nothing can run over while its bus sat still for
+## the rest of the round. With no empty bus this does nothing and the next round seats
+## them, which is what always happened.
+func _seat_in_an_empty_bus(player: BfhPlayer) -> void:
+	if ride == null or ride.is_riding(player.player_id):
+		return
+
+	for instance_id in _bus_ids:
+		var bus := vehicles.get_vehicle(instance_id)
+		if bus == null or not bus.is_alive() or bus.driver() != &"":
+			continue
+
+		ride.enter(bus, player.player_id, player, &"driver")
+		return
 
 
 ## Which side somebody new goes on.
@@ -469,6 +512,11 @@ func remove_player(player_id: StringName) -> void:
 	if combat != null and is_instance_valid(combat) and player.entity_id != 0:
 		combat.forget(player.entity_id)
 		entities.close(player.entity_id, DotEntityTable.REASON_OWNER_LEFT)
+
+	# And dot-match, which kept counting them as present: towards `min_players`, and on
+	# the side they left from. Their scoreboard record stays, which is dot-match's own rule.
+	if match_node != null:
+		match_node.remove_player(String(player_id))
 
 	players.erase(player_id)
 	sides.erase(player_id)
@@ -575,6 +623,16 @@ func _swap_sides() -> void:
 		var now := TEAM_RUNNERS if was == TEAM_DRIVERS else TEAM_DRIVERS
 		sides[id] = now
 
+		# [b]dot-match as well, because its elimination rule is what decides the round
+		# and it reads teams off its own scoreboard.[/b] Flipping `sides` alone left the
+		# rule on the old sides for the rest of the server's life: the drivers ran the new
+		# runners down and every such round was announced as the runners' win.
+		var switched := match_node.switch_team(String(id), now, _tick)
+		if not switched.ok:
+			DotLog.error(CHANNEL, "dot-match refused a side swap", {
+				"id": String(id), "team": now, "why": switched.error.message,
+			})
+
 		var player: BfhPlayer = players[id]
 		if now == TEAM_RUNNERS and player.hammer == null:
 			player.give_hammer(config)
@@ -613,6 +671,10 @@ func _clear_bowl() -> void:
 		vehicles.remove(instance_id)
 
 	_bus_ids.clear()
+	# Keyed by instance ids that are gone now, and never read again: a slow leak of two
+	# entries a round for the life of the server rather than a behaviour, but a leak.
+	_bus_stuck.clear()
+	_bus_inverted.clear()
 
 
 func _lay_out_bowl() -> void:
@@ -1098,10 +1160,6 @@ func _unstick(bus: DotVehicleInstance, by: StringName, delta: float) -> void:
 	DotLog.info(CHANNEL, "a bus was put back on its start line", {"stuck_for": held})
 
 
-## Who is driving the bus with this instance id, or an empty name.
-##
-## Public because a bridge, a console command and a suite all ask it, and the alternative
-## is three copies of a loop over the ride's index.
 ## Seconds a bus may lie on its roof before it is rolled back over.
 const INVERTED_RIGHT_SEC := 2.0
 
@@ -1161,6 +1219,10 @@ func _upright(bus: DotVehicleInstance, delta: float) -> void:
 	DotLog.info(CHANNEL, "a bus was rolled back onto its wheels", {"upside_down_for": held})
 
 
+## Who is driving the bus with this instance id, or an empty name.
+##
+## Public because a bridge, a console command and a suite all ask it, and the alternative
+## is three copies of a loop over the ride's index.
 func driver_of(instance_id: int) -> StringName:
 	for id: StringName in players:
 		if ride.vehicle_id_of(id) == instance_id:
@@ -1296,9 +1358,7 @@ func _bus_report() -> String:
 		var vb := body as VehicleBody3D
 		var drive_line := ""
 		if vb != null:
-			drive_line = " engine=%.0f steer=%.2f thr=%.2f freeze=%s sleep=%s mass=%.0f mode=%d lin=%s" % [
-				vb.freeze, vb.sleeping, vb.mass, vb.freeze_mode, str(vb.linear_velocity),
-			] if false else " engine=%.0f steer=%.2f thr=%.2f frz=%s slp=%s m=%.0f v=%s" % [
+			drive_line = " engine=%.0f steer=%.2f thr=%.2f frz=%s slp=%s m=%.0f v=%s" % [
 				vb.engine_force, vb.steering,
 				bus.command.throttle if bus.command != null else 0.0,
 				vb.freeze, vb.sleeping, vb.mass, str(vb.linear_velocity),
