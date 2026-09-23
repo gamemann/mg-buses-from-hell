@@ -20,7 +20,7 @@ const BfhGame := preload("../game/bfh_game.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 48
+const CHECKS := 60
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -59,6 +59,7 @@ func _run() -> void:
 		await _test_the_round_runs()
 		await _test_the_bots()
 		_test_the_services()
+		await _test_the_live_tools()
 		await _test_it_unloads_cleanly()
 		_test_no_message_preloads_itself()
 
@@ -554,6 +555,132 @@ func _test_the_services() -> void:
 	)
 
 
+## dot-moderation's live tools, built by dot-game's services layer BY PATH, with this
+## game's verbs in them — the first game to get them from the shared layer rather than
+## writing its own.
+##
+## A runner joins through the roster the way a real client does (an adopted session and
+## the `client_spawn` dot-server fires), and the commands go through the console. What is
+## asserted is the body: noclipped, then dead. And the refusals, which are this game's to
+## explain: a runner who is out stays out, and there is nothing to give.
+func _test_the_live_tools() -> void:
+	print("the moderator's live tools")
+
+	var module := _module()
+	var services: Object = module.get("services") if module != null else null
+	var tools: Object = services.get("mod_tools") if services != null else null
+
+	_check(tools != null, "dot-game built dot-moderation's live tools, by path")
+	_check(
+		server.console.find_command("noclip") != null and server.console.find_command("slay") != null,
+		"and put their commands on the console"
+	)
+
+	if tools == null or module == null:
+		for what in ["a runner joins", "noclip", "off", "slay", "respawn refused",
+				"give refused", "describe", "forgotten on leave"]:
+			_check(false, what)
+		return
+
+	# An adopted session has no peer, so the netcode's own sends to it would be an engine
+	# RPC error per tick. Pointed at nothing for this section; the module is rebuilt with
+	# its own manager when the next section reloads it.
+	var net: DotNetManager = module.get("net")
+	var previous_send := net.send_fn
+	net.send_fn = func(_peer: int, _payload: PackedByteArray, _delivery: int) -> void:
+		pass
+
+	var session := DotClientSession.new()
+	session.peer_id = 5151
+	session.userid = 515
+	session.display_name = "Runner"
+	var _adopted := server.adopt_session(session)
+	server.events.fire("client_spawn", {"userid": 515, "name": "Runner"})
+
+	var runner: Object = game.players.get(&"u515")
+	_check(runner != null and not bool(runner.get("riding")), "a runner joins through the roster, on foot")
+
+	if runner == null:
+		for what in ["noclip", "off", "slay", "respawn refused", "give refused", "describe", "forgotten on leave"]:
+			_check(false, what)
+		net.send_fn = previous_send
+		return
+
+	var controller: DotFpsController = runner.get("controller")
+	var health: DotHealth = runner.get("health")
+
+	# Each body is looked at the moment the command returns, not after a frame. A lone
+	# runner makes the sides playable, so a round can start under this section — and a
+	# round start is a new body here, which is exactly when the tools switch a noclip off
+	# and the game stands a slain runner back up. The first run of this section asserted a
+	# frame late and failed all three for that reason, with every command having worked.
+	var noclipped := await _run_and_look("noclip Runner",
+		func() -> bool: return DotFpsAdminModifiers.is_noclipped(controller))
+	_check(bool(noclipped[1]), "`noclip Runner` puts them in noclip", " | ".join(noclipped[0]))
+
+	var landed := await _run_and_look("noclip Runner off",
+		func() -> bool: return not DotFpsAdminModifiers.is_noclipped(controller))
+	_check(bool(landed[1]), "and `noclip Runner off` takes it away")
+
+	var _god := await _run_command_later("god Runner")
+	var slain := await _run_and_look("slay Runner", func() -> bool: return not health.alive)
+	_check(bool(slain[1]), "`slay` kills them through god mode, as ordinary damage", " | ".join(slain[0]))
+
+	# Only the refusal is asserted, not that they stay down: with one runner, the slay above
+	# ended the round, and the next one stands everybody up — which is the game, and is
+	# exactly the "next round" the refusal names.
+	var respawned := await _run_command_later("respawn Runner")
+	_check(
+		_said(respawned, "next round"),
+		"`respawn` is refused with this game's reason",
+		" | ".join(respawned)
+	)
+
+	var given := await _run_command_later("give Runner rifle")
+	_check(_said(given, "hammer"), "`give` says why there is nothing to give", " | ".join(given))
+
+	var described := await _run_command_later("modtools")
+	_check(
+		_said(described, "abilities") and _said(described, "refused"),
+		"`modtools` lists what this game supports and what it refuses"
+	)
+
+	# Leaving forgets them: the next player given this userid must not inherit a god mode.
+	module.get("roster").call("remove", session)
+	var _released := server.release_session(session.peer_id)
+	_check(
+		(tools.call("active_on", &"515") as PackedStringArray).is_empty(),
+		"and a player who leaves takes nothing of theirs with them"
+	)
+
+	net.send_fn = previous_send
+
+
+## Runs a line, asks [param look] about the world at once, then waits for the reply.
+func _run_and_look(line: String, look: Callable) -> Array:
+	var captured: Array[String] = []
+	var context := DotCmdContext.console("", PackedStringArray())
+	context.reply_sink = func(text: String) -> void: captured.append(text)
+	server.console.execute(line, context)
+	var seen: Variant = look.call()
+	await get_tree().process_frame
+	await get_tree().process_frame
+	return [PackedStringArray(captured), seen]
+
+
+## [method _run_command], for a command whose handler is a coroutine — the live tools
+## record every action on a punishment store, which may be a remote one, so the reply can
+## arrive a frame after the command returned.
+func _run_command_later(line: String) -> PackedStringArray:
+	var captured: Array[String] = []
+	var context := DotCmdContext.console("", PackedStringArray())
+	context.reply_sink = func(text: String) -> void: captured.append(text)
+	server.console.execute(line, context)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	return PackedStringArray(captured)
+
+
 func _test_it_unloads_cleanly() -> void:
 	print("unloading")
 
@@ -572,6 +699,12 @@ func _test_it_unloads_cleanly() -> void:
 		server.console.find_command("bfh_say") == null,
 		"including the ones the services layer answers"
 	)
+	# The live tools bind to the server's console, which outlives the services layer; a
+	# command left behind would call into a freed object on the next `noclip`.
+	_check(
+		server.console.find_command("noclip") == null,
+		"and the live tools' commands, which the services layer bound to the console"
+	)
 
 	# [b]The world is NOT the module's to free.[/b] It was in the tree before the module
 	# loaded and a server can reload a game module without the bowl going away — which is
@@ -587,4 +720,8 @@ func _test_it_unloads_cleanly() -> void:
 	_check(
 		server.console.find_command("bfh_status") != null,
 		"with its commands back"
+	)
+	_check(
+		server.console.find_command("noclip") != null,
+		"the live tools' among them, rather than refused as taken"
 	)

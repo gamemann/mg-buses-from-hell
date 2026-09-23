@@ -4,7 +4,7 @@ const BfhGame := preload("bfh_game.gd")
 const BfhNetBridge := preload("net/bfh_net_bridge.gd")
 const BfhPlayer := preload("bfh_player.gd")
 
-## Chat, voice and moderation, wired to this game's two sides.
+## Chat, voice and moderation — and the moderator's live tools — wired to this game's two sides.
 ##
 ## [b]Sixty lines, because [DotGameServices] holds the other five hundred.[/b] The five
 ## games written before this one each carry their own copy — 557 to 718 lines, differing in
@@ -196,6 +196,179 @@ func _player_of(peer_id: int) -> BfhPlayer:
 	return (game as BfhGame).players.get(BfhNetBridge.player_key(session_id))
 
 
+# --- dot-moderation's live tools ---------------------------------------------
+
+## What the admin set means here, one callable per ability. See `DotGameServices`.
+##
+## [b]What is refused is refused for a reason about THIS game, and says so.[/b] Respawn is
+## the one worth reading: a runner who is out stays out until the next round, and an admin
+## who put one back mid-round would be deciding who won. Give and strip are refused because
+## there is one thing anybody holds here and it is not a weapon. Anything that moves a body
+## is refused for a driver while they drive, because the bus is what is moving and the
+## body is a passenger in it.
+func _mod_abilities() -> Dictionary:
+	return {
+		"noclip": func(id: StringName, args: Dictionary) -> DotResult:
+			return _on_foot(id, func(p: BfhPlayer) -> DotResult:
+				return DotFpsAdminModifiers.set_noclip(p.controller, bool(args["on"]))),
+		"freeze": func(id: StringName, args: Dictionary) -> DotResult:
+			return _on_foot(id, func(p: BfhPlayer) -> DotResult:
+				return DotFpsAdminModifiers.set_frozen(p.controller, bool(args["on"]))),
+		"speed": func(id: StringName, args: Dictionary) -> DotResult:
+			return _on_foot(id, func(p: BfhPlayer) -> DotResult:
+				return DotFpsAdminModifiers.set_speed(p.controller, float(args["scale"]))),
+		"gravity": func(id: StringName, args: Dictionary) -> DotResult:
+			return _on_foot(id, func(p: BfhPlayer) -> DotResult:
+				return DotFpsAdminModifiers.set_gravity(p.controller, float(args["scale"]))),
+		"god": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null or p.health == null:
+				return _mod_absent(id)
+			p.health.invulnerable = bool(args["on"])
+			return DotResult.success(p.health.invulnerable),
+		"buddha": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null or p.health == null:
+				return _mod_absent(id)
+			p.health.cannot_die = bool(args["on"])
+			return DotResult.success(p.health.cannot_die),
+		"health": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null or p.health == null:
+				return _mod_absent(id)
+			if not p.health.alive:
+				return DotResult.fail(DotError.CODE_STATE, "They are out until the next round.")
+			p.health.health = minf(float(args["value"]), 2000.0)
+			return DotResult.success(p.health.health),
+		"slay": func(id: StringName, _args: Dictionary) -> DotResult:
+			return _mod_hurt(id, -1.0),
+		"slap": func(id: StringName, args: Dictionary) -> DotResult:
+			return _mod_hurt(id, float(args.get("damage", 0.0))),
+		"rename": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null:
+				return _mod_absent(id)
+			p.display_name = str(args["name"]).strip_edges().substr(0, 32)
+			return DotResult.success(p.display_name),
+	}
+
+
+func _mod_unsupported() -> Dictionary:
+	return {
+		"respawn": "a runner who is out stays out until the next round; putting one back decides who won",
+		"give": "the hammer is the only thing anybody holds here",
+		"strip": "the hammer is the only thing anybody holds here, and without it a runner has no game",
+		"burn": "there is no fire in the bowl",
+		"blind": "the client draws no overlay a server could turn on",
+		"beacon": "the client draws no marker a server could turn on",
+	}
+
+
+func _mod_can_teleport() -> bool:
+	return true
+
+
+func _mod_position(id: StringName) -> Variant:
+	var p := _mod_player(id)
+	return p.controller.state.position if p != null and not p.riding else null
+
+
+func _mod_teleport(id: StringName, to: Variant) -> void:
+	var p := _mod_player(id)
+
+	if p == null or p.riding or not (to is Vector3):
+		return
+
+	p.controller.teleport(to as Vector3, p.controller.state.yaw, p.controller.state.pitch)
+
+
+func _mod_configure_commands(commands: Object) -> void:
+	commands.set("alive_fn", func(id: StringName) -> bool:
+		var p := _mod_player(id)
+		return p != null and p.health != null and p.health.alive)
+	# The two sides by name, because `@team:drivers` is what an admin types.
+	commands.set("team_fn", func(id: StringName) -> String:
+		match (game as BfhGame).team_of(_mod_key(id)):
+			BfhGame.TEAM_DRIVERS:
+				return "drivers"
+			BfhGame.TEAM_RUNNERS:
+				return "runners"
+		return "")
+
+
+func _mod_key(id: StringName) -> StringName:
+	return BfhNetBridge.player_key(String(id).to_int())
+
+
+func _mod_player(id: StringName) -> BfhPlayer:
+	if game == null or not String(id).is_valid_int():
+		return null
+
+	return (game as BfhGame).players.get(_mod_key(id))
+
+
+func _mod_absent(id: StringName) -> DotResult:
+	return DotResult.fail(DotError.CODE_STATE, "Player %s is not in the bowl." % String(id))
+
+
+func _on_foot(id: StringName, act: Callable) -> DotResult:
+	var p := _mod_player(id)
+
+	if p == null:
+		return _mod_absent(id)
+
+	if p.riding:
+		return DotResult.fail(DotError.CODE_STATE, "They are driving a bus; the bus is what moves.")
+
+	return act.call(p)
+
+
+## A slay (amount < 0) or a slap, as ordinary damage through the combat manager — so the
+## round's elimination rule hears about a slain runner exactly as it hears about a bus.
+func _mod_hurt(id: StringName, amount: float) -> DotResult:
+	var p := _mod_player(id)
+
+	if p == null or p.health == null:
+		return _mod_absent(id)
+
+	if not p.health.alive:
+		return DotResult.fail(DotError.CODE_STATE, "They are already out.")
+
+	var bowl := game as BfhGame
+
+	if amount < 0.0:
+		var was_god := p.health.invulnerable
+		var was_buddha := p.health.cannot_die
+		p.health.invulnerable = false
+		p.health.cannot_die = false
+		var fatal := DotDamage.make(0, p.entity_id, p.health.health + 1000.0, null)
+		fatal.weapon_id = &"slay"
+		bowl.combat.apply_damage(fatal)
+		p.health.invulnerable = was_god
+		p.health.cannot_die = was_buddha
+		return DotResult.success(null) if fatal.lethal else DotResult.fail(
+			DotError.CODE_STATE, "The slay was refused: %s" % fatal.refusal
+		)
+
+	if not p.riding:
+		# Into the simulated velocity, which replicates; the owning client reconciles to it.
+		p.controller.state.velocity += Vector3(3.0, 5.0, 3.0)
+		p.controller.state.mode = DotFpsState.Mode.AIR
+
+	if amount > 0.0:
+		var hurt := DotDamage.make(0, p.entity_id, amount, null)
+		hurt.weapon_id = &"slap"
+		bowl.combat.apply_damage(hurt)
+
+	return DotResult.success(null)
+
+
+## A round is everybody's new body: a freeze or a noclip from last round ends, god carries.
+func _on_round_began_for_tools(_number: int) -> void:
+	for key: StringName in (game as BfhGame).players:
+		mod_player_respawned(StringName(str(BfhNetBridge.session_of(key))))
+
+
 ## The team seam dot-chat and dot-voice both ask for, which the base cannot wire.
 ##
 ## [DotGameServices] knows nothing about teams — a lobby has none — so the two `team_fn`
@@ -211,6 +384,9 @@ func setup(p_server: DotServer, p_game: Object, p_link: Object) -> DotResult:
 
 	if voice != null:
 		voice.set("team_fn", Callable(self, "_team_of"))
+
+	if game is BfhGame and not (game as BfhGame).round_began.is_connected(_on_round_began_for_tools):
+		(game as BfhGame).round_began.connect(_on_round_began_for_tools)
 
 	DotLog.info(CHANNEL, "chat, voice and moderation are up for this game", describe())
 	return ready_now

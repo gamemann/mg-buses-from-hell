@@ -36,10 +36,18 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (114), headless_net (101), dedicated (48), and
+examples/           headless_run (114), headless_net (101), dedicated (60), and
                     slope_motor_standin.gd — the one line dot-player-controller lacks
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
+
+## The moderator's live tools, and what this game refuses
+
+The first game to get dot-moderation's live tools from `DotGameServices` rather than building them: `BfhServices` answers `_mod_abilities` with noclip, god, buddha, freeze, slay, slap, health, speed, gravity and rename, and bring, goto, send and return through `_mod_position` / `_mod_teleport`. Every command is on the console and in chat (`!noclip`), with `@team:drivers` and `@team:runners`.
+
+What it refuses is refused for a reason about this game, and `modtools` prints each one: **respawn**, because a runner who is out stays out until the next round and putting one back decides who won; **give** and **strip**, because the hammer is the only thing anybody holds; burn, blind and beacon, because nothing here draws them. **Anything that moves a body is refused for a driver while they drive** — the bus is what moves, and the body is its passenger.
+
+**A round is everybody's new body.** `round_began` calls `mod_player_respawned` for every player, so a noclip or a freeze from last round ends with it and god carries over. `dedicated`'s live-tools section found that the hard way: a lone runner makes the sides playable, a round starts under the test, and a check that looked a frame late saw every command undone by the game doing its job — so it looks at the body the moment the command returns.
 
 ## Decision 1: metres and seconds, not a genre's units
 
@@ -357,7 +365,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . res://examples/headless_run.tscn   # 114 checks, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
-godot --headless --path . res://examples/dedicated.tscn      # 48 checks, as a server
+godot --headless --path . res://examples/dedicated.tscn      # 60 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
