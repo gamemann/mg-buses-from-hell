@@ -16,6 +16,8 @@ func _run() -> void:
 	var look_at_bus := false
 	var look_at_stacks := false
 	var look_at_tanks := false
+	var look_at_scaffold := false
+	var look_at_ramp := false
 	var show_chat := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
@@ -28,6 +30,10 @@ func _run() -> void:
 			look_at_stacks = true
 		elif arg == "--tanks":
 			look_at_tanks = true
+		elif arg == "--scaffold":
+			look_at_scaffold = true
+		elif arg == "--ramp":
+			look_at_ramp = true
 		elif arg == "--chat":
 			show_chat = true
 
@@ -100,6 +106,36 @@ func _run() -> void:
 			cam.look_at(middle + Vector3(1.0, 2.5, 0.0), Vector3.UP)
 			cam.current = true
 			await get_tree().process_frame
+
+	# Or stand off the scaffold's low end, a little above a runner's eyes, and look up it.
+	#
+	# [b]From the end a runner climbs, because that is the question.[/b] What has to be
+	# judged is whether three steps read as three steps — a way UP — rather than as a pile
+	# of crates somebody left there, and whether the top reads as higher than a bus. From
+	# above, every stack of boxes is a staircase.
+	var world_for_scaffold: BfhGame = client.get("game")
+	if look_at_scaffold and world_for_scaffold != null and world_for_scaffold.arena != null \
+			and world_for_scaffold.arena.has_scaffold():
+		var box := world_for_scaffold.arena.scaffold_footprint()
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.global_position = box.position + Vector3(-3.5, 2.4, box.size.z + 5.0)
+		cam.look_at(box.get_center() + Vector3(0.5, 0.2, 0.0), Vector3.UP)
+		cam.current = true
+		await get_tree().process_frame
+
+	# Or stand in the bowl west of the ramp and look along it to the ledge: the ramp was
+	# built backwards for nine days and a picture of it from the side is the one view
+	# where that is obvious at a glance.
+	var world_for_ramp: BfhGame = client.get("game")
+	if look_at_ramp and world_for_ramp != null and world_for_ramp.arena != null:
+		var foot := world_for_ramp.arena.ramp_foot()
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.global_position = foot + Vector3(-13.0, 4.5, 1.0)
+		cam.look_at(foot + Vector3(0.0, 3.5, -15.0), Vector3.UP)
+		cam.current = true
+		await get_tree().process_frame
 
 	# Optionally stand off and look at the bus instead of out of the player's eyes.
 	# The one thing a first-person camera cannot show is the vehicle chasing it.

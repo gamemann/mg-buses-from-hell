@@ -16,7 +16,9 @@ The drivers cannot lose except to the clock. The runners cannot win except on th
 game/
   bfh_config.gd     every cvar, in metres and seconds, layered like every DotConfig
   bfh_paths.gd      where this game's own files are, wherever it is mounted
-  bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks, sun and sky. In code
+  bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks, the farm, the scaffold,
+                    sun and sky. In code, and the climbs it expects a runner to make
+  bfh_reach.gd      what a runner can get onto, as arithmetic over the real tunables
   bfh_textures.gd   the generated metre grid. Why a flat colour has no speed in it
   bfh_content.gd    the prop catalogue and the vehicle catalogue. The design, as data
   bfh_player.gd     one person: controller, health, hammer, and riding a crate
@@ -34,7 +36,8 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (99), headless_net (101), dedicated (48)
+examples/           headless_run (114), headless_net (101), dedicated (48), and
+                    slope_motor_standin.gd — the one line dot-player-controller lacks
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
@@ -194,6 +197,58 @@ The stacks got away with a great deal by being eleven copies of one cylinder. Ev
 
 `PILLAR_LAYOUT` and `TANK_LAYOUT` are two descriptions of two features, and they meet immediately: `build` appends both into one `_obstacles` array with a radius each, and the steering, the scatter keep-out and the gap rule ask for **that** and never for either feature. `pillars()` and `tanks()` are views onto it for the map's own checks and for a camera that wants to look at one of them. Nothing that reasons about the physics of the floor is allowed to care which feature a cylinder belongs to, because a bus wedged nose-on does not.
 
+## Decision 11: the scaffold, because every other question here is about going round
+
+The stacks are cover you watch a bus through and the tank farm is cover you guess behind, and both are answered on the flat: where to stand relative to a nine-metre vehicle that is faster than you. By the third level the bowl had two good answers to that and nothing else. **The scaffold asks UP.** Twenty-four crates as a staircase one, two and three high, two columns to a step, in the south-east quarter — the one quarter of the floor with nothing in it. A runner climbs it in three jumps; a bus cannot climb it at all; from the top the whole bowl is visible and nothing can reach you.
+
+**Built of crates, and that is the whole design.** Height made of anything permanent is a place to win the round by standing on, which the gap rule already forbids on the flat. Crates break at a bus's cruising speed and shove below it, so the top of the scaffold is the safest place in the bowl for exactly as long as the drivers leave it standing — and a driver who wants you down drives through the bottom step. It is the stacks' deal, safe until the bus comes round, made vertical, and paid for in cover: every crate spent bringing it down is one fewer anywhere else.
+
+**Two columns to a step, not one.** A runner who lands on a step with no run in front of the next face jumps from standing, and measured, that clears a one-metre rise by 9 cm and misses one time in three. Two metres of step is a landing and a run-up.
+
+**The arena says where each crate stands; the world spawns them.** They are ordinary props, laid out with the round and replicated like any other, so a client builds no scaffold of its own and a round reset rebuilds it. `scaffold_cells()` is the one description: the spawn points, the settled-position check, the scatter keep-out and the declared climbs all come out of it.
+
+`headless_run`'s section drives it both ways. A runner bot climbs from the sand to the top step by pressing keys — the first thing in this repository that moves a runner that way — and then the ordinary bus autopilot, told nothing about the scaffold, is pointed at them from 24 m off the low end. The check is that the runner ends up on the sand and that the scaffold is no longer where it stood: measured, 4.5 s, six of 24 cells vacated and one crate broken.
+
+### What building it found
+
+- **A crate spawned touching the floor is driven into it.** The floor is one very large convex, and contact generation against one at zero separation is the same unreliable judgement dot-player-controller documents for a swept capsule: the bottom layer went 0.8 m into the sand on the first step and came back up half-buried. Every layer is dropped from a few centimetres now (`SCAFFOLD_DROP`), which is also why the scatter has always dropped things from above.
+- **And the round's own blocks were dropped into it.** The scatter keeps out of pillars and tanks and nothing else, so one of the three 4-tonne concrete blocks landed inside the staircase and spread it half a metre before anybody touched it. The scatter keeps out of the footprint now, and the section checks that nothing scattered is in it.
+- **A bus killed a runner standing on top of it without touching them.** A bus hits whoever is inside a 4.2 m sphere round its centre, deliberately generous — and a sphere round a box that is wider than it is tall reaches over the top of it. A runner three crates up, with a bus driving along the foot of the stack, was 3.2 m from its centre and dead, under a hull that ends at 2.5 m. Nothing above the roof is hit now, the roof read off the bus's own collider (the art is a truck twice the hull's height, so the number from a picture is the wrong one).
+- **A tick with no command repeats the last one.** That is what a netcode wants of a lost packet, and the last command of the climb was "run along the top step", so the first version of the bus check watched the runner walk off the far end 0.7 s before the bus arrived and credited the bus.
+- **It shoves more than it breaks.** The first check asserted crates BROKEN, and the bus brought the runner down with all 24 intact: it met the low end under the 5 m/s a crate breaks at, and pushed the steps apart instead. Same outcome for the runner, cheaper for the drivers, and it is what the level is about — the check is cells vacated.
+
+## What a runner can climb, and two routes that never existed
+
+The family asked every game in it whether the gaps and heights it asks a player to cross are inside what the movement can do. The two games asked first were both wrong. This one was wrong twice, and both were routes the documentation described.
+
+**The arithmetic is `bfh_reach.gd`, over the tunables a real runner gets.** The other two games carry the movement numbers as copies in their map classes, because a map there is content that loads with no player in the tree; here the world that builds the bowl owns the configuration, so `jump_reach(t, rise)` and `climb_limit(t)` take the `DotFpsTunables` that `BfhPlayer.tunables_for(config)` builds and there is nothing to drift. `jump_height` is the APEX of a standing jump — a runner's feet rise 1.094 m of a nominal 1.15 at 60 ticks — so a climb is held to 0.9 of it, the family's margin.
+
+**`BfhArena.climbs(config)` is the part worth copying.** The map declares which two surfaces are a route and how it is made — a STEP, a JUMP, a WALK up a slope, a THROW by a barrel — and every number about it is measured off the colliders: the props through `BfhContent`'s size constants (asserted against the scenes), the ramp off its built transform, the scaffold off the cells its crates are spawned into. Nine climbs, and `headless_run` prints every one with its margin before asserting them.
+
+### The ramp went the wrong way
+
+**For nine days the ramp to the ledge rose from under the deck to 7.8 m over the middle of the bowl.** A rotation of -18 degrees about +X lifts the +Z end, and +Z is the bowl. Every number that placed it was right — its length, its angle, its top end solved to meet the deck — and the one that was wrong was a sign, which no check about position can see. A runner walked under it and stopped against its underside; the ledge had no way up at all. It is the right way round now, and the regression guard reads the surface of the BUILT ramp: higher at the deck than at the foot, by more than the ledge.
+
+**It explains three entries above that were read as something else.** "The ramp was thirteen metres wide, which is a road: the bot drove up it and beached on the lip at the top" — it drove up a ramp whose top was a cliff edge in mid-air. "A nine-metre bus cannot get off the ledge: the transition from a flat deck to a ramp beaches it on the lip" — there was no ramp at the deck; its low end was buried under it. Both fixes stand on their own merits, and both diagnoses were of a map that did not exist.
+
+**And "the throttle moves it" had been passing on gravity.** The check drove the chassis, then called `simulate`, which drives it again from the seated driver's own command — nobody's, so throttle 0. It passed because the bus's start line was under the backwards ramp's low end: the bus rested on the slab at y = 3.45 and rolled north, the wrong way, at 6 m/s. On flat floor the same check read 0.05 m/s. It presses forward through the driver's command now, which is also the first coverage the path from a human driver's keys to a bus has had.
+
+**Fixing it moved four more things.** The buses start in lanes either side of the ramp rather than on its centreline, under 26 m of slab facing the wedge where it meets the floor. `steer_around` knows the ramp is there — the one thing in the bowl a bus cannot come round on either side, since its top end is the deck — and sends a line that crosses the slab round its foot, measured against the slab itself: the first version measured against the slab widened by a bus, sent a bus that was merely BESIDE the ramp round it, and drove it into the hook. The three drive checks that asked "is the bus within 4 m of its start line" to detect a reset ask "did it move 3 m in one tick" instead, because the new start line sat 2.8 m from the line a bus takes round the first tank. And the ramp is tucked 0.3 m under the deck rather than a metre, because a ramp that reaches the deck's height only under the deck is `tuck x tan(18)` short at its edge: 0.32 m, inside a runner's step, and still a wall — the slide against the deck's face leaves them moving upward, the motor calls that airborne, and a step is only tried from the ground.
+
+### A runner still cannot walk up it, and the reason is in dot-player-controller
+
+`DotFpsMotor._categorise_ground` (`fp/motion/dot_fps_motor.gd`) opens with *moving upward faster than 0.1 m/s is not on the ground*. Walking up an 18-degree slope at 6.5 m/s is 2.0 m/s upward along the surface, so every step up any walkable slope reads as a jump: the runner is put in AIR on the first tick of the ramp and stalls against it. Measured on the built ramp, the stock motor gets 0.8 to 2 m up. **No slope in the family has been walked up by anything**; the controller's own suite walks nothing but surf ramps, which are steeper than standing.
+
+The fix is one comparison — whether the player is moving away from the surface they were standing on, velocity along the ground normal, which is the same test on flat ground — and it belongs in the addon, where it changes behaviour on every walkable slope in every game, including `mg-smash-copter`'s tilting platforms. So it is not made from here. `examples/slope_motor_standin.gd` is that one line as a motor subclass, and `headless_run` swaps it into one runner to check the ramp's own geometry today: with it, a runner walks from the sand to the deck. The stock motor's figure is printed beside it, so the day the addon is fixed the stand-in can go. **And the day it is, the ledge becomes somewhere a runner can stand, which it has never been.** `steer_around` chases a quarry on the ramp or the deck from the bottom of the ramp, but whether a bus can drive up 25 m of 18-degree slab five metres wide has not been measured, and if it cannot, the deck is a place to win the round by standing on. That wants a drive before the addon fix ships, not after.
+
+**The ramp's collider is eight boxes, not one**, and that part is this game's. With the slope rule fixed and one 26 m box, the runner still dropped into AIR a metre above the surface two-thirds of the way up: the ground probe missed a floor it was standing on, which is the large-convex failure dot-player-controller documents for its downward sweep, on a tilted convex. Eight boxes of 3.3 m in one plane walk to the deck, and so does a trimesh; boxes, because a seam in one plane is invisible to a sliding capsule and a trimesh's interior edges are not.
+
+### The barrel
+
+**"The one way onto a crate stack" lifted a runner 7 cm.** The blast added 4 m/s of upward velocity to a runner the motor still had as standing on the sand, and the ground snap took it back on the next tick; the motor's own launch path sets AIR as it adds the velocity, and this did not. It sets AIR now, and the lift is a height rather than a speed — `barrel_lift_height`, 4.2 m at the barrel, falling off with the blast — sized so that the weakest throw anybody gets, set off from the hammer's full reach, clears a stack of two with the family's margin. Measured, 2.2 m, and the runner survives it.
+
+**And a loose stack is not there to land on.** The same blast shoves every prop in its radius, and a stack of two 4 m from the barrel came apart before the runner came down — the bottom crate 2.5 m along, the top one 6.4 m — while the runner's arc passed over exactly where it had stood. So the throw is a way two metres up and not, in practice, a way onto a stack of crates beside the barrel that threw you. What it IS a way onto is something the blast cannot move; there is nothing like that in the bowl yet. That is a design question and is written down as one rather than answered here.
+
 ## The art is Kenney's
 
 Three models — a crate, a barrel and a garbage truck standing in for the bus — from the CC0 bundle, in `assets/kenney/`. Two things about vendoring them are worth keeping:
@@ -291,7 +346,7 @@ const BfhEvent := preload("bfh_event.gd")   # for a typed `static func of() -> B
 
 **The check is on the source, and that is deliberate.** The symptom is reported after `quit()`, by the engine, as lines dot-ci's filter already treats as noise; no assertion can run where it happens. So `dedicated`'s last section reads every `DotNetMessage` script under `game/` as text and fails on a self-preload — and with the line put back it fails, and the leak comes back with it.
 
-**Every other game in this family has the same line**, in its event and its request: `game-arena`, `game-g2gfast`, `game-hungario`, `game-playground`, `game-simple-lobby` and `mg-smash-copter`, twelve files. It is the first thing to try on hungario's `[leak-1]`.
+**Every other game in this family has the same line**, in its event and its request: `game-arena`, `game-g2gfast`, `game-hungario`, `game-playground`, `game-simple-lobby` and `mg-smash-copter`, twelve files. It is the first thing to try on game-hungario's own leak at exit, which is the same shape.
 
 ## Validating
 
@@ -300,12 +355,14 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 99 checks, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 114 checks, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 48 checks, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
+tools/shot.sh 9 scaffold.png --scaffold                      # the scaffold, from the end a runner climbs
+tools/shot.sh 9 ramp.png --ramp                              # the ramp, from the side
 ```
 
 **And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:

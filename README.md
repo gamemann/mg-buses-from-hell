@@ -21,7 +21,7 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](https:/
 
 ```bash
 godot --path .                                                # play it, alone
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 99 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 114 checks
 godot --headless --path . res://examples/headless_net.tscn    # over the wire, 101 checks
 godot --headless --path . res://examples/dedicated.tscn       # as a server, 48 checks
 tools/shot.sh                                                 # render a frame and look at it
@@ -31,14 +31,16 @@ The same client plays alone and plays online: with no server link in the registr
 
 ## What a round is
 
-A bowl 46 m across with a wall round it and a ledge at one edge. Thirty-odd crates, nine barrels and a handful of concrete blocks are scattered across the floor from a seed, so two servers on the same seed lay out the same round.
+A bowl 46 m across with a wall round it and a ledge at one edge, reached by a ramp. Thirty-odd crates, nine barrels and a handful of concrete blocks are scattered across the floor from a seed, so two servers on the same seed lay out the same round.
+
+Three things stand in it every round. **The stacks**, a lane of concrete pillars in the west half, are cover you watch a bus through. **The tank farm**, four drums round a courtyard in the east, is cover you guess behind. **The scaffold**, twenty-four crates stacked as a staircase one, two and three high in the south-east, is the only height in the bowl a runner can climb — and since it is made of crates, a bus can take it away.
 
 The runners start on the sand. The drivers start in buses on the sand. The round ends when every runner is down, or when the clock runs out — the runners win the clock. Sides swap every three rounds, because driving is the fun half and there are only two seats for it.
 
 | | |
 | --- | --- |
 | **Crate** | 100 hp. Three hammer swings, or one bus above its lethal speed. You can stand on one, and it moves when you do. |
-| **Barrel** | 34 hp and a 6.5 m blast. Everything sets it off. It throws a runner upward, which is the only way onto a crate stack that the crates do not offer. |
+| **Barrel** | 34 hp and a 6.5 m blast. Everything sets it off. It throws a runner upward — two metres from the hammer's reach, past any jump — and shoves every loose crate near it further than that. |
 | **Concrete block** | Cannot be broken, cannot be pushed. Whatever the drivers flatten, this much cover is left. |
 
 ## The hammer does not kill

@@ -3,6 +3,7 @@ extends Node3D
 const BfhArena := preload("bfh_arena.gd")
 const BfhConfig := preload("bfh_config.gd")
 const BfhContent := preload("bfh_content.gd")
+const BfhReach := preload("bfh_reach.gd")
 const BfhPlayer := preload("bfh_player.gd")
 
 ## The simulation. Headless, authoritative, and the only thing that decides anything.
@@ -141,6 +142,11 @@ var _tick: int = 0
 var entities := DotEntityTable.new()
 var _layout_seed: int = 0
 var _bus_ids: Array[int] = []
+
+## The scaffold's crates this round, by prop instance id. A crate of it is an ordinary
+## crate in every other respect — it breaks, it is shoved, it counts as cover — and this
+## list is only so the round, the suite and `describe` can tell which ones they are.
+var scaffold_ids: Array[int] = []
 
 ## Instance id -> seconds this bus has been asking to move and not moving.
 var _bus_stuck: Dictionary = {}
@@ -680,6 +686,15 @@ func _clear_bowl() -> void:
 func _lay_out_bowl() -> void:
 	var stream := random.stream(&"bowl")
 
+	# The scaffold first, so nothing scattered is in its cells: the scatter keeps out of
+	# its footprint, and a block that landed inside it — which one did, before the
+	# keep-out — spread the whole staircase half a metre at the first step.
+	scaffold_ids.clear()
+	for at in arena.scaffold_spawn_points():
+		var crate := props.spawn(BfhContent.CRATE, &"world", at)
+		if crate != null:
+			scaffold_ids.append(crate.instance_id)
+
 	for _i in range(config.crate_count):
 		props.spawn(BfhContent.CRATE, &"world", arena.scatter_point(stream, 8.0, 0.6))
 
@@ -996,6 +1011,7 @@ func _check_bus_impacts(delta: float) -> void:
 
 		var bus_velocity := bus.velocity()
 		var driver_id := driver_of(instance_id)
+		var roof := _roof_of(body)
 
 		for id: StringName in players:
 			var player: BfhPlayer = players[id]
@@ -1011,6 +1027,16 @@ func _check_bus_impacts(delta: float) -> void:
 			# miss that should have been a hit is the complaint this game would
 			# actually get, and a hit is checked against closing speed anyway.
 			if offset.length() > 4.2:
+				continue
+
+			# [b]And nothing above the roof, which the sphere cannot tell.[/b] A sphere
+			# round a box that is wider than it is tall reaches over the top of it: a
+			# runner standing three crates up, with a bus driving past the foot of the
+			# stack, was 3.2 m from its centre and killed — by a vehicle whose hull
+			# ends at 2.5 m. Found by the scaffold's own check, whose runner died on
+			# the top step with one crate out of place. Height is the scaffold's whole
+			# point, so it has to be the one thing this bound gets right.
+			if player.global_position.y > roof + BUS_ROOF_MARGIN:
 				continue
 
 			# [b]Along the offset, not against it.[/b] `offset` runs from the bus to
@@ -1031,6 +1057,23 @@ func _check_bus_impacts(delta: float) -> void:
 		_break_props_under(bus, bus_velocity.length(), driver_id)
 		_unstick(bus, driver_id, delta)
 		_upright(bus, delta)
+
+
+## The top of a bus's hull in world height, from its own collider.
+##
+## Read off the scene rather than written down, because the art is a truck twice the
+## hull's height and the number anybody would guess from a picture is the wrong one.
+func _roof_of(body: Node3D) -> float:
+	var hull := body.get_node_or_null(^"Collision") as CollisionShape3D
+	if hull == null or not (hull.shape is BoxShape3D):
+		return body.global_position.y + 3.0
+	var top := hull.position + Vector3(0.0, (hull.shape as BoxShape3D).size.y * 0.5, 0.0)
+	return (body.global_transform * top).y
+
+
+## How far above the roof a runner's feet can be and still be hit: a bus bouncing on
+## its springs, and a runner a few centimetres off the crate they are running across.
+const BUS_ROOF_MARGIN := 0.25
 
 
 func _bus_hit(player: BfhPlayer, by: StringName, closing: float, offset: Vector3) -> void:
@@ -1269,11 +1312,25 @@ func _on_prop_exploded(
 		combat.apply_damage(damage)
 
 		# Thrown, and a barrel is the only thing in the game that throws a runner
-		# UPWARD. It is the one way onto a crate stack that the crates themselves do
-		# not offer, and it is why a barrel is worth standing near as well as away
-		# from.
+		# UPWARD — two metres from the hammer's reach, past any jump, which is why a
+		# barrel is worth standing near as well as away from. NOT onto a loose stack
+		# of crates beside it, which this comment used to promise: the same blast
+		# shoves the stack further than it throws the runner. See CLAUDE.md, "The
+		# barrel".
 		var push := damage.direction * force * falloff * 0.004
-		player.controller.state.velocity += push + Vector3.UP * falloff * 4.0
+		push.y = 0.0
+		var state := player.controller.state
+		state.velocity += push
+		state.velocity.y = maxf(
+			state.velocity.y, BfhReach.launch_speed(config.gravity, config.barrel_lift_height * falloff)
+		)
+		# [b]And off the ground, or none of that survives the tick.[/b] A velocity added
+		# to a runner the motor still has as GROUND is snapped back onto the sand before
+		# it moves them — which is what this did for nine days, and a barrel lifted
+		# people 7 cm. The motor's own launch path does exactly these two lines; see
+		# `DotFpsMotor.add_modifier`.
+		state.mode = DotFpsState.Mode.AIR
+		state.time_since_grounded = 1000.0
 
 
 func _on_player_died(player: BfhPlayer, damage: DotDamage) -> void:
@@ -1311,6 +1368,17 @@ func crates_left() -> int:
 	return count
 
 
+## How many of the scaffold's crates are still there. Broken ones are gone; shoved ones
+## still count, because a crate knocked off the top is still a crate somebody can climb.
+func scaffold_standing() -> int:
+	var count := 0
+	for id in scaffold_ids:
+		var prop := props.get_prop(id)
+		if prop != null and prop.is_alive():
+			count += 1
+	return count
+
+
 func describe() -> Dictionary:
 	return {
 		"round": round_number,
@@ -1318,6 +1386,7 @@ func describe() -> Dictionary:
 		"players": players.size(),
 		"runners_alive": alive_runners(),
 		"crates": crates_left(),
+		"scaffold": "%d of %d standing" % [scaffold_standing(), scaffold_ids.size()],
 		"props": props.world_count() if props != null else 0,
 		"buses": _bus_ids.size(),
 		"gravity": "%.1f m/s2" % config.gravity,

@@ -5,6 +5,8 @@ const BfhConfig := preload("../game/bfh_config.gd")
 const BfhContent := preload("../game/bfh_content.gd")
 const BfhGame := preload("../game/bfh_game.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
+const BfhReach := preload("../game/bfh_reach.gd")
+const SlopeMotor := preload("slope_motor_standin.gd")
 
 ## Proves the bowl, the crates, the hammer, the barrels and the buses all actually work.
 ##
@@ -24,7 +26,7 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 99
+const CHECKS := 114
 
 const TICK := 1.0 / 60.0
 
@@ -50,6 +52,8 @@ func _run() -> void:
 	await _test_bowl_layout()
 	await _test_the_stacks()
 	await _test_the_tank_farm()
+	await _test_reach()
+	await _test_the_scaffold()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -211,6 +215,17 @@ func _dispose(game: BfhGame) -> void:
 	await get_tree().process_frame
 
 
+## Whether a bus moved further in one tick than it can drive: the stuck rule's teleport.
+##
+## [b]A jump, not a place.[/b] These checks used to ask whether the bus was within 4 m of
+## its start line, which was a teleport detector only by luck: the start line sat under
+## the ramp, where no chase ever went. Moved out beside the ramp on 2026-09-23, it was
+## 2.8 m from the line a bus takes round the first tank, and a bus that came round the
+## drum perfectly was reported as sent home. At its top speed a bus covers 0.4 m a tick.
+func _sent_home(before: Vector3, after: Vector3) -> bool:
+	return Vector2(after.x - before.x, after.z - before.z).length() > 3.0
+
+
 func _step(game: BfhGame, ticks: int) -> void:
 	for _i in range(ticks):
 		game.simulate(TICK)
@@ -296,8 +311,10 @@ func _test_bowl_layout() -> void:
 	await _step(game, 8)
 
 	_check(game.round_number >= 1, "a round begins", "round %d" % game.round_number)
-	_check(game.crates_left() == 12, "the crates are laid out",
-		"%d" % game.crates_left())
+	# The scattered twelve plus the scaffold, which is crates too and counts as cover.
+	var scaffold := game.arena.scaffold_cells().size()
+	_check(game.crates_left() == 12 + scaffold, "the crates are laid out",
+		"%d, of %d scattered and %d in the scaffold" % [game.crates_left(), 12, scaffold])
 	_check(game.props.world_count() > 12,
 		"with barrels and blocks beside them", "%d props" % game.props.world_count())
 
@@ -509,7 +526,7 @@ func _test_driving_the_stacks() -> void:
 	var quarry := game.runners()[0]
 	quarry.global_position = pillar + Vector3(0.0, 1.2, 14.0)
 
-	var home := arena.bus_start(0, 1)
+	var last := bus.position()
 	var reset := false
 	var past := false
 	var top_speed := 0.0
@@ -528,9 +545,11 @@ func _test_driving_the_stacks() -> void:
 		# bus's own start line is a long way from here: a bus back on it has been reset.
 		quarry.global_position = pillar + Vector3(0.0, 1.2, 14.0)
 
-		if Vector2(at.x - home.x, at.z - home.z).length() < 4.0:
+		if _sent_home(last, at):
 			reset = true
 			break
+
+		last = at
 
 		if at.z > pillar.z + 1.0:
 			past = true
@@ -563,6 +582,7 @@ func _test_driving_the_stacks() -> void:
 
 	var through := false
 	var hook_reset := false
+	var hook_last := bus.position()
 
 	for _i in range(360):
 		game.simulate(TICK)
@@ -574,9 +594,11 @@ func _test_driving_the_stacks() -> void:
 		quarry.global_position = hook + Vector3(0.0, 1.2, 14.0)
 		var here := bus.position()
 
-		if Vector2(here.x - home.x, here.z - home.z).length() < 4.0:
+		if _sent_home(hook_last, here):
 			hook_reset = true
 			break
+
+		hook_last = here
 
 		if here.z > hook.z + 1.0:
 			through = true
@@ -778,7 +800,7 @@ func _test_driving_the_farm() -> void:
 	var hide := tank + Vector3(0.0, 1.2, 16.0)
 	quarry.global_position = hide
 
-	var home := arena.bus_start(0, 1)
+	var last := bus.position()
 	var reset := false
 	var past := false
 	var top_speed := 0.0
@@ -794,9 +816,11 @@ func _test_driving_the_farm() -> void:
 		var at := bus.position()
 		top_speed = maxf(top_speed, bus.speed())
 
-		if Vector2(at.x - home.x, at.z - home.z).length() < 4.0:
+		if _sent_home(last, at):
 			reset = true
 			break
+
+		last = at
 
 		if at.z > tank.z + 1.0:
 			past = true
@@ -809,6 +833,369 @@ func _test_driving_the_farm() -> void:
 		"%.1f m/s top, %.1f m/s at the end"
 			% [top_speed, bus.speed() if bus.is_alive() else 0.0]
 	)
+
+	await _dispose(game)
+
+
+# --- What a runner can climb -----------------------------------------------
+
+## Every way up the bowl, measured against what a runner can actually do, and then done.
+##
+## [b]The family's reach question, asked of this game, and two of its routes were never
+## possible.[/b]
+## The ramp to the ledge was built backwards on the first day — it rose from under the
+## deck to 7.8 m over the middle of the bowl — so the ledge had no way up at all. And the
+## barrel, documented as "the one way onto a crate stack", lifted a runner 7 cm: its
+## upward velocity was added to somebody the motor still had on the ground, and the ground
+## snap ate it. Nothing checked either, because nothing here had ever driven a runner
+## anywhere; every section placed them by hand.
+##
+## The arithmetic is [code]bfh_reach.gd[/code], over the tunables a real runner gets.
+## The routes are declared by the map and measured off the colliders. Then three of them
+## are driven, because arithmetic that agrees with itself is not a runner on a crate.
+func _test_reach() -> void:
+	print("what a runner can climb")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 4)
+
+	var t := runner.controller.tunables
+	var arena := game.arena
+
+	# The map's props are measured off constants, so the constants are held to the scenes.
+	_check(
+		_prop_size_agrees(BfhContent.CRATE_SCENE, Vector3.ONE * BfhContent.CRATE_SIZE)
+		and _prop_size_agrees(BfhContent.BARREL_SCENE, Vector3(
+			BfhContent.BARREL_RADIUS * 2.0, BfhContent.BARREL_HEIGHT, BfhContent.BARREL_RADIUS * 2.0)),
+		"the sizes the climbs are measured with are the props' own colliders"
+	)
+
+	print("  ..    a jump peaks at %.2f m; climb limit %.2f m; reach %.2f m flat, %.2f m onto 1 m"
+		% [t.jump_height, BfhReach.climb_limit(t), BfhReach.jump_reach(t, 0.0),
+			BfhReach.jump_reach(t, 1.0)])
+
+	var climbs := arena.climbs(game.config)
+	var refused := PackedStringArray()
+	for climb in climbs:
+		var why := BfhReach.refusal(climb, t)
+		print("  ..    %s%s" % [climb.describe(), "  <- " + why if why != "" else ""])
+		if why != "":
+			refused.append("%s: %s" % [climb.name, why])
+
+	_check(climbs.size() >= 9, "the map declares its climbs", "%d" % climbs.size())
+	_check(refused.is_empty(), "and every one is inside what a runner can do",
+		"; ".join(refused))
+
+	# [b]The regression guard for the backwards ramp, on the BUILT map.[/b] Every constant
+	# that places the ramp was right for nine days; what was wrong was the sign of one
+	# rotation, and the only place that shows is the surface itself.
+	var foot := arena.ramp_surface_at(0.0, arena.ramp_foot().z)
+	var top := arena.ramp_surface_at(0.0, -(arena.radius - BfhArena.LEDGE_DEPTH))
+	_check(top - foot > BfhArena.LEDGE_HEIGHT,
+		"the ramp rises from the sand to the deck, not away from it",
+		"%.2f at the foot, %.2f at the deck" % [foot, top])
+
+	# --- Onto a crate, from a run.
+	var crate := game.props.spawn(BfhContent.CRATE, &"world", Vector3(0.0, 0.55, 12.0))
+	await _step(game, 20)
+	_put(runner, Vector3(0.0, 0.05, 18.0))
+	await _step(game, 5)
+	await _run_route(game, runner, [Vector3(0.0, 1.0, 12.0)], 150)
+	_check(game.carry.prop_under(runner.controller.state.ground_id) == crate,
+		"a runner jumps onto a crate from a run",
+		"feet at %.2f" % runner.global_position.y)
+	game.props.remove(crate.instance_id)
+
+	# --- Up the ramp, twice: the stock motor, measured and printed, and the stand-in.
+	var start := arena.ramp_foot() + Vector3(0.0, -0.45, 6.0)
+	# The middle of the deck, well past the lip, so the route's "jump when the next
+	# surface is higher and close" never fires at the lip itself: a ramp is walked.
+	var deck := arena.ledge_centre()
+	_put(runner, start)
+	await _step(game, 5)
+	var stock := await _run_route(game, runner, [Vector3(0.0, arena.deck_top(), deck.z)], 480)
+	print("  ..    the stock motor walks %.2f m up the ramp of %.2f; see slope_motor_standin.gd"
+		% [stock, arena.deck_top()])
+
+	_fit_slope_motor(runner)
+	_put(runner, start)
+	await _step(game, 5)
+	var walked := await _run_route(game, runner, [Vector3(0.0, arena.deck_top(), deck.z)], 480)
+	_check(runner.global_position.y > arena.deck_top() - 0.1,
+		"and with the slope rule the addon is missing, a runner walks up it onto the ledge",
+		"best %.2f, feet at %.2f, deck %.2f" % [walked, runner.global_position.y, arena.deck_top()])
+
+	await _dispose(game)
+
+	# --- Thrown onto a stack of two by a barrel set off from the hammer's reach.
+	await _test_the_throw()
+
+
+## A barrel throws a runner onto two crates, which nothing else does.
+##
+## [b]From the farthest a runner can set one off from[/b] — the hammer's reach to the
+## barrel's face — because that is the weakest throw anybody gets and the one the
+## declared climb is measured at.
+func _test_the_throw() -> void:
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 4)
+
+	var at := Vector3(-20.0, 0.0, 26.0)
+	var barrel := game.props.spawn(BfhContent.BARREL, &"world",
+		at + Vector3(0.0, BfhContent.BARREL_HEIGHT * 0.5 + 0.05, 0.0))
+	var stand := game.config.hammer_reach + BfhContent.BARREL_RADIUS
+	# [b]No stack beside them, and that is a finding.[/b] The same blast shoves every
+	# loose prop in its radius: measured, a stack of two 4 m from the barrel came apart
+	# before the runner came down — the bottom crate 2.5 m along, the top one 6.4 m —
+	# while the runner's arc passed over exactly where it had stood. So what is asserted
+	# is the throw: high enough for a stack of two, from the farthest a runner can set a
+	# barrel off, and survivable from there. That a loose stack is still there to land
+	# on is not true, and CLAUDE.md says so under "The barrel".
+	await _step(game, 30)
+
+	_put(runner, at + Vector3(stand, 0.05, 0.0))
+	runner.health.health = game.config.runner_health
+	await _step(game, 10)
+
+	var before := runner.global_position.y
+	game.prop_damage.break_now(barrel.instance_id, &"r")
+	var apex := before
+	for _i in range(90):
+		var keys := DotFpsCommand.new()
+		keys.yaw = -90.0
+		keys.move = Vector2(0.0, 1.0)
+		runner.controller.apply_command(keys)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		apex = maxf(apex, runner.global_position.y)
+
+	_check(apex - before > 2.0,
+		"a barrel set off from the hammer's reach throws a runner higher than a stack of two",
+		"%.2f m" % (apex - before))
+	_check(runner.health.alive,
+		"and survive it, from there",
+		"%.0f of %.0f health left" % [runner.health.health, game.config.runner_health])
+
+	await _dispose(game)
+
+
+## Whether a prop scene's collision shape has [param expected] as its size.
+func _prop_size_agrees(scene_path: String, expected: Vector3) -> bool:
+	var scene := load(scene_path) as PackedScene
+	if scene == null:
+		return false
+	var node := scene.instantiate()
+	var size := Vector3.ZERO
+	for child in node.get_children():
+		if child is CollisionShape3D:
+			var shape: Shape3D = (child as CollisionShape3D).shape
+			if shape is BoxShape3D:
+				size = (shape as BoxShape3D).size
+			elif shape is CylinderShape3D:
+				var cylinder := shape as CylinderShape3D
+				size = Vector3(cylinder.radius * 2.0, cylinder.height, cylinder.radius * 2.0)
+	node.free()
+	return size.is_equal_approx(expected)
+
+
+func _put(player: BfhPlayer, at: Vector3) -> void:
+	player.global_position = at
+	player.controller.state.position = at
+	player.controller.state.velocity = Vector3.ZERO
+
+
+## Swaps in [code]slope_motor_standin.gd[/code] for this one runner. See its notes.
+func _fit_slope_motor(player: BfhPlayer) -> void:
+	var old := player.controller.motor
+	var motor: DotFpsMotor = SlopeMotor.new(player.controller.tunables, old.body)
+	motor.surfaces = old.surfaces
+	motor.set_tick_rate(60)
+	player.controller.motor = motor
+
+
+## Drives a runner through [param waypoints] the way a person would: run at each one and
+## jump when it is higher and close. Returns the highest the feet got.
+##
+## [b]The first thing in this file that moves a runner by pressing keys.[/b] A waypoint is
+## where to stand, with the height of what you stand on in [code]y[/code]; one is done
+## when the runner is standing within half a metre of it at that height.
+func _run_route(game: BfhGame, player: BfhPlayer, waypoints: Array, ticks: int) -> float:
+	var index := 0
+	var best := player.global_position.y
+
+	for _i in range(ticks):
+		var wp: Vector3 = waypoints[index]
+		var state := player.controller.state
+		var flat := Vector3(wp.x - state.position.x, 0.0, wp.z - state.position.z)
+
+		if (
+			state.mode == DotFpsState.Mode.GROUND
+			and state.position.y > wp.y - 0.3
+			and flat.length() < 0.5
+		):
+			if index == waypoints.size() - 1:
+				break
+			index += 1
+			continue
+
+		var keys := DotFpsCommand.new()
+		keys.yaw = rad_to_deg(atan2(-flat.x, -flat.z)) if flat.length() > 0.05 else state.yaw
+		keys.move = Vector2(0.0, 1.0) if flat.length() > 0.2 else Vector2.ZERO
+		# The face is about half a metre short of the waypoint; 1.9 m from it is the
+		# distance a jump at running speed needs to clear a metre.
+		if (
+			state.mode == DotFpsState.Mode.GROUND
+			and wp.y > state.position.y + 0.5
+			and flat.length() < 1.9
+		):
+			keys.set_button(DotFpsCommand.BUTTON_JUMP, true)
+
+		player.controller.apply_command(keys)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		best = maxf(best, player.global_position.y)
+
+	return best
+
+
+# --- The scaffold ------------------------------------------------------------
+
+## The height a runner can climb and a bus can take away, which is the whole level.
+##
+## [b]Two drives, and the second is the point.[/b] A runner bot climbs the three steps to
+## the top in three jumps, and that proves the height is reachable. Then a bot bus is
+## pointed at them — the ordinary autopilot, chasing the nearest runner, with nothing
+## told about the scaffold — and the check is that the runner ends up on the sand. A
+## height a bus could not bring down would be a place to win the round by standing on,
+## and this map has a rule against those.
+func _test_the_scaffold() -> void:
+	print("the scaffold")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.round_seconds = 120.0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	# Somewhere else while the round lays out, so the scatter cannot drop them into it.
+	_put(runner, Vector3(-30.0, 0.05, 20.0))
+	game.start()
+	await _step(game, 60)
+
+	var arena := game.arena
+	var cells := arena.scaffold_cells()
+	var footprint := arena.scaffold_footprint()
+
+	_check(arena.has_scaffold() and game.scaffold_ids.size() == cells.size(),
+		"the scaffold is built, one crate to a cell",
+		"%d crates for %d cells" % [game.scaffold_ids.size(), cells.size()])
+
+	var drift := 0.0
+	for i in range(mini(cells.size(), game.scaffold_ids.size())):
+		var prop := game.props.get_prop(game.scaffold_ids[i])
+		if prop != null:
+			drift = maxf(drift, prop.body().global_position.distance_to(cells[i].get_center()))
+	_check(drift < 0.1, "and every crate has settled into its cell",
+		"worst %.3f m off" % drift)
+
+	# A bus has to be able to get to the bottom step: held to the same clear floor as any
+	# gap between two obstacles, measured from the footprint's edge to each surface.
+	var nearest := INF
+	var obstacles := arena.obstacles()
+	for i in range(obstacles.size()):
+		var at := obstacles[i]
+		var dx := maxf(maxf(footprint.position.x - at.x, at.x - footprint.end.x), 0.0)
+		var dz := maxf(maxf(footprint.position.z - at.z, at.z - footprint.end.z), 0.0)
+		nearest = minf(nearest, Vector2(dx, dz).length() - arena.obstacle_radius(i))
+	_check(nearest >= BfhArena.BUS_GAP,
+		"it stands clear of every pillar and tank by a bus's gap",
+		"%.1f m" % nearest)
+
+	var strays := 0
+	for prop in game.props.all_props():
+		if prop.instance_id in game.scaffold_ids:
+			continue
+		var at := prop.body().global_position
+		if footprint.grow(0.3).has_point(Vector3(at.x, 0.5, at.z)):
+			strays += 1
+	_check(strays == 0, "and nothing scattered was dropped into it", "%d" % strays)
+
+	# --- A runner climbs it. The route is the steps' own tops, from the low end.
+	var steps := arena.scaffold_steps()
+	var route: Array = []
+	for step in steps:
+		route.append(Vector3(step.position.x + 0.6, step.end.y, step.get_center().z))
+	var top: AABB = steps[steps.size() - 1]
+	route.append(Vector3(top.end.x - 0.6, top.end.y, top.get_center().z))
+
+	_put(runner, Vector3(footprint.position.x - 5.0, 0.05, footprint.get_center().z))
+	await _step(game, 5)
+	var best := await _run_route(game, runner, route, 600)
+	var standing_on := game.carry.prop_under(runner.controller.state.ground_id)
+	_check(
+		runner.global_position.y > top.end.y - 0.1
+		and standing_on != null and standing_on.instance_id in game.scaffold_ids,
+		"a runner climbs to the top of it in three jumps",
+		"best %.2f, feet at %.2f, top %.2f" % [best, runner.global_position.y, top.end.y])
+
+	# --- And a bus brings them down. The bot, pointed at them from 24 m off the low end.
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+	var toward := Vector3(1.0, 0.0, 0.0)
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(toward),
+		Vector3(footprint.position.x - 24.0, 1.4, footprint.get_center().z))
+	driver.is_bot = true
+
+	var standing_before := game.scaffold_standing()
+	var down := false
+	var took := 0
+	for _i in range(600):
+		# Standing still, and told so every tick: a tick with no command REPEATS the last
+		# one, which is what a netcode wants of a lost packet — and the last one was "run
+		# along the top step", so the first version of this watched the runner walk off
+		# the far end 0.7 s before the bus arrived and called it the bus's doing.
+		var still := DotFpsCommand.new()
+		still.yaw = runner.controller.state.yaw
+		runner.controller.apply_command(still)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		took += 1
+		if not runner.health.alive or runner.global_position.y < 0.5:
+			down = true
+			break
+	print("  ..    %s after %.1f s" % [
+		"killed" if not runner.health.alive else "on the sand", float(took) * TICK])
+
+	_check(down, "and a bus chasing them brings them down to the sand",
+		"feet at %.2f, %s, %d of %d crates standing" % [
+			runner.global_position.y, "alive" if runner.health.alive else "dead",
+			game.scaffold_standing(), game.scaffold_ids.size()])
+	# [b]Out of its cells, not broken.[/b] The first version of this asserted crates
+	# BROKEN and the bus brought the runner down with every crate intact: it hit the low
+	# end at the speed the chase allowed, under the 5 m/s a crate breaks at, and shoved
+	# the steps apart instead. That is the same outcome for the runner and a cheaper one
+	# for the drivers, and it is what the property is about — the height is gone.
+	var vacated := 0
+	for i in range(mini(cells.size(), game.scaffold_ids.size())):
+		var prop := game.props.get_prop(game.scaffold_ids[i])
+		if prop == null or not prop.is_alive() \
+				or prop.body().global_position.distance_to(cells[i].get_center()) > 0.5:
+			vacated += 1
+	print("  ..    the bus left %d of %d crates standing and %d out of their cells"
+		% [game.scaffold_standing(), standing_before, vacated])
+	_check(vacated >= cells.size() / 4,
+		"by going through the scaffold: a quarter of it is no longer where it stood",
+		"%d of %d cells vacated" % [vacated, cells.size()])
 
 	await _dispose(game)
 
@@ -1311,17 +1698,31 @@ func _test_bus_propulsion() -> void:
 	body.angular_velocity = Vector3.ZERO
 	await _step(game, 4)
 
-	var command := DotVehicleCommand.new()
-	command.throttle = 1.0
-	bus.command = command
+	# [b]Through the driver's own command, the way a person presses W.[/b] This used to
+	# drive the chassis directly and then call `simulate`, which drives it AGAIN from the
+	# seated driver's pending command — nobody's, so throttle 0. The check passed
+	# anyway, for nine days, because the bus's start line was under the ramp, which was
+	# built backwards and low at that end: the bus rested on it at y = 3.45 and ROLLED
+	# north, the wrong way, at 6 m/s. On flat floor the same check read 0.05 m/s. So it
+	# was never a check of the throttle, and the path a human driver's keys take into a
+	# bus had no check at all.
+	var driver: BfhPlayer = game.players[&"d"]
+	var start := bus.position()
 
 	for _i in range(90):
-		if bus.chassis != null:
-			(bus.chassis as DotVehicleChassis).drive(command, TICK)
+		var keys := DotFpsCommand.new()
+		keys.move = Vector2(0.0, 1.0)
+		driver.controller.apply_command(keys)
 		game.simulate(TICK)
 		await get_tree().physics_frame
 
-	_check(bus.speed() > 1.0, "and the throttle moves it", "%.2f m/s" % bus.speed())
+	var forward := -body.global_transform.basis.z
+	var along := (bus.position() - start).dot(Vector3(forward.x, 0.0, forward.z).normalized())
+	_check(
+		bus.speed() > 1.0 and along > 1.0,
+		"and a driver pressing forward moves it forward",
+		"%.2f m/s, %.2f m along its nose" % [bus.speed(), along]
+	)
 
 	await _dispose(game)
 

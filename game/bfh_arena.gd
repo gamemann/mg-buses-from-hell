@@ -1,5 +1,8 @@
 extends Node3D
 
+const BfhConfig := preload("bfh_config.gd")
+const BfhContent := preload("bfh_content.gd")
+const BfhReach := preload("bfh_reach.gd")
 const BfhTextures := preload("bfh_textures.gd")
 
 ## The bowl: a round sand floor, a wall around it, and a ledge the drivers look from.
@@ -35,6 +38,17 @@ const RAMP_LENGTH := 26.0
 const RAMP_ANGLE := 18.0
 const RAMP_THICKNESS := 0.8
 const RAMP_WIDTH := 5.0
+
+## How far the ramp's top end runs in under the deck.
+##
+## [b]A third of a metre, and it was a metre.[/b] The ramp meets the deck's height only
+## where it ends, so however far that is under the deck, the ramp is that far times
+## tan(18) short of the deck at its front edge: 0.32 m at a metre. That is inside a
+## runner's step height and a runner still could not get over it — the slide against the
+## deck's face leaves them moving upward, the motor calls that airborne, and a step is
+## only tried from the ground. They walked all 25 m of the ramp and bounced at the top.
+## At 0.3 the lip is 0.1 and the overlap that keeps it from being a seam is still there.
+const RAMP_TUCK := 0.3
 
 ## THE STACKS: the permanent half of the bowl.
 ##
@@ -181,6 +195,9 @@ var world_mask: int = 1
 
 var _floor_body: StaticBody3D = null
 
+## The ramp's body, for the steering and for measuring its lip.
+var _ramp: StaticBody3D = null
+
 ## Every round obstacle on the floor, and how wide each one is. [b]One description, and
 ## everything else is derived from it[/b] -- the meshes, the colliders, the scatter that
 ## must not drop a crate inside one, the steering that must not drive a bus into one, and
@@ -218,6 +235,7 @@ func build(p_radius: float) -> void:
 	# two views has to be right whether or not the stacks went in.
 	_stack_count = _obstacles.size()
 	_build_tanks()
+	_place_scaffold()
 
 	DotLog.info(
 		CHANNEL,
@@ -227,6 +245,7 @@ func build(p_radius: float) -> void:
 			"segments": WALL_SEGMENTS,
 			"pillars": _stack_count,
 			"tanks": _obstacles.size() - _stack_count,
+			"scaffold": "%d crates" % scaffold_cells().size(),
 			"tightest gap": "%.1f m" % narrowest_gap(),
 		}
 	)
@@ -243,6 +262,8 @@ func _clear() -> void:
 		child.free()
 
 	_floor_body = null
+	_ramp = null
+	_has_scaffold = false
 	_obstacles = PackedVector3Array()
 	_obstacle_radii = PackedFloat32Array()
 	_stack_count = 0
@@ -292,16 +313,31 @@ func deck_top() -> float:
 ## buses are down in the bowl with the runners from the first second. The ledge is what
 ## it looks like it is: somewhere to stand and see the whole floor. The drivers get
 ## their overview by spawning there between rounds, not by driving off it.
+##
+## [b]Beside the ramp, never under it.[/b] The line used to be centred on x = 0, which is
+## the ramp's own centreline — harmless while the ramp was built backwards and rose away
+## from here, and a bus parked under 26 m of slab facing the wedge where it meets the
+## floor once it was the right way round. So the buses stand in lanes either side of it,
+## alternating, [constant BUS_LANE] apart, and the first one is off to the east.
 func bus_start(index: int, count: int) -> Vector3:
-	var span := minf(float(maxi(count, 1) - 1) * 6.0, LEDGE_WIDTH)
-	var x := -span * 0.5 + (span * float(index) / float(maxi(count - 1, 1)) if count > 1 else 0.0)
+	var _count := maxi(count, 1)
+	var side := 1.0 if index % 2 == 0 else -1.0
+	var x := side * (BUS_RAMP_CLEAR + BUS_LANE * float(index / 2))
 	return Vector3(x, 1.4, -(radius - LEDGE_DEPTH - 6.0))
+
+
+## The distance from the ramp's centreline to the nearest bus lane: half the ramp, half
+## a bus (its body is 2.5 m across) and a metre and a half of air between them.
+const BUS_RAMP_CLEAR := RAMP_WIDTH * 0.5 + BUS_HALF_WIDTH + 1.5
+
+## Between two buses on the same side. What the old centred line used.
+const BUS_LANE := 6.0
 
 
 ## The ramp foot, where a bus arrives on the floor.
 func ramp_foot() -> Vector3:
 	var run := RAMP_LENGTH * cos(deg_to_rad(RAMP_ANGLE))
-	return Vector3(0.0, 0.5, -(radius - LEDGE_DEPTH) + run - 1.0)
+	return Vector3(0.0, 0.5, -(radius - LEDGE_DEPTH) + run - RAMP_TUCK)
 
 
 ## The sun and the sky.
@@ -451,10 +487,10 @@ func _build_ledge() -> void:
 	var ramp := _box(
 		ledge,
 		"Ramp",
-		# Pulled back under the deck by a metre, so the two overlap instead of meeting
-		# at a seam. A seam between two colliders is exactly the interior edge a
-		# sliding body catches on, which dot-props documents from the other direction.
-		Vector3(0.0, deck_top() - rise - RAMP_THICKNESS * 0.5, deck_front + run - 1.0),
+		# Pulled back under the deck by [constant RAMP_TUCK], so the two overlap instead
+		# of meeting at a seam. A seam between two colliders is exactly the interior edge
+		# a sliding body catches on, which dot-props documents from the other direction.
+		Vector3(0.0, deck_top() - rise - RAMP_THICKNESS * 0.5, deck_front + run - RAMP_TUCK),
 		# [b]Runner-wide, not vehicle-wide.[/b] At 0.6 of the deck it was thirteen
 		# metres across, which is a road: the bot drove up it on the way to anybody
 		# standing near the north edge, beached itself on the lip at the top, and spent
@@ -464,7 +500,52 @@ func _build_ledge() -> void:
 		Vector3(RAMP_WIDTH, RAMP_THICKNESS, RAMP_LENGTH),
 		Color(0.50, 0.44, 0.36),
 	)
-	ramp.rotation = Vector3(deg_to_rad(-RAMP_ANGLE), 0.0, 0.0)
+	# [b]Positive, and for the game's first nine days it was negative.[/b] A rotation
+	# about +X by -18 degrees LIFTS the +Z end, so the ramp was built rising out of the
+	# floor under the deck and ending 7.8 m up in the middle of the bowl: a ski jump
+	# pointing away from the ledge it was meant to reach. Every number that places it is
+	# right, so no check about the ramp's position could see it — a runner walked under
+	# it and stopped against its underside, and the ledge had no way up at all. It was
+	# found by driving a runner at it; see CLAUDE.md, "The ramp went the
+	# wrong way".
+	ramp.rotation = Vector3(deg_to_rad(RAMP_ANGLE), 0.0, 0.0)
+	_segment_collider(ramp, RAMP_SEGMENTS)
+	_ramp = ramp
+
+
+## How many boxes the ramp's collider is built from. The mesh stays one piece.
+##
+## [b]Because one 26 m box is a floor the motor loses.[/b] Measured: a runner walking up
+## it is grounded with velocity exactly along the slope and then, twenty ticks later,
+## the ground probe reports nothing below them — the swept-query convergence failure
+## dot-player-controller documents for its sweeps against a large flat convex, on a tilted
+## one. They drop into AIR a metre above the surface and stop. Eight boxes of 3.3 m,
+## overlapping by a few centimetres in one plane, walk to the deck; so does a trimesh.
+## Boxes, because a seam in one plane is invisible to a sliding capsule and a trimesh's
+## interior edges are not.
+const RAMP_SEGMENTS := 8
+
+
+## Replaces [param body]'s one box collider with [param count] along its local Z, in the
+## same plane and overlapping by [constant SEGMENT_OVERLAP] so there is no gap to find.
+func _segment_collider(body: StaticBody3D, count: int) -> void:
+	var whole := body.get_child(0) as CollisionShape3D
+	var size := (whole.shape as BoxShape3D).size
+	var step := size.z / float(count)
+
+	var piece := BoxShape3D.new()
+	piece.size = Vector3(size.x, size.y, step + SEGMENT_OVERLAP)
+	whole.shape = piece
+	whole.position = Vector3(0.0, 0.0, -size.z * 0.5 + step * 0.5)
+
+	for i in range(1, count):
+		var more := CollisionShape3D.new()
+		more.shape = piece
+		more.position = Vector3(0.0, 0.0, -size.z * 0.5 + step * (float(i) + 0.5))
+		body.add_child(more)
+
+
+const SEGMENT_OVERLAP := 0.1
 
 
 ## The stacks, and the one list they all come out of.
@@ -752,6 +833,91 @@ const PILLAR_CLEARANCE := 3.6
 ## round again, which is the whole reason there is a lane through the middle for a driver
 ## who would rather not.
 func steer_around(from: Vector3, target: Vector3) -> Vector3:
+	return _round_the_obstacles(from, _round_the_ramp(from, target))
+
+
+## The ramp, which is not a cylinder and is the one thing in the bowl a bus cannot come
+## round on either side: its top end is the deck, so the only way past is round its foot.
+##
+## [b]New on 2026-09-23, with the ramp the right way up.[/b] Built backwards it rose away
+## from the floor and a bus drove UNDER most of it; the right way round, it is a wedge of
+## solid slab 5 m wide and 25 m long between the ledge and the bowl, and a bus aimed
+## across it drove into its side and held the throttle there — the state the stuck rule
+## answers by teleporting the bus home. So a line that crosses the footprint is sent to
+## the corner of the foot on the bus's own side first, and a quarry standing ON the ramp
+## or the deck is chased up it from the bottom, which is the only way there is.
+func _round_the_ramp(from: Vector3, target: Vector3) -> Vector3:
+	if _ramp == null:
+		return target
+
+	var half := RAMP_WIDTH * 0.5 + BUS_HALF_WIDTH
+	var foot_z := ramp_foot().z
+	var deck_front := -(radius - LEDGE_DEPTH)
+
+	# Up there already, or lined up at the bottom: the ramp is its road, not its obstacle.
+	var on_deck := absf(from.x) < LEDGE_WIDTH * 0.5 and from.z < deck_front
+	var in_lane := absf(from.x) < RAMP_WIDTH * 0.5 and from.z < foot_z + RAMP_APPROACH
+	if on_deck or in_lane:
+		return target
+
+	# A quarry on the ramp or the deck is reached from the bottom of it.
+	var target_up := (
+		(absf(target.x) < half and target.z < foot_z)
+		or (absf(target.x) < LEDGE_WIDTH * 0.5 and target.z < deck_front)
+	)
+	if target_up:
+		return Vector3(0.0, target.y, foot_z + RAMP_APPROACH)
+
+	# Against the slab itself, not the slab widened by a bus. A bus that is BESIDE the ramp
+	# and driving away from it passes through the widened box without ever touching the
+	# ramp, and sending it round the foot then drove it into the hook: the first version
+	# did exactly that, and a drive that had passed for a week stopped against a pillar.
+	# Getting from one side to the other means going through the slab, so the slab is the
+	# test; the margin is in where the waypoint goes.
+	if not _crosses_ramp(from, target, RAMP_WIDTH * 0.5, deck_front, foot_z):
+		return target
+
+	var side := signf(from.x) if absf(from.x) > 0.01 else signf(target.x)
+	if side == 0.0:
+		side = 1.0
+
+	return Vector3(side * (half + PILLAR_CLEARANCE), target.y, foot_z + PILLAR_CLEARANCE)
+
+
+## Whether the segment [param from] to [param to] passes through the box [param half]
+## either side of the ramp's centreline, between [param z_min] and [param z_max], in plan.
+func _crosses_ramp(from: Vector3, to: Vector3, half: float, z_min: float, z_max: float) -> bool:
+	# Clipped against the box one axis at a time; the classic slab test.
+	var t0 := 0.0
+	var t1 := 1.0
+	var d := Vector2(to.x - from.x, to.z - from.z)
+	var o := Vector2(from.x, from.z)
+	var lo := Vector2(-half, z_min)
+	var hi := Vector2(half, z_max)
+
+	for axis in range(2):
+		if absf(d[axis]) < 0.0001:
+			if o[axis] < lo[axis] or o[axis] > hi[axis]:
+				return false
+			continue
+		var a := (lo[axis] - o[axis]) / d[axis]
+		var b := (hi[axis] - o[axis]) / d[axis]
+		t0 = maxf(t0, minf(a, b))
+		t1 = minf(t1, maxf(a, b))
+		if t0 > t1:
+			return false
+
+	return true
+
+
+## Half a bus's body across, from the scene's 2.5 m collision box.
+const BUS_HALF_WIDTH := 1.25
+
+## How far in front of the ramp's foot a bus lines up before driving up it.
+const RAMP_APPROACH := 8.0
+
+
+func _round_the_obstacles(from: Vector3, target: Vector3) -> Vector3:
 	if _obstacles.is_empty():
 		return target
 
@@ -908,7 +1074,7 @@ func scatter_point(stream: DotRandomStream, margin: float, height: float) -> Vec
 		var z := stream.next_range_f(-usable, usable)
 		if Vector2(x, z).length() > usable:
 			continue
-		if _inside_a_pillar(x, z):
+		if _inside_a_pillar(x, z) or _inside_the_scaffold(x, z):
 			continue
 		return Vector3(x, height, z)
 
@@ -942,6 +1108,240 @@ func _inside_a_pillar(x: float, z: float) -> bool:
 	return false
 
 
+## THE SCAFFOLD: the only height in the bowl a runner can climb, and a bus can take away.
+##
+## [b]Everything else here is a question about going round.[/b] The stacks are cover you
+## watch a bus through and the tank farm is cover you guess behind, and both are answered
+## on the flat: the runner's whole game is where to stand relative to a nine-metre
+## vehicle that is faster than them. The scaffold asks the other question — UP. Crates
+## stacked as a staircase one, two and three high, which a runner climbs in three jumps
+## and a bus cannot climb at all. From the top the whole bowl is visible and no bus can
+## reach you.
+##
+## [b]Built of crates, and that is the whole design.[/b] Height made of anything
+## permanent is a place a runner wins the round by standing on, which is the one thing
+## this map is not allowed to have (see the gap rule). Crates break at a bus's cruising
+## speed. So the top of the scaffold is the safest place in the bowl for exactly as long
+## as the drivers leave it standing, and a driver who wants you down drives through the
+## bottom step. It is the stacks' deal — a pillar is safe until the bus comes round — made
+## vertical, and paid for in cover: every crate a bus spends bringing it down is one fewer
+## anywhere else.
+##
+## [b]Laid out by the world, not the arena.[/b] The arena says where each crate stands; the
+## crates themselves are props, spawned with the round and replicated like any other, so a
+## client builds no scaffold of its own and a server reset rebuilds it.
+
+## Crates high, per column, along the scaffold's length. Two columns per step so a runner
+## lands with a metre to run before the next face: measured, a jump from standing against
+## a face clears a 1 m rise by 9 cm and misses one time in three.
+const SCAFFOLD_STEPS: Array[int] = [1, 1, 2, 2, 3, 3]
+
+## Columns across. Two, so the climb has room to be made at an angle and a crate knocked
+## out of one row leaves the other.
+const SCAFFOLD_ROWS := 2
+
+## Where it stands, as a fraction of the bowl radius: the south-east, the one quarter of
+## the floor with nothing in it. 12 m from the nearest hook pillar and 23 m from the
+## nearest tank at 46 m.
+const SCAFFOLD_CENTRE := Vector2(0.43, 0.5)
+
+## Below this it is left out: its position scales with the bowl and its size does not.
+const SCAFFOLD_MIN_RADIUS := 40.0
+
+## Air between neighbouring crates, and between a layer and the one it is dropped onto.
+##
+## [b]Neither is zero, and both were.[/b] A crate spawned touching its neighbour is two
+## bodies in contact on the first step, and the solver pushes them apart — the whole
+## staircase spread half a metre before anybody touched it. And a crate spawned exactly on
+## the floor's surface was driven INTO it: the floor is one very large convex, and
+## contact generation against one at zero separation is the same unreliable judgement
+## dot-player-controller documents for a swept capsule. Dropped from a few centimetres, every crate
+## settles to within a centimetre of its cell.
+const SCAFFOLD_GAP := 0.02
+const SCAFFOLD_DROP := 0.05
+
+var _has_scaffold: bool = false
+var _scaffold_origin: Vector3 = Vector3.ZERO
+
+
+func _place_scaffold() -> void:
+	if radius < SCAFFOLD_MIN_RADIUS:
+		DotLog.info(CHANNEL, "bowl too small for the scaffold; left out", {
+			"radius": "%.0f m" % radius, "needs": "%.0f m" % SCAFFOLD_MIN_RADIUS,
+		})
+		return
+
+	var size := scaffold_size()
+	var centre := SCAFFOLD_CENTRE * radius
+	_scaffold_origin = Vector3(centre.x - size.x * 0.5, 0.0, centre.y - size.z * 0.5)
+	_has_scaffold = true
+
+
+## The scaffold's footprint and height, in metres.
+func scaffold_size() -> Vector3:
+	var pitch := BfhContent.CRATE_SIZE + SCAFFOLD_GAP
+	var tallest := 0
+	for h in SCAFFOLD_STEPS:
+		tallest = maxi(tallest, h)
+	return Vector3(
+		pitch * SCAFFOLD_STEPS.size() - SCAFFOLD_GAP,
+		BfhContent.CRATE_SIZE * tallest,
+		pitch * SCAFFOLD_ROWS - SCAFFOLD_GAP,
+	)
+
+
+func has_scaffold() -> bool:
+	return _has_scaffold
+
+
+## Every crate of the scaffold as the box it occupies once settled, bottom layer first.
+func scaffold_cells() -> Array[AABB]:
+	var cells: Array[AABB] = []
+	if not _has_scaffold:
+		return cells
+
+	var edge := BfhContent.CRATE_SIZE
+	var pitch := edge + SCAFFOLD_GAP
+
+	for level in range(3):
+		for i in range(SCAFFOLD_STEPS.size()):
+			if SCAFFOLD_STEPS[i] <= level:
+				continue
+			for row in range(SCAFFOLD_ROWS):
+				cells.append(AABB(
+					_scaffold_origin + Vector3(i * pitch, level * edge, row * pitch),
+					Vector3(edge, edge, edge)
+				))
+	return cells
+
+
+## Where to drop each crate of [method scaffold_cells] from: its centre, lifted
+## [constant SCAFFOLD_DROP] per layer so every layer falls onto the one below.
+func scaffold_spawn_points() -> PackedVector3Array:
+	var points := PackedVector3Array()
+	for cell in scaffold_cells():
+		var level := roundi(cell.position.y / BfhContent.CRATE_SIZE)
+		points.append(cell.get_center() + Vector3(0.0, SCAFFOLD_DROP * float(level + 1), 0.0))
+	return points
+
+
+## The scaffold's steps as one box each, low to high: the surfaces a runner lands on.
+func scaffold_steps() -> Array[AABB]:
+	var steps: Array[AABB] = []
+	if not _has_scaffold:
+		return steps
+
+	var pitch := BfhContent.CRATE_SIZE + SCAFFOLD_GAP
+	var i := 0
+	while i < SCAFFOLD_STEPS.size():
+		var height := SCAFFOLD_STEPS[i]
+		var j := i
+		while j < SCAFFOLD_STEPS.size() and SCAFFOLD_STEPS[j] == height:
+			j += 1
+		steps.append(AABB(
+			_scaffold_origin + Vector3(i * pitch, 0.0, 0.0),
+			Vector3((j - i) * pitch - SCAFFOLD_GAP, height * BfhContent.CRATE_SIZE,
+				scaffold_size().z)
+		))
+		i = j
+	return steps
+
+
+func scaffold_footprint() -> AABB:
+	return AABB(_scaffold_origin, scaffold_size()) if _has_scaffold else AABB()
+
+
+func _inside_the_scaffold(x: float, z: float) -> bool:
+	if not _has_scaffold:
+		return false
+	var box := scaffold_footprint().grow(OBSTACLE_MARGIN)
+	return x > box.position.x and x < box.end.x and z > box.position.z and z < box.end.z
+
+
+## The ramp's walking surface as a height at ([param x], [param z]), from the built body.
+##
+## [b]Read off the collider's transform, never off the constants that placed it.[/b] The
+## constants were right for nine days while the ramp pointed the wrong way.
+func ramp_surface_at(x: float, z: float) -> float:
+	if _ramp == null:
+		return 0.0
+	var basis := _ramp.transform.basis.orthonormalized()
+	var n := basis.y
+	var p := _ramp.transform.origin + n * (RAMP_THICKNESS * 0.5)
+	return p.y - (n.x * (x - p.x) + n.z * (z - p.z)) / n.y
+
+
+## The ramp's pitch in degrees, from the built body.
+func ramp_slope() -> float:
+	if _ramp == null:
+		return 0.0
+	return rad_to_deg(acos(clampf(_ramp.transform.basis.orthonormalized().y.y, -1.0, 1.0)))
+
+
+## The step at the top of the ramp onto the deck, in metres, and the step onto its foot.
+func ramp_lips() -> Vector2:
+	var deck_front := -(radius - LEDGE_DEPTH)
+	return Vector2(
+		maxf(ramp_surface_at(0.0, ramp_foot().z), 0.0),
+		deck_top() - ramp_surface_at(0.0, deck_front),
+	)
+
+
+## Every way up this map expects a runner to take, each measured off what it climbs.
+##
+## [b]Declared, because only the map knows which two surfaces are a route; measured,
+## because everything else about a route is already in the geometry.[/b] The three props
+## are from their scenes' collider sizes through [BfhContent]'s constants (and the suite
+## asserts the scenes agree), the ramp from its built transform, and the scaffold from the
+## same cells the world spawns its crates into.
+func climbs(config: BfhConfig) -> Array:
+	var out: Array = []
+	var sand := AABB(Vector3(-1000.0, -1.0, -1000.0), Vector3(2000.0, 1.0, 2000.0))
+	var edge := BfhContent.CRATE_SIZE
+	var crate := AABB(Vector3.ZERO, Vector3(edge, edge, edge))
+	var barrel_d := BfhContent.BARREL_RADIUS * 2.0
+	var beside := AABB(Vector3(edge, 0.0, 0.0), Vector3(barrel_d, BfhContent.BARREL_HEIGHT, barrel_d))
+	var two := AABB(Vector3(edge, 0.0, 0.0), Vector3(edge, edge * 2.0, edge))
+
+	out.append(BfhReach.Climb.between("a crate, from the sand", BfhReach.How.JUMP, sand, crate))
+	out.append(BfhReach.Climb.between(
+		"a concrete block, from the sand", BfhReach.How.JUMP, sand, crate))
+	out.append(BfhReach.Climb.between(
+		"a barrel, from a crate beside it", BfhReach.How.STEP, crate, beside))
+	out.append(BfhReach.Climb.between(
+		"a stack of two, from a crate beside it", BfhReach.How.JUMP, crate, two))
+
+	# Thrown. The runner is as far from the barrel as the hammer lets them be and still
+	# set it off: its reach to the barrel's face, from the feet, which is the farthest
+	# and therefore the weakest throw anybody gets.
+	var thrown := BfhReach.Climb.between(
+		"a stack of two, from the sand, thrown by a barrel you hammered",
+		BfhReach.How.THROW, sand, two)
+	var flat := config.hammer_reach + BfhContent.BARREL_RADIUS
+	var centre := Vector2(flat, BfhContent.BARREL_HEIGHT * 0.5).length()
+	thrown.lift = config.barrel_lift_height * maxf(
+		1.0 - centre / BfhContent.BARREL_BLAST_RADIUS, 0.0)
+	out.append(thrown)
+
+	if _ramp != null:
+		var lips := ramp_lips()
+		var up := BfhReach.Climb.new()
+		up.name = "the ledge, up the ramp"
+		up.how = BfhReach.How.WALK
+		up.slope = ramp_slope()
+		up.rise = maxf(lips.x, lips.y)
+		out.append(up)
+
+	var steps := scaffold_steps()
+	for i in range(steps.size()):
+		var from := sand if i == 0 else steps[i - 1]
+		out.append(BfhReach.Climb.between(
+			"the scaffold's step %d, from %s" % [i + 1, "the sand" if i == 0 else "the one below"],
+			BfhReach.How.JUMP, from, steps[i]))
+
+	return out
+
+
 func describe() -> Dictionary:
 	return {
 		"radius": "%.0f m" % radius,
@@ -949,5 +1349,7 @@ func describe() -> Dictionary:
 		"ledge": str(ledge_centre()),
 		"pillars": _stack_count,
 		"tanks": _obstacles.size() - _stack_count,
+		"scaffold": scaffold_cells().size(),
+		"ramp": "%.0f deg, lips %s" % [ramp_slope(), str(ramp_lips())],
 		"tightest gap": "%.1f m" % narrowest_gap(),
 	}

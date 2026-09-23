@@ -108,6 +108,23 @@ extends DotConfig
 ## How many barrels.
 @export_range(0, 100, 1) var barrel_count: int = 9
 
+## How high a barrel throws a runner standing against it, in metres of apex. Falls off
+## with the blast, linearly, like the damage.
+##
+## [b]Sized from the one route it exists for.[/b] A barrel is the only thing here that
+## throws anybody upward, and that is what makes a stack of two crates somewhere a
+## runner can get to at all: 2 m is past any jump. The farthest a runner can set a
+## barrel off from is the hammer's reach to its face, 2.9 m from its centre, where the
+## blast is at 0.55 of full — and 0.55 of 4.2 is 2.3 m, the stack plus the margin every
+## other climb in this game is held to. `headless_run` asserts it through the map's
+## declared climbs and then throws a runner onto one.
+##
+## [b]It was 4 m/s of upward velocity, added to a runner the motor still believed was
+## standing on the sand[/b], so the ground snap ate it on the next tick: measured, a
+## barrel lifted a runner 7 to 8 cm at every distance. The comment above it said it was
+## "the one way onto a crate stack".
+@export_range(0.0, 10.0, 0.1) var barrel_lift_height: float = 4.2
+
 ## Seed for where they land.
 ##
 ## [b]A seed rather than a fixed layout, and it is reproducible on purpose.[/b] Two
@@ -159,6 +176,7 @@ func describe() -> Dictionary:
 		"bowl": "%.0f m" % arena_radius,
 		"crates": crate_count,
 		"barrels": barrel_count,
+		"barrel_lift": "%.1f m" % barrel_lift_height,
 		"bus_top_speed": "%.1f m/s" % bus_top_speed,
 		"bus_lethal_speed": "%.1f m/s" % bus_lethal_speed,
 	}

@@ -23,6 +23,20 @@ const CRATE_SCENE := "res://props/bfh_crate.tscn"
 const BARREL_SCENE := "res://props/bfh_barrel.tscn"
 const BUS_SCENE := "res://props/bfh_bus.tscn"
 
+## The props' collision sizes, in metres, as the scenes above build them.
+##
+## [b]A deliberate copy, and `headless_run` asserts it against the scenes.[/b] The map's
+## climbs are measured off these — what a runner can get onto is a question about the
+## collider, not the art — and reading them out of an instanced scene every time the map
+## is asked would make the map depend on loading a prop.
+const CRATE_SIZE := 1.0
+const BARREL_HEIGHT := 1.19
+const BARREL_RADIUS := 0.43
+
+## A barrel's blast, and the reach of what it throws. Named because the map's barrel
+## climb is measured against it and the def below is built from it.
+const BARREL_BLAST_RADIUS := 6.5
+
 const CRATE := &"crate"
 const BARREL := &"barrel"
 const BLOCK := &"block"
@@ -61,7 +75,7 @@ static func props(config: BfhConfig) -> DotPropCatalogue:
 	# sets it off — a hammer, a bus, and another barrel.
 	barrel.max_health = 34.0
 	barrel.break_impact_speed = 6.0
-	barrel.explode_radius = 6.5
+	barrel.explode_radius = BARREL_BLAST_RADIUS
 	barrel.explode_damage = 95.0
 	barrel.explode_force = 900.0
 	catalogue.add(barrel)
