@@ -6,6 +6,16 @@ const BfhPlayer := preload("bfh_player.gd")
 
 const BfhGame := preload("bfh_game.gd")
 
+## Where the services keep punishments. Empty is [DotGameServices]'s own default,
+## `user://buses_punishments.json` — the store a real server enforces.
+##
+## [b]Static, because nothing holds this module before it exists[/b]: dot-server constructs
+## it from a path inside `load_module`, so there is no instance for a host to set a field on
+## first. `examples/dedicated.tscn` points it at a directory of its own; before it could,
+## every run appended the live tools' audit warnings to the real store, 134 of them by the
+## time anybody counted. game-simple-lobby's `RoomModule.punishments_path` is the same seam.
+static var punishments_file: String = ""
+
 ## This game, as a module a dedicated server loads.
 ##
 ## [b]The first game in this family to subclass [DotGameModule], and the reason it is the
@@ -88,6 +98,7 @@ func _make_bridge() -> Node:
 func _make_services() -> Node:
 	var services := BfhServices.new()
 	services.bridge = bridge
+	services.punishments_file = punishments_file
 	return services
 
 

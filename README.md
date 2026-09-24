@@ -23,7 +23,7 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](https:/
 godot --path .                                                # play it, alone
 godot --headless --path . res://examples/headless_run.tscn    # the simulation, 123 checks over 17 sections
 godot --headless --path . res://examples/headless_net.tscn    # over the wire, 123 checks over 16 sections
-godot --headless --path . res://examples/dedicated.tscn       # as a server, 67 checks over 9 sections
+godot --headless --path . res://examples/dedicated.tscn       # as a server, 72 checks over 10 sections
 tools/shot.sh                                                 # render a frame and look at it
 tools/shot.sh 9 blind.png --blind                             # an admin's blind, through the HUD
 tools/shot.sh 9 beacon.png --beacon --bus                     # an admin's beacon, round a driver's bus

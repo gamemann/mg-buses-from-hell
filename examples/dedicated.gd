@@ -20,11 +20,20 @@ const BfhGame := preload("../game/bfh_game.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 67
+const CHECKS := 72
+
+## Everything this run writes, and it is deleted on the way in and on the way out.
+##
+## [b]A suite that writes to `user://` is a suite whose result depends on the last run.[/b]
+## This one used to write the real punishment store, the server's ban and admin files and
+## its audit log, all at their defaults — so every run appended to all four, and the live
+## tools' warnings alone had reached 134 records in a store a real server enforces.
+## `headless_net` had already failed on its second run for the same reason, over a gag.
+const SERVER_DIR := "user://bfh_dedicated"
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 9
+const SECTIONS := 10
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -55,6 +64,11 @@ func _run() -> void:
 	print("buses-from-hell as a dedicated server")
 	print("")
 
+	var probe: Array = [] if _is_exit_probe() else _run_exit_probe()
+
+	DotPaths.remove_tree(SERVER_DIR)
+	DirAccess.make_dir_recursive_absolute(SERVER_DIR)
+
 	await _boot()
 
 	if server != null and server.state == DotServer.State.RUNNING:
@@ -68,6 +82,9 @@ func _run() -> void:
 		await _test_it_unloads_cleanly()
 		_test_no_message_preloads_itself()
 
+	if not probe.is_empty():
+		_test_exits_clean(probe)
+
 	print("")
 	print("%d passed, %d failed" % [_passed, _failed])
 
@@ -79,17 +96,23 @@ func _run() -> void:
 	# And the section counter, which is the other half: a section that aborted before its
 	# last line never reached its `_done()`. Neither guard is enough alone; see
 	# docs/testing.md for the run that reported "0 failed" with eight checks missing.
-	if _completed != SECTIONS:
-		print("ERROR: %d of %d sections ran to their last line." % [_completed, SECTIONS])
+	#
+	# The copy of this suite that the exit probe runs does not run the probe itself.
+	var sections := SECTIONS - (1 if _is_exit_probe() else 0)
+	var checks := CHECKS - (EXIT_PROBE_CHECKS if _is_exit_probe() else 0)
+
+	if _completed != sections:
+		print("ERROR: %d of %d sections ran to their last line." % [_completed, sections])
 		code = 1
 
-	if _passed + _failed != CHECKS:
+	if _passed + _failed != checks:
 		print("ERROR: %d checks ran, %d expected. A section aborted part-way." % [
-			_passed + _failed, CHECKS
+			_passed + _failed, checks
 		])
 		code = 1
 
 	await _shut_down()
+	DotPaths.remove_tree(SERVER_DIR)
 	get_tree().quit(code)
 
 
@@ -254,7 +277,7 @@ func _boot() -> void:
 	# a live server cannot re-negotiate its tick rate — and dot-server execs `server.cfg`
 	# BEFORE the listener for exactly that reason, while `autoexec.cfg` runs after and
 	# would have it refused.
-	var cfg_path := "user://bfh_dedicated_test.cfg"
+	var cfg_path := "%s/server.cfg" % SERVER_DIR
 	var cfg := FileAccess.open(cfg_path, FileAccess.WRITE)
 
 	if cfg == null:
@@ -277,6 +300,9 @@ func _boot() -> void:
 	config.rcon_password = ""
 	config.port = PORT
 	config.query_port = QUERY_PORT
+	config.admins_path = "%s/admins.json" % SERVER_DIR
+	config.bans_path = "%s/bans.json" % SERVER_DIR
+	config.audit_log_path = "%s/audit.jsonl" % SERVER_DIR
 	# [b]Off, or this run never ends.[/b] The stdin console reads on its own thread, and a
 	# thread blocked in a read is a thread Godot will not exit without — so the suite
 	# prints its results, calls `quit()`, and hangs. It is the right default for a real
@@ -341,6 +367,16 @@ func _test_the_module_loads() -> void:
 		"the world publishes itself where a module will look for it"
 	)
 
+	# Into this run's own directory. See [constant SERVER_DIR].
+	#
+	# Through the script, loaded here, rather than a `preload` at the top of this file:
+	# a preload would load the module when this scene loads, long before the host does,
+	# and the order scripts load in is what decides whether Godot 4.7.2 leaks them at
+	# exit. See [method _run_exit_probe]. This is the order a deployed server has.
+	(load("res://game/bfh_module.gd") as GDScript).set(
+		"punishments_file", "%s/punishments.json" % SERVER_DIR
+	)
+
 	var loaded: DotResult = await server.modules.load_module("res://game/bfh_module.gd")
 	_check(
 		loaded.ok, "the module loads into the server",
@@ -375,6 +411,20 @@ func _test_the_module_loads() -> void:
 		"and the world extent both ends decode positions against"
 	)
 	_check(not net.auto_tick, "the manager does not tick itself: the module drives it")
+
+	# [b]The store, and that it is empty.[/b] The second is what says the first worked on
+	# THIS run: a path that is right and a directory that was not wiped is a suite carrying
+	# the last run's punishments into this one, which is how `headless_net` failed on its
+	# second run.
+	var services: Object = module.get("services")
+	var moderation: Object = services.get("moderation") if services != null else null
+	var store: Object = moderation.get("store") if moderation != null else null
+	var store_path := str(store.get("path")) if store != null else ""
+	_check(store_path.begins_with(SERVER_DIR),
+		"punishments go to this run's own store, not the one a real server enforces", store_path)
+	_check(moderation != null and int(moderation.call("count")) == 0,
+		"and it starts empty, so nothing a previous run did is in it",
+		"%d records" % int(moderation.call("count")) if moderation != null else "no moderation")
 	_done()
 
 
@@ -806,3 +856,69 @@ func _test_it_unloads_cleanly() -> void:
 		"the live tools' among them, rather than refused as taken"
 	)
 	_done()
+
+
+# --- Exiting clean ----------------------------------------------------------------
+
+## The flag this suite hands the copy of itself it runs. See [method _run_exit_probe].
+const EXIT_PROBE_FLAG := "--exit-probe"
+
+## What the exit probe adds to a run — one section, these checks — and the copy does not.
+const EXIT_PROBE_CHECKS := 3
+
+
+func _is_exit_probe() -> bool:
+	return EXIT_PROBE_FLAG in OS.get_cmdline_user_args()
+
+
+## Runs this same suite in a fresh process: `[exit code, everything it printed]`.
+##
+## [b]A leak is reported after `quit()`, by the engine, where nothing in the process that
+## leaked can read it.[/b] "N ObjectDB instances were leaked at exit" is printed once the
+## scene tree is gone, so the only process that can check a run's exit is another one. On
+## Godot 4.7.2 a script that names itself, loaded after its base, cuts the engine's exit
+## teardown short and every script loaded before it is reported leaked — hundreds of lines
+## a passing run printed for weeks, which is why this is a check now and not a warning.
+##
+## [b]First, before this run opens a port[/b], so the two never contend for a socket — and
+## so this run is always the second one against the same `user://`, which is the other
+## thing no single run can see.
+func _run_exit_probe() -> Array:
+	print("(running this suite once more in a fresh process, to read what it leaves at exit)")
+	var scene := scene_file_path if scene_file_path != "" else "res://examples/dedicated.tscn"
+	var out: Array = []
+	var code := OS.execute(OS.get_executable_path(), [
+		"--headless", "--path", ProjectSettings.globalize_path("res://"),
+		scene, "--", EXIT_PROBE_FLAG,
+	], out, true)
+	var text := ""
+	for chunk: Variant in out:
+		text += str(chunk)
+	return [code, text]
+
+
+func _test_exits_clean(probe: Array) -> void:
+	print("exiting clean, as a second process saw it")
+
+	var code: int = probe[0]
+	var text: String = probe[1]
+
+	_check(code == 0, "this suite, run again in a fresh process, passes",
+		"exit %d; its last lines:\n%s" % [code, _last_lines(text, 25)] if code != 0 else "")
+	_check(not text.contains("leaked at exit"), "and leaves no object alive at exit",
+		_line_with(text, "leaked at exit"))
+	_check(not text.contains("still in use at exit"), "and no resource",
+		_line_with(text, "still in use at exit"))
+	_done()
+
+
+func _line_with(text: String, needle: String) -> String:
+	for line in text.split("\n"):
+		if line.contains(needle):
+			return line.strip_edges()
+	return ""
+
+
+func _last_lines(text: String, count: int) -> String:
+	var lines := text.strip_edges().split("\n")
+	return "\n".join(lines.slice(maxi(0, lines.size() - count)))

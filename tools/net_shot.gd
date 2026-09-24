@@ -104,6 +104,10 @@ func _run() -> void:
 		print("saved %s" % path)
 
 	_report()
+	# Frames the interpolator rendered at or past its newest snapshot (stalls) and guessed
+	# beyond it (extrapolations), out of all it sampled. Near zero on a clean loopback; most
+	# frames while dot-net subtracted a buffer counted in snapshots from a tick number.
+	print("interpolator: ", _client_net.interpolator.describe())
 	get_tree().quit()
 
 

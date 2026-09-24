@@ -38,7 +38,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (123), headless_net (123), dedicated (67), and
+examples/           headless_run (123), headless_net (123), dedicated (72), and
                     slope_motor_standin.gd — the one line dot-player-controller lacks
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe
@@ -392,7 +392,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
 done
 godot --headless --path . res://examples/headless_run.tscn   # 123 checks, 17 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 123 checks, 16 sections, over a loopback
-godot --headless --path . res://examples/dedicated.tscn      # 67 checks, 9 sections, as a server
+godot --headless --path . res://examples/dedicated.tscn      # 72 checks, 10 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
