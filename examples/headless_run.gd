@@ -7,7 +7,6 @@ const BfhGame := preload("../game/bfh_game.gd")
 const BfhHud := preload("../game/bfh_hud.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
 const BfhReach := preload("../game/bfh_reach.gd")
-const SlopeMotor := preload("slope_motor_standin.gd")
 
 ## Proves the bowl, the crates, the hammer, the barrels and the buses all actually work.
 ##
@@ -1036,23 +1035,19 @@ func _test_reach() -> void:
 		"feet at %.2f" % runner.global_position.y)
 	game.props.remove(crate.instance_id)
 
-	# --- Up the ramp, twice: the stock motor, measured and printed, and the stand-in.
+	# --- Up the ramp, on the stock motor. Until 2026-09-24 dot-player-controller read any
+	# upward speed over 0.1 m/s as airborne, so this printed how far the real motor got
+	# (0.8 to 2 m) and the check ran on a test-only subclass with the one-comparison fix.
+	# The fix is in the addon now and the stand-in is gone.
 	var start := arena.ramp_foot() + Vector3(0.0, -0.45, 6.0)
 	# The middle of the deck, well past the lip, so the route's "jump when the next
 	# surface is higher and close" never fires at the lip itself: a ramp is walked.
 	var deck := arena.ledge_centre()
 	_put(runner, start)
 	await _step(game, 5)
-	var stock := await _run_route(game, runner, [Vector3(0.0, arena.deck_top(), deck.z)], 480)
-	print("  ..    the stock motor walks %.2f m up the ramp of %.2f; see slope_motor_standin.gd"
-		% [stock, arena.deck_top()])
-
-	_fit_slope_motor(runner)
-	_put(runner, start)
-	await _step(game, 5)
 	var walked := await _run_route(game, runner, [Vector3(0.0, arena.deck_top(), deck.z)], 480)
 	_check(runner.global_position.y > arena.deck_top() - 0.1,
-		"and with the slope rule the addon is missing, a runner walks up it onto the ledge",
+		"a runner walks up the ramp onto the ledge",
 		"best %.2f, feet at %.2f, deck %.2f" % [walked, runner.global_position.y, arena.deck_top()])
 
 	await _dispose(game)
@@ -1138,15 +1133,6 @@ func _put(player: BfhPlayer, at: Vector3) -> void:
 	player.global_position = at
 	player.controller.state.position = at
 	player.controller.state.velocity = Vector3.ZERO
-
-
-## Swaps in [code]slope_motor_standin.gd[/code] for this one runner. See its notes.
-func _fit_slope_motor(player: BfhPlayer) -> void:
-	var old := player.controller.motor
-	var motor: DotFpsMotor = SlopeMotor.new(player.controller.tunables, old.body)
-	motor.surfaces = old.surfaces
-	motor.set_tick_rate(60)
-	player.controller.motor = motor
 
 
 ## Drives a runner through [param waypoints] the way a person would: run at each one and
