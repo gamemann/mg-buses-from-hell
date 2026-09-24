@@ -1,6 +1,7 @@
 extends Node
 
 const BfhBusNet := preload("../game/net/bfh_bus_net.gd")
+const BfhClient := preload("../game/bfh_client.gd")
 const BfhEvents := preload("../game/net/bfh_events.gd")
 const BfhNetBridge := preload("../game/net/bfh_net_bridge.gd")
 const BfhNetCommand := preload("../game/net/bfh_net_command.gd")
@@ -39,11 +40,11 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## the wrong reason. A real client is a separate program with its own export and its own
 ## `user://` config. Make them disagree, and let HELLO correct it.
 
-const CHECKS := 109
+const CHECKS := 123
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 15
+const SECTIONS := 16
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -109,6 +110,7 @@ func _run() -> void:
 		await _test_a_gag()
 		await _test_a_lossy_link()
 		await _test_blind_and_beacon()
+		await _test_somebody_else_is_drawn()
 		await _test_leaving()
 
 	print("")
@@ -1361,6 +1363,184 @@ func _test_blind_and_beacon() -> void:
 	)
 
 	services.free()
+	_done()
+
+
+# --- Somebody else, on this client's screen ---------------------------------
+
+## Frames drawn per tick in [method _test_somebody_else_is_drawn], each at its own fraction
+## through the tick, which is what a screen faster than the tick rate does.
+const FRAMES_PER_TICK := 4
+
+
+## Another runner has a body, it is where the server has them, and it moves every frame.
+##
+## [b]Nothing on a networked client drew anybody else until 2026-09-24,[/b] and two things
+## were missing at once: there was no body to draw (a runner is first person and a driver is
+## a bus, so no person had ever been on screen), and `DotNetManager.interpolate_frame` was
+## never called — so even a body would have moved only when a snapshot landed, a third of
+## the ticks here. Every section above passed throughout, because every one of them reads
+## the simulation and none reads the screen.
+##
+## Driven through `BfhClient.present_frame`, the function the real client's `_process`
+## calls, so a client that stops interpolating or stops building bodies fails here rather
+## than in a screenshot.
+func _test_somebody_else_is_drawn() -> void:
+	_section("somebody else has a body, where the server has them, moving every frame")
+
+	var other := _server_bridge.add_bot("Bea", BfhGame.TEAM_RUNNERS)
+	_check(other != null, "a second runner joins the server")
+
+	if other == null:
+		_done()
+		return
+
+	var key := other.player_id
+	var session := BfhNetBridge.session_of(key)
+	var arrived_at := other.global_position
+
+	# The round is live, so nothing lays them out; the arrival has to. Without it they stood
+	# at the bowl's origin for the rest of the round, which is what the body below was first
+	# drawn at.
+	_check(
+		Vector2(arrived_at.x, arrived_at.z).length() > 1.0,
+		"and joining a live round places them in the bowl, rather than at its origin",
+		str(arrived_at)
+	)
+	await _steps(8)
+
+	var mine := _client_player()
+	var theirs: BfhPlayer = _client_game.players.get(key)
+	var shown := BfhClient.present_frame(_client_net, _client_game, mine, 1.0 / 60.0, 0.0)
+
+	_check(
+		theirs != null and theirs.figure != null
+		and theirs.figure.global_position.distance_to(other.global_position) < 0.3,
+		"the client's body for them stands where the server placed them",
+		"drawn %s, server %s" % [
+			str(theirs.figure.global_position) if theirs != null and theirs.figure != null else "-",
+			str(other.global_position),
+		]
+	)
+
+	_check(
+		theirs != null and theirs.figure != null and theirs.figure.is_visible_in_tree(),
+		"the client draws a body for them",
+		"figure %s" % (str(theirs.figure.describe()) if theirs != null and theirs.figure != null else "none")
+	)
+	_check(
+		theirs != null and theirs.figure != null and theirs.figure.from_art,
+		"and it is the Kenney character, not the capsule a missing model falls back to"
+	)
+	_check(
+		mine != null and (mine.figure == null or not mine.figure.visible),
+		"and none round its own camera, which is first person"
+	)
+
+	var bot_driver: BfhPlayer = _client_game.players.get(
+		BfhNetBridge.player_key(BfhNetBridge.FIRST_BOT_SESSION)
+	)
+	_check(
+		bot_driver != null and bot_driver.riding
+		and (bot_driver.figure == null or not bot_driver.figure.visible),
+		"and none for a driver, who is drawn as their bus rather than standing where they got in",
+		"riding %s, figure %s" % [
+			str(bot_driver.riding) if bot_driver != null else "?",
+			str(bot_driver.figure.describe()) if bot_driver != null and bot_driver.figure != null else "none",
+		]
+	)
+	_check(shown == 1, "so exactly one body is drawn on this client", "%d" % shown)
+
+	# Somewhere a person can run in a straight line: beside this client's own runner, on the
+	# floor. Placed on the server, as a respawn would be; the client learns it from snapshots.
+	var start := _server_player().controller.state.position + Vector3(2.0, 0.0, 0.0)
+	other.controller.state.position = start
+	other.controller.state.velocity = Vector3.ZERO
+	other.global_position = start
+
+	# Running, with the client drawing FRAMES_PER_TICK frames between ticks.
+	var server_track: Array[Vector3] = []
+	var drawn: Array[Vector3] = []
+	var run := DotFpsCommand.new()
+	run.move = Vector2(0.0, 1.0)
+	run.yaw = 90.0
+
+	for i in range(60):
+		other.controller.apply_command(run.duplicate_command())
+		await _step()
+		server_track.append(other.controller.state.position)
+
+		for f in range(FRAMES_PER_TICK):
+			var _n := BfhClient.present_frame(
+				_client_net, _client_game, mine, 1.0 / 240.0, float(f) / float(FRAMES_PER_TICK)
+			)
+			if theirs != null and theirs.figure != null and i >= 20:
+				drawn.append(theirs.figure.global_position)
+
+	var moved := server_track[server_track.size() - 1].distance_to(server_track[0])
+	_check(moved > 3.0, "the server runs them across the bowl", "%.2f m" % moved)
+
+	# Tracking: every frame's body is within a hand of SOME position the server really had
+	# them at. Not the latest one, because a remote player is drawn an interpolation delay
+	# in the past on purpose — the nearest point on the server's own track is the fair test.
+	var worst := 0.0
+	for at in drawn:
+		var nearest := INF
+		for s in server_track:
+			nearest = minf(nearest, at.distance_to(s))
+		worst = maxf(worst, nearest)
+
+	_check(
+		not drawn.is_empty() and worst < 0.25,
+		"and every frame draws them on the path the server ran them along",
+		"worst %.3f m off it, over %d frames" % [worst, drawn.size()]
+	)
+	_check(
+		not drawn.is_empty() and drawn[drawn.size() - 1].distance_to(start) > 2.0
+		and drawn[drawn.size() - 1].distance_to(Vector3.ZERO) > 1.0,
+		"so the body followed them and is nowhere near the world origin",
+		"last drawn %s, start %s" % [
+			str(drawn[drawn.size() - 1]) if not drawn.is_empty() else "-", str(start)
+		]
+	)
+
+	# Smoothness: at a steady running speed each frame should advance the body by about the
+	# same distance. A client that draws only at snapshot arrivals moves it on one frame in
+	# twelve and not at all on the other eleven, which is the jitter the family measured as a
+	# 47% change in apparent speed.
+	var steps := PackedFloat32Array()
+	for j in range(1, drawn.size()):
+		steps.append(drawn[j].distance_to(drawn[j - 1]))
+
+	var mean := 0.0
+	var largest := 0.0
+	var smallest := INF
+	for d in steps:
+		mean += d
+		largest = maxf(largest, d)
+		smallest = minf(smallest, d)
+	mean /= float(maxi(steps.size(), 1))
+
+	_check(
+		mean > 0.001 and largest < mean * 1.5 and smallest > mean * 0.5,
+		"and it moves by an even step on every frame, not in snapshot-sized jumps",
+		"per frame %.4f m mean, %.4f..%.4f" % [mean, smallest, largest]
+	)
+
+	_check(
+		theirs != null and theirs.figure != null
+		and absf(wrapf(theirs.figure.rotation.y - deg_to_rad(90.0), -PI, PI)) < 0.05,
+		"and faces the way the server says they are looking",
+		"%.1f deg" % (rad_to_deg(theirs.figure.rotation.y) if theirs != null and theirs.figure != null else 0.0)
+	)
+
+	_server_bridge.remove_player(session)
+	_exchange()
+	await _steps(2)
+	_check(
+		not _client_game.players.has(key),
+		"and leaves again, so the section after this one sees the bot and this client"
+	)
 	_done()
 
 

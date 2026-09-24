@@ -22,7 +22,7 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](https:/
 ```bash
 godot --path .                                                # play it, alone
 godot --headless --path . res://examples/headless_run.tscn    # the simulation, 123 checks over 17 sections
-godot --headless --path . res://examples/headless_net.tscn    # over the wire, 109 checks over 15 sections
+godot --headless --path . res://examples/headless_net.tscn    # over the wire, 123 checks over 16 sections
 godot --headless --path . res://examples/dedicated.tscn       # as a server, 67 checks over 9 sections
 tools/shot.sh                                                 # render a frame and look at it
 tools/shot.sh 9 blind.png --blind                             # an admin's blind, through the HUD
@@ -75,7 +75,7 @@ A character motor sweeps a shape and slides along whatever it hits, so a `RigidB
 
 The bus drives cab-first now, which it did not for the first day of its life: the model faces +Z, this family's forward is -Z, and an unturned bus chases people backwards at 22 m/s with every number about it correct. Its wheels steer and roll, on a server and on a mirrored copy alike — a client watching a bus come round a corner cannot derive which way its front wheels are pointed from anything else that is replicated.
 
-The crate, the barrel and the bus are [Kenney's](https://kenney.nl), from the asset bundle in `assets/kenney/` — **CC0**, so more permissive than this repository's own licence. Three models and two texture atlases, nothing else vendored. See `assets/kenney/README.md` for why the two kits are in separate folders.
+The crate, the barrel and the bus are [Kenney's](https://kenney.nl), from the asset bundle in `assets/kenney/` — **CC0**, so more permissive than this repository's own licence. Three models and two texture atlases for the world, and one blocky character with seven atlases for the people in it (added 2026-09-24, when a connected client first drew anybody else); nothing else vendored. See `assets/kenney/README.md` for why the two kits are in separate folders.
 
 Everything else is still drawn in code: the bowl, its wall, the ledge and a generated one-metre grid, because what a runner judges a bus by is how fast a pattern of a known size goes past.
 

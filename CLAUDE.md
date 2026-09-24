@@ -26,6 +26,7 @@ game/
   bfh_game.gd       the simulation: rounds, sides, props, buses, damage. Headless
   bfh_hud.gd        four numbers and a dot, and an admin's blind under them
   bfh_beacon.gd     an admin's beacon: a ring, a ripple, a column through walls, a ping
+  bfh_figure.gd     what somebody else looks like: a Kenney blocky character, client side
   bfh_client.gd     one local player, alone or against a server
   bfh_client_chat.gd  the client's chat box and its microphone
   bfh_services.gd   chat, voice and moderation. Sixty lines over dot-game's base
@@ -35,11 +36,12 @@ game/
   net/              the wire: the codec, the messages, the link, three behaviours,
                     and the bridge that is the only file naming both halves
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
-assets/kenney/      three CC0 models and their atlases. See its own README
+assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (123), headless_net (109), dedicated (67), and
+examples/           headless_run (123), headless_net (123), dedicated (67), and
                     slope_motor_standin.gd — the one line dot-player-controller lacks
-tools/              shot.gd/.tscn — render a frame and look at it
+tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
+                    connected client watching another runner, with a jitter probe
 ```
 
 ## The moderator's live tools, and what this game refuses
@@ -52,13 +54,27 @@ What it refuses is refused for a reason about this game, and `modtools` prints e
 
 **A beacon on a driver is a beacon on their BUS, and that needed a field.** The ride does not carry rider nodes and a riding controller is not simulated, so a driver's own position is where they sat down for the whole round — a ring drawn there marks an empty patch of sand. `BfhPlayer.ridden` is the bus body they are drawn at, set by the world on the authority and on a client from `BfhPlayerNet.net_bus`, the bus's net id as state: the SEAT event also sets it, but a client that joined after the seat was taken was never sent the SEAT, and `headless_net` forgets the bus on the client and fails unless the snapshot alone puts it back. The bus's marker is 5.2 m across so it circles a nine-metre hull rather than sitting inside it, and its column starts above the roof.
 
-**Worth knowing, and not fixed here: nothing draws a player.** A player is a controller with no mesh; on every client, every other person in the bowl is invisible, and a beaconed runner is the first thing that has ever marked where one stands. A body for remote players is the obvious next piece of this game's client.
+**Nothing drew a player until the same day**, and that has its own section below: "Somebody else, on a client's screen".
 
 `headless_net` asserts the audience through the real handlers over a link dropping one snapshot in five — this client told of its own blind and never of the bot driver's, both beacons drawn, the driver's at the client's copy of the bus — and was armed by dropping `to_owner_only()` (two checks fired) and by taking out the snapshot path to the bus (one fired). `dedicated` drives both through the console, the timed lift, a new round keeping both while ending a noclip (armed by not adding them to `persist_on_respawn`), and `modtools` no longer refusing them. `headless_run`'s last section is the picture's half: the overlay's fade, its coverage of the viewport (armed with the HUD's root inset and the per-frame sizing removed), a ping once a second rather than once a frame, the driver's marker round the bus, and the marker going with the flag and with the runner.
 
 **Every suite here counts sections as well as checks now.** Each section calls `_done()` at its end and before every early return, and the run fails unless `SECTIONS` of them did — the guard `docs/testing.md` asks for beside the total, and the one these three suites were missing. Each was armed by raising `SECTIONS` by one.
 
 **A round is everybody's new body.** `round_began` calls `mod_player_respawned` for every player, so a noclip or a freeze from last round ends with it and god carries over. `dedicated`'s live-tools section found that the hard way: a lone runner makes the sides playable, a round starts under the test, and a check that looked a frame late saw every command undone by the game doing its job — so it looks at the body the moment the command returns.
+
+## Somebody else, on a client's screen
+
+**Until 2026-09-24 a connected client drew nobody.** Three things were wrong at once, none of them visible to 123 + 109 + 67 checks, because every one of those reads the simulation and none reads the screen:
+
+- **There was no body.** A runner's own view is first person and a driver is a bus, so no person had ever been on anybody's screen. `bfh_figure.gd` is one now: Kenney's Blocky Character, one GLB and seven atlases in `assets/kenney/characters/` (six ordinary people for the runners, chosen by player id so every client dresses somebody the same way; a uniform for a driver on foot). It is scaled from its measured bounds to the runner's 1.8 m hull — the kit is 2.7 m — and turned half round, because the kit faces +Z and the bus had exactly that bug. Every surface gets its atlas explicitly, through `BfhPaths.rebase`, for the pack reason `props/bfh_art.gd` documents.
+- **`DotNetManager.interpolate_frame` was never called.** `BfhPlayerNet._net_interpolated` and `BfhPropNet._net_interpolated` were written, documented and reached by nothing, so every remote runner, crate and bus moved only when a snapshot landed — 20 times a second on a 60-tick server, the render-jitter class this family has now paid for in three games. `BfhClient.present_frame` is the one per-frame path: interpolate, then every body, then every beacon. It is static so `headless_net` drives exactly it. The local camera is drawn from `render_state` for the same reason: the other runner was smooth and the view looking at them was stepping.
+- **A runner who joined a live round stood at the bowl's origin until the next one.** `_place_players` only runs when a round is laid out. `BfhGame.add_player` places anybody arriving after `start()` from its own `late_spawns` stream, so an arrival does not move where everybody else is scattered next round. mg-smash-copter shipped the same line.
+
+**Who is drawn** is `BfhPlayer.present_body`: everybody except the player the camera belongs to (first person), a driver (drawn AS the bus — nothing moves a rider, so a body would stand where they sat down, which is also why `drawn_position` answers with the bus), and a runner who is out.
+
+`headless_net`'s **somebody else has a body** section adds a second runner and asserts: placed in the bowl on arrival (armed: removing the placement, fired at `(0, 0, 0)`), a Kenney body for them and none for this client or the seated driver (armed: showing every body, three fired), the body where the server placed them, and then, running 60 ticks with four frames a tick at fractions 0, ¼, ½, ¾, every frame on the path the server ran them along (worst under 0.25 m), well away from the origin, **an even step every frame** and facing the server's yaw. Armed by taking `interpolate_frame` out of `present_frame`: the even-step check fired at 0.0000..0.3281 m against a 0.0266 m mean; armed by not building the body: eight fired.
+
+`tools/shot.sh 6 net.png --net` renders a connected client — a server and a client in one process over the same loopback — watching another runner cross its view, saves four consecutive frames and prints a probe: each frame's drawn movement over its own delta. Measured under lavapipe at ~30 fps against 60 ticks: interpolated, **0 of 144 frames standing still and 1 more than 20% off the median 6.56 m/s**; `--no-interp`, **58 of 147 standing still and 49% off**. `--close` brings the runner to four metres to judge the body itself. The same probe found a dot-net bug it cannot fix from here: the interpolation delay is counted in snapshots and subtracted from ticks, so every remote entity is extrapolated past the newest snapshot rather than blended between two — game-playground's CLAUDE.md has the numbers.
 
 ## Decision 1: metres and seconds, not a genre's units
 
@@ -270,7 +286,7 @@ The fix is one comparison — whether the player is moving away from the surface
 
 ## The art is Kenney's
 
-Three models — a crate, a barrel and a garbage truck standing in for the bus — from the CC0 bundle, in `assets/kenney/`. Two things about vendoring them are worth keeping:
+Three models — a crate, a barrel and a garbage truck standing in for the bus — from the CC0 bundle, in `assets/kenney/`, and since 2026-09-24 a fourth, the blocky character other people are drawn as (see "Somebody else, on a client's screen"). Two things about vendoring them are worth keeping:
 
 - **A Kenney GLB references its texture by relative URI** (`Textures/colormap.png`) rather than embedding it, so the atlas has to sit beside the model at exactly that path or the mesh loads untextured and falls back to its base colour — silently.
 - **The Survival Kit and the Car Kit each ship a `Textures/colormap.png`, and they are different files.** Flattening both kits into one folder paints the bus in the survival kit's palette, which is a plausible-looking wrong answer. Each kit gets its own folder.
@@ -375,7 +391,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 123 checks, 17 sections, the simulation
-godot --headless --path . res://examples/headless_net.tscn   # 109 checks, 15 sections, over a loopback
+godot --headless --path . res://examples/headless_net.tscn   # 123 checks, 16 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 67 checks, 9 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
@@ -385,6 +401,7 @@ tools/shot.sh 9 ramp.png --ramp                              # the ramp, from th
 tools/shot.sh 9 blind.png --blind                            # an admin's blind, through the HUD
 tools/shot.sh 14 beacon_bus.png --beacon --bus               # an admin's beacon round a driver's bus
 tools/shot.sh 9 beacon.png --beacon                          # the runner's own ring, from behind them
+tools/shot.sh 6 net.png --net                                # a connected client watching another runner, and the jitter probe
 ```
 
 **And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:

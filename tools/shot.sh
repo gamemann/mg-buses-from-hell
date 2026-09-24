@@ -9,6 +9,9 @@
 #   tools/shot.sh 9 beacon.png --beacon       # an admin's beacon: the runner's ring, the bus's column
 #   tools/shot.sh 9 beacon_bus.png --beacon --bus   # the beacon round a driver's bus
 #   tools/shot.sh 9 blind.png --blind         # an admin's blind, through the HUD
+#   tools/shot.sh 6 net.png --net             # a CONNECTED client watching another runner:
+#                                             # four consecutive frames and a jitter probe
+#   tools/shot.sh 6 net.png --net --no-interp # the same with the client's interpolation off
 #
 # Anything after the filename is passed through to the scene, which is how --bus,
 # --stacks, --tanks and --chat are reached. They were unreachable through this script
@@ -24,5 +27,12 @@ mkdir -p screenshots
 seconds="${1:-8}"
 out="${2:-bfh.png}"
 shift $(( $# < 2 ? $# : 2 ))
+# `--net` is a different scene rather than a flag inside shot.gd, because it is a
+# different program: a server and a client in one process over a loopback, where shot.gd
+# is the offline client as a player runs it.
+scene=res://tools/shot.tscn
+for arg in "$@"; do
+  [ "$arg" = "--net" ] && scene=res://tools/net_shot.tscn
+done
 exec xvfb-run -a "${GODOT:-godot}" --path . --resolution 1280x720 \
-    res://tools/shot.tscn -- "--seconds=$seconds" "--out=res://screenshots/$out" "$@"
+    "$scene" -- "--seconds=$seconds" "--out=res://screenshots/$out" "$@"

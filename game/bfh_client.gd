@@ -354,7 +354,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
-	_present_beacons(delta)
+	var _shown := present_frame(net, game, player, delta)
 
 	if camera == null or player == null:
 		return
@@ -367,17 +367,62 @@ func _process(delta: float) -> void:
 	var state := player.controller.state
 	camera.rotation = Vector3(deg_to_rad(state.pitch), deg_to_rad(state.yaw), 0.0)
 
+	# [b]And the position, which the angles above never needed.[/b] The camera hangs off the
+	# player's node and the node only moves on a tick, so a camera left there advances in
+	# steps while everybody it is looking at is now interpolated every frame — a runner
+	# watching another runner alongside them sees the other one shudder, because it is the
+	# VIEW that is stepping. `render_state` blends the last two ticks by the engine's physics
+	# fraction, which the bridge makes a fraction through a tick by putting the engine on
+	# the server's rate. Written globally rather than by moving the node, because the tick
+	# writes the node and prediction reads it back. Not while riding: the controller is not
+	# simulated in a bus, and a blend between two ticks that never happened drags the view
+	# backwards.
+	if not player.riding:
+		camera.global_position = player.controller.render_state().position \
+			+ Vector3(0.0, BfhPlayer.EYE_HEIGHT, 0.0)
 
-## Every player's beacon, this client's own included — somebody who has been beaconed
-## sees their ring and hears their ping too. Once a frame and here, because a server never
-## draws one and the world is the same class on both ends.
-func _present_beacons(delta: float) -> void:
-	if game == null:
-		return
 
-	for id: StringName in game.players:
-		var body: BfhPlayer = game.players[id]
-		body.present_beacon(delta, body == player)
+## Everything a frame draws that a tick does not, in this order: the netcode's
+## interpolation, then every player's body, then every beacon. Returns how many bodies are
+## shown. Static so the net suite drives exactly this and not a copy of it.
+##
+## [b]The interpolation was never called in this game, and that is half of why nobody else
+## was visible.[/b] `DotNetManager.interpolate_frame` is what blends two snapshots and hands
+## the result to `BfhPlayerNet._net_interpolated` and `BfhPropNet._net_interpolated` — both
+## written, documented, and reached by nothing. So every remote runner, every crate and both
+## buses moved only when a snapshot landed, twenty times a second on a 60-tick server: the
+## render-jitter class this family has now paid for in three games. The other half was that
+## a remote runner had no body to move (see [BfhFigure]).
+##
+## [param alpha] is the fraction through the current tick; -1 derives it from the engine,
+## which is what a real frame wants. A suite passes it explicitly, because a suite's frames
+## are not an engine's.
+static func present_frame(
+	p_net: DotNetManager, p_game: BfhGame, own: BfhPlayer, delta: float, alpha: float = -1.0
+) -> int:
+	if p_net != null and p_net.is_running():
+		p_net.interpolate_frame(alpha)
+
+	if p_game == null:
+		return 0
+
+	var shown := 0
+
+	for id: StringName in p_game.players:
+		var body: BfhPlayer = p_game.players[id]
+
+		if body == null or not is_instance_valid(body):
+			continue
+
+		if body.present_body(body == own, p_game.team_of(id) == BfhGame.TEAM_DRIVERS):
+			shown += 1
+
+		# Every player's beacon, this client's own included — somebody who has been
+		# beaconed sees their ring and hears their ping too. After the interpolation, so a
+		# ring is placed where this frame draws them rather than where the last one did.
+		body.present_beacon(delta, body == own)
+
+	return shown
 
 
 ## Whether the mouse button is down this frame. Read by [method _physics_process].

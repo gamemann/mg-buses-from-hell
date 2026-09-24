@@ -2,6 +2,7 @@ extends CharacterBody3D
 
 const BfhConfig := preload("bfh_config.gd")
 const BfhBeacon := preload("bfh_beacon.gd")
+const BfhFigure := preload("bfh_figure.gd")
 const BfhHammer := preload("bfh_hammer.gd")
 
 ## One person in the bowl: their movement, their view, their health, and their hammer.
@@ -107,6 +108,10 @@ var beacon: bool = false
 ## The marker [member beacon] draws, while it does. Client side; built and freed by
 ## [method present_beacon].
 var beacon_marker: BfhBeacon = null
+
+## What other people see this player as. Client side; built and shown by
+## [method present_body], never on a server, which draws nothing.
+var figure: BfhFigure = null
 
 ## This bot's driver, built on first use. Null for a person.
 var autopilot: DotVehicleDriver = null
@@ -327,6 +332,60 @@ func present_beacon(delta: float, own_view: bool) -> void:
 		beacon_pulsed.emit(at)
 
 
+## Draws this player's body for one frame. Client side, once a frame, from
+## `BfhClient.present_frame`. Returns whether it is shown.
+##
+## [b]Shown for everybody except three people[/b], and each is a rule of this game rather
+## than a performance saving:
+##
+## - [b]the one the camera belongs to[/b] ([param own_view]), whose view is first person —
+##   a body drawn round a camera is the inside of somebody's head;
+## - [b]a driver[/b], who is drawn AS their bus. Nothing moves a rider (see [member ridden]),
+##   so a body left standing would be a person frozen on the spot where they got in for the
+##   rest of the round, while the thing they are actually steering chases people. That is
+##   the same reason [method drawn_position] answers with the bus;
+## - [b]somebody who is out.[/b] A runner who was run over is out until the next round and a
+##   body standing there would be a runner nobody can hit, which reads as a bug in the bus.
+##
+## [param driver_side] dresses them: a driver on foot wears the uniform.
+func present_body(own_view: bool, driver_side: bool = false) -> bool:
+	var alive := health == null or health.alive
+	var shown := not own_view and not riding and alive
+
+	if figure == null:
+		# Built lazily and only once there is something to show, so a client never builds a
+		# figure for its own player and a round full of drivers builds none at all.
+		if not shown:
+			return false
+
+		figure = BfhFigure.new()
+		figure.name = "Figure"
+		add_child(figure)
+
+	var wanted: String = BfhFigure.DRIVER_ATLAS if driver_side else _runner_atlas()
+
+	if figure.atlas != wanted:
+		# Rebuilt on a side swap: every third round the runners become the drivers, and a
+		# figure dressed for the side it started on would put a uniform on somebody running.
+		var height := controller.tunables.stand_height \
+			if controller != null and controller.tunables != null else 1.8
+		figure.build(height, wanted)
+
+	figure.visible = shown
+
+	if shown and controller != null:
+		figure.face(deg_to_rad(controller.state.yaw))
+
+	return shown
+
+
+## Which of the runner atlases this player wears, from their id rather than from a random
+## draw, so every client dresses the same person the same way.
+func _runner_atlas() -> String:
+	var index := int(hash(String(player_id)) & 0x7fffffff) % BfhFigure.RUNNER_ATLASES.size()
+	return str(BfhFigure.RUNNER_ATLASES[index])
+
+
 func give_hammer(config: BfhConfig) -> void:
 	hammer = BfhHammer.new()
 	hammer.configure(config)
@@ -341,4 +400,5 @@ func describe() -> Dictionary:
 		"carried": "%.1f m" % carried_metres,
 		"blinded": blinded,
 		"beacon": beacon,
+		"figure": figure.describe() if figure != null else {},
 	}

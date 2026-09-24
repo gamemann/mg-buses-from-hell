@@ -130,6 +130,10 @@ var remote_playable: bool = false
 
 var _tick: int = 0
 
+## Whether [method start] has laid the bowl out, after which somebody arriving is placed on
+## arrival rather than left at the origin until the next round.
+var _started: bool = false
+
 ## Every world object this game has an id for. See [DotEntityTable].
 ##
 ## Replaces a `_next_entity_id` counter that was correct and did two things this is
@@ -451,6 +455,16 @@ func add_player(
 	if team == TEAM_RUNNERS:
 		player.give_hammer(config)
 
+	# [b]Somebody arriving in the middle of a round is placed NOW, not at the next one.[/b]
+	# `_place_players` only runs when a round is laid out, so a runner who joined a live
+	# server stood where a `CharacterBody3D` starts — the centre of the bowl, on the ramp's
+	# line — until the round ended, which on a real server is most of their first two
+	# minutes. It was found by a second client DRAWING them there: every suite asserts
+	# the joiner exists and moves, and a player at the origin does both. mg-smash-copter
+	# shipped the same line, where the origin was inside the floor that kills you.
+	if authoritative and _started:
+		_place_one(player, team, random.stream(&"late_spawns"))
+
 	DotLog.debug(CHANNEL, "player joined", {"id": String(player_id), "team": team})
 
 	# Last, after the hammer and the health: the bridge answers this by building the
@@ -593,6 +607,7 @@ func start() -> void:
 	_lay_out_bowl()
 	_place_players()
 	_place_buses()
+	_started = true
 
 	match_node.start(_tick)
 
@@ -726,15 +741,23 @@ func _place_players() -> void:
 			player.health.health = config.runner_health
 			player.health.alive = true
 
-		if int(sides.get(id, 0)) == TEAM_DRIVERS:
-			player.global_position = arena.ledge_centre() + Vector3(0.0, 1.0, 0.0)
-		else:
-			var at := arena.scatter_point(stream, 10.0, 1.2)
-			player.global_position = at
-
-		player.controller.state.position = player.global_position
-		player.controller.state.velocity = Vector3.ZERO
+		_place_one(player, int(sides.get(id, 0)), stream)
 		player.set_riding(false)
+
+
+## Where one person stands at the top of a round, or on arriving during one.
+##
+## A late joiner draws from its own stream ([method add_player]), so somebody connecting
+## does not move where everybody ELSE is scattered next round — the layout a seed promises
+## is the same whoever came and went.
+func _place_one(player: BfhPlayer, team: int, stream: DotRandomStream) -> void:
+	if team == TEAM_DRIVERS:
+		player.global_position = arena.ledge_centre() + Vector3(0.0, 1.0, 0.0)
+	else:
+		player.global_position = arena.scatter_point(stream, 10.0, 1.2)
+
+	player.controller.state.position = player.global_position
+	player.controller.state.velocity = Vector3.ZERO
 
 
 func _place_buses() -> void:
