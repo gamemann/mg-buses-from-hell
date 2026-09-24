@@ -1,6 +1,7 @@
 extends CharacterBody3D
 
 const BfhConfig := preload("bfh_config.gd")
+const BfhBeacon := preload("bfh_beacon.gd")
 const BfhHammer := preload("bfh_hammer.gd")
 
 ## One person in the bowl: their movement, their view, their health, and their hammer.
@@ -35,6 +36,10 @@ const EYE_HEIGHT := 1.6
 
 ## This player was run over or blown up.
 signal died(by: StringName)
+
+## A beacon on this player sent out a ripple: once a second while it is on, and once the
+## moment it comes on. Client side, from [method present_beacon].
+signal beacon_pulsed(at: Vector3)
 
 @export var player_id: StringName = &"local"
 @export var display_name: String = "Runner"
@@ -74,6 +79,34 @@ var mass_kg: float = 80.0
 ##
 ## Read-only from outside; [method set_riding] is the switch.
 var riding: bool = false
+
+## The bus this player is driving, as the node that is DRAWN, or null on foot.
+##
+## [b]Kept because nothing else says where a driver is.[/b] The ride does not carry rider
+## nodes and a riding controller is not simulated, so a driver's own position stays where
+## they got in for the whole round. Anything that has to be drawn AT a driver — a beacon —
+## is drawn at this. Set by the world on the authority and from `BfhPlayerNet.net_bus` on a
+## client; cleared by [method set_riding] when they get out.
+var ridden: Node3D = null
+
+## An administrator's `blind`: this player's own screen is blacked out.
+##
+## [b]Set on the server and replicated to the OWNER ONLY[/b] (`BfhPlayerNet.net_blind`).
+## Nobody else's screen changes, so nobody else needs to know — and in a game of two
+## drivers hunting everybody else, a driver who could read it would know exactly which
+## runner cannot see the bus coming. `BfhHud` draws it.
+var blinded: bool = false
+
+## An administrator's `beacon`: a pulsing ring and a column over this player that every
+## client draws, and a ping every client hears, until it is turned off.
+##
+## Set on the server and replicated to everybody (`BfhPlayerNet.net_beacon`), who each draw
+## it in [method present_beacon].
+var beacon: bool = false
+
+## The marker [member beacon] draws, while it does. Client side; built and freed by
+## [method present_beacon].
+var beacon_marker: BfhBeacon = null
 
 ## This bot's driver, built on first use. Null for a person.
 var autopilot: DotVehicleDriver = null
@@ -251,6 +284,47 @@ func set_riding(value: bool) -> void:
 
 	if not riding:
 		controller.state.mode = DotFpsState.Mode.AIR
+		ridden = null
+
+
+## Where this player is drawn: their bus while they drive one, their body otherwise.
+func drawn_position() -> Vector3:
+	if riding and ridden != null and is_instance_valid(ridden):
+		return ridden.global_position
+
+	return global_position
+
+
+## Draws [member beacon], and says when it pings. Client side, once a frame, from
+## `BfhClient`; a server never builds a marker.
+##
+## [b]Only while alive.[/b] The flag outlives a death — dot-moderation re-applies it at the
+## next round, which is this game's respawn — but a runner who is out is out until then, and
+## a column over where they fell points everybody at an empty patch of sand.
+##
+## [param own_view] is whether this is the player the camera belongs to; see [BfhBeacon].
+func present_beacon(delta: float, own_view: bool) -> void:
+	var alive := health == null or health.alive
+
+	if not beacon or not alive:
+		if beacon_marker != null:
+			beacon_marker.queue_free()
+			beacon_marker = null
+		return
+
+	if beacon_marker == null:
+		beacon_marker = BfhBeacon.new()
+		beacon_marker.name = "Beacon"
+		add_child(beacon_marker)
+
+	var on_bus := riding and ridden != null and is_instance_valid(ridden)
+	beacon_marker.mark_bus(on_bus)
+	beacon_marker.local_view = own_view
+	var at := drawn_position()
+	beacon_marker.global_position = at
+
+	if beacon_marker.advance(delta):
+		beacon_pulsed.emit(at)
 
 
 func give_hammer(config: BfhConfig) -> void:
@@ -265,4 +339,6 @@ func describe() -> Dictionary:
 		"alive": health == null or health.alive,
 		"health": health.health if health != null else 0.0,
 		"carried": "%.1f m" % carried_metres,
+		"blinded": blinded,
+		"beacon": beacon,
 	}

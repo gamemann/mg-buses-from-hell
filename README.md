@@ -21,13 +21,29 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](https:/
 
 ```bash
 godot --path .                                                # play it, alone
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 114 checks
-godot --headless --path . res://examples/headless_net.tscn    # over the wire, 101 checks
-godot --headless --path . res://examples/dedicated.tscn       # as a server, 60 checks
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 123 checks over 17 sections
+godot --headless --path . res://examples/headless_net.tscn    # over the wire, 109 checks over 15 sections
+godot --headless --path . res://examples/dedicated.tscn       # as a server, 67 checks over 9 sections
 tools/shot.sh                                                 # render a frame and look at it
+tools/shot.sh 9 blind.png --blind                             # an admin's blind, through the HUD
+tools/shot.sh 9 beacon.png --beacon --bus                     # an admin's beacon, round a driver's bus
 ```
 
 The same client plays alone and plays online: with no server link in the registry it runs the world itself, and with one it predicts its own movement and draws everything else from what the server sends. There is no separate single-player build to keep in step.
+
+### The admin tools
+
+dot-moderation's live tools, from dot-game's services layer: on the console and in chat (`!noclip`), with `@team:drivers` and `@team:runners` as targets. `modtools` lists what is supported and why the rest is refused.
+
+| Command | What it does here |
+| --- | --- |
+| `noclip`, `freeze`, `speed`, `gravity` | a runner's feet; refused for a driver while they drive, because the bus is what moves |
+| `god`, `buddha`, `hp`, `slay`, `slap`, `rename` | as everywhere |
+| `blind <player> [on\|off\|seconds]` | blacks out that player's own screen and nobody else's; the HUD's numbers stay |
+| `beacon <player> [on\|off]` | a pulsing ring, a column through walls and a ping, on every screen. On a driver it is drawn round their bus |
+| `bring`, `goto`, `send`, `return` | runners only, for the same reason as noclip |
+
+Refused: `respawn` (a runner who is out stays out until the next round), `give` and `strip` (the hammer is the only thing anybody holds), `burn` (there is no fire in the bowl). Blind and beacon last through a new round; noclip and freeze end with it.
 
 ## What a round is
 

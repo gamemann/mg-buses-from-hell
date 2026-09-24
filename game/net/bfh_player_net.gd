@@ -45,6 +45,23 @@ var net_health: float = 100.0
 ## Whether they are in a bus. See [method _net_simulate] for what a client does with it.
 var net_riding: bool = false
 
+# --- An administrator's marks, and where to draw them -----------------------
+
+## `BfhPlayer.blinded`. Owner only: see [method _register_net_vars].
+var net_blind: bool = false
+
+## `BfhPlayer.beacon`. Everybody's.
+var net_beacon: bool = false
+
+## The net id of the bus they are driving, or 0 on foot.
+##
+## [b]State and not only the SEAT event, because a beacon on a driver is drawn at their
+## bus.[/b] A driver's own position is where they got in — nothing moves a rider — so a
+## client that knows only `net_riding` knows somebody is driving and not WHAT; a client
+## that joined after the seat was taken was never sent the SEAT at all. One varint that
+## changes twice a round, and nothing on a tick where it did not.
+var net_bus: int = 0
+
 ## Retained, not cleared: a player whose packet was lost keeps moving in a straight line
 ## rather than stopping dead. The controller says the same of its own command.
 var last_move: DotFpsCommand = DotFpsCommand.new()
@@ -63,6 +80,17 @@ func _register_net_vars() -> void:
 
 	replicate(&"net_health", DotNetVar.Type.FLOAT_RANGE).range_of(0.0, 1000.0).bits(12)
 	replicate(&"net_riding", DotNetVar.Type.BOOL)
+
+	# [b]Per-player state rather than an event, and that is what makes both of these
+	# survive what an event does not.[/b] A client that joins after the admin typed
+	# `beacon`, a snapshot lost on the way, a round re-laying the bowl: each is a baseline
+	# the next snapshot corrects, where an event sent once is simply missed.
+	#
+	# The blind goes to its owner alone. Nobody else's screen changes, and a driver who
+	# received it would know which runner cannot see the bus coming.
+	replicate(&"net_blind", DotNetVar.Type.BOOL).to_owner_only()
+	replicate(&"net_beacon", DotNetVar.Type.BOOL)
+	replicate(&"net_bus", DotNetVar.Type.VARINT)
 
 
 func _net_apply_input(input: DotNetInput, _tick: int) -> void:
@@ -109,6 +137,17 @@ func pull() -> void:
 		net_health = player.health.health
 
 	net_riding = player.riding
+	net_blind = player.blinded
+	net_beacon = player.beacon
+	net_bus = 0
+
+	if player.riding and bridge != null and player.ridden != null:
+		net_bus = int(bridge.call("net_id_of_node", player.ridden))
+
+	# No relevance decision for the beacon, unlike a game with an interest set: every
+	# player here is already always relevant (see `BfhNetBridge._build_entity`), because a
+	# 46 m disc with nothing tall in it is a map where everybody can see everybody. A
+	# beaconed player therefore reaches every client with nothing further to do.
 
 
 ## The server's answer, adopted wholesale. On the owner it is the rewind half of
@@ -162,3 +201,11 @@ func _adopt() -> void:
 
 	if player.riding != net_riding:
 		player.set_riding(net_riding)
+
+	player.blinded = net_blind
+	player.beacon = net_beacon
+
+	if net_riding and net_bus != 0 and bridge != null:
+		var bus: Variant = bridge.call("body_of_net_id", net_bus)
+		if bus is Node3D:
+			player.ridden = bus as Node3D

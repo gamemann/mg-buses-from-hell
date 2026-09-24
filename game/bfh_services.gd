@@ -244,6 +244,24 @@ func _mod_abilities() -> Dictionary:
 			return _mod_hurt(id, -1.0),
 		"slap": func(id: StringName, args: Dictionary) -> DotResult:
 			return _mod_hurt(id, float(args.get("damage", 0.0))),
+		# [b]The screen and nothing else, for either side.[/b] A blinded runner still
+		# moves and can still be run over; a blinded driver still drives, which is the
+		# point. An admin who wants a runner stopped as well has freeze, and a verb that
+		# did both would be a verb nobody could use for only the first.
+		"blind": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null:
+				return _mod_absent(id)
+			p.blinded = bool(args["on"])
+			return DotResult.success(p.blinded),
+		# On a driver the beacon is drawn round their BUS, because the bus is the only
+		# thing anybody can see of them; see `bfh_beacon.gd`.
+		"beacon": func(id: StringName, args: Dictionary) -> DotResult:
+			var p := _mod_player(id)
+			if p == null:
+				return _mod_absent(id)
+			p.beacon = bool(args["on"])
+			return DotResult.success(p.beacon),
 		"rename": func(id: StringName, args: Dictionary) -> DotResult:
 			var p := _mod_player(id)
 			if p == null:
@@ -259,9 +277,16 @@ func _mod_unsupported() -> Dictionary:
 		"give": "the hammer is the only thing anybody holds here",
 		"strip": "the hammer is the only thing anybody holds here, and without it a runner has no game",
 		"burn": "there is no fire in the bowl",
-		"blind": "the client draws no overlay a server could turn on",
-		"beacon": "the client draws no marker a server could turn on",
 	}
+
+
+## Toggles that outlive a new body here, beyond dot-moderation's own god and buddha.
+##
+## [b]Blind and beacon are about the person, not the body.[/b] Noclip and freeze end with
+## the round because arriving in a new round frozen is the round broken; a player an admin
+## blinded, or wanted the bowl to watch, is still that player after a round — and a round
+## ending is exactly what a player being punished would otherwise wait out.
+const PERSIST_ON_RESPAWN: Array[String] = ["blind", "beacon"]
 
 
 func _mod_can_teleport() -> bool:
@@ -384,6 +409,18 @@ func setup(p_server: DotServer, p_game: Object, p_link: Object) -> DotResult:
 
 	if voice != null:
 		voice.set("team_fn", Callable(self, "_team_of"))
+
+	# Read, appended and written back. Measured on 4.7.2, the append alone already reaches
+	# the tools' own [PackedStringArray] — a packed array fetched through `get` shares its
+	# buffer — but this family has also shipped the opposite case (an append to a packed
+	# array inside a Dictionary landed on a copy), and the `set` is what stops this line
+	# depending on which of the two the engine does. `dedicated` fails without the append.
+	if mod_tools != null:
+		var keep: PackedStringArray = mod_tools.get("persist_on_respawn")
+		for action in PERSIST_ON_RESPAWN:
+			if not keep.has(action):
+				keep.append(action)
+		mod_tools.set("persist_on_respawn", keep)
 
 	if game is BfhGame and not (game as BfhGame).round_began.is_connected(_on_round_began_for_tools):
 		(game as BfhGame).round_began.connect(_on_round_began_for_tools)

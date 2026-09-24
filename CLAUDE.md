@@ -24,7 +24,8 @@ game/
   bfh_player.gd     one person: controller, health, hammer, and riding a crate
   bfh_hammer.gd     the only weapon, and it does not hurt people
   bfh_game.gd       the simulation: rounds, sides, props, buses, damage. Headless
-  bfh_hud.gd        four numbers and a dot
+  bfh_hud.gd        four numbers and a dot, and an admin's blind under them
+  bfh_beacon.gd     an admin's beacon: a ring, a ripple, a column through walls, a ping
   bfh_client.gd     one local player, alone or against a server
   bfh_client_chat.gd  the client's chat box and its microphone
   bfh_services.gd   chat, voice and moderation. Sixty lines over dot-game's base
@@ -36,16 +37,26 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      three CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (114), headless_net (101), dedicated (60), and
+examples/           headless_run (123), headless_net (109), dedicated (67), and
                     slope_motor_standin.gd — the one line dot-player-controller lacks
 tools/              shot.gd/.tscn — render a frame and look at it
 ```
 
 ## The moderator's live tools, and what this game refuses
 
-The first game to get dot-moderation's live tools from `DotGameServices` rather than building them: `BfhServices` answers `_mod_abilities` with noclip, god, buddha, freeze, slay, slap, health, speed, gravity and rename, and bring, goto, send and return through `_mod_position` / `_mod_teleport`. Every command is on the console and in chat (`!noclip`), with `@team:drivers` and `@team:runners`.
+The first game to get dot-moderation's live tools from `DotGameServices` rather than building them: `BfhServices` answers `_mod_abilities` with noclip, god, buddha, freeze, slay, slap, health, speed, gravity, rename, blind and beacon, and bring, goto, send and return through `_mod_position` / `_mod_teleport`. Every command is on the console and in chat (`!noclip`), with `@team:drivers` and `@team:runners`.
 
-What it refuses is refused for a reason about this game, and `modtools` prints each one: **respawn**, because a runner who is out stays out until the next round and putting one back decides who won; **give** and **strip**, because the hammer is the only thing anybody holds; burn, blind and beacon, because nothing here draws them. **Anything that moves a body is refused for a driver while they drive** — the bus is what moves, and the body is its passenger.
+What it refuses is refused for a reason about this game, and `modtools` prints each one: **respawn**, because a runner who is out stays out until the next round and putting one back decides who won; **give** and **strip**, because the hammer is the only thing anybody holds; **burn**, because there is no fire in the bowl. **Anything that moves a body is refused for a driver while they drive** — the bus is what moves, and the body is its passenger.
+
+**Blind and beacon were refused as "the client draws nothing" until 2026-09-24, and are two flags now**, after game-arena's pattern. `BfhPlayer.blinded` and `BfhPlayer.beacon` are set by the handlers on the server and replicated as per-player state in `BfhPlayerNet`: `net_blind` **owner-only**, because nobody else's screen changes and a driver who could read it would know which runner cannot see the bus coming; `net_beacon` to everybody. State rather than an event, so a joiner and a lost snapshot are corrected by the next snapshot. No relevance decision was needed: every player here is already always relevant, because the bowl is a disc with nothing tall in it. `BfhHud.blind_overlay` fades a near-black rect in under the four numbers — which stay, with a "blinded by an admin" line, so it reads as something done to the player rather than a client that stopped drawing. `bfh_beacon.gd` is a ring with a ripple once a second, a column drawn with no depth test (not on your own), and a positional ping baked by dot-audio's synthesiser, since this game ships no sound bank. Both outlive a new round (`BfhServices.PERSIST_ON_RESPAWN`); `blind <player> <seconds>` is dot-moderation's timed toggle.
+
+**A beacon on a driver is a beacon on their BUS, and that needed a field.** The ride does not carry rider nodes and a riding controller is not simulated, so a driver's own position is where they sat down for the whole round — a ring drawn there marks an empty patch of sand. `BfhPlayer.ridden` is the bus body they are drawn at, set by the world on the authority and on a client from `BfhPlayerNet.net_bus`, the bus's net id as state: the SEAT event also sets it, but a client that joined after the seat was taken was never sent the SEAT, and `headless_net` forgets the bus on the client and fails unless the snapshot alone puts it back. The bus's marker is 5.2 m across so it circles a nine-metre hull rather than sitting inside it, and its column starts above the roof.
+
+**Worth knowing, and not fixed here: nothing draws a player.** A player is a controller with no mesh; on every client, every other person in the bowl is invisible, and a beaconed runner is the first thing that has ever marked where one stands. A body for remote players is the obvious next piece of this game's client.
+
+`headless_net` asserts the audience through the real handlers over a link dropping one snapshot in five — this client told of its own blind and never of the bot driver's, both beacons drawn, the driver's at the client's copy of the bus — and was armed by dropping `to_owner_only()` (two checks fired) and by taking out the snapshot path to the bus (one fired). `dedicated` drives both through the console, the timed lift, a new round keeping both while ending a noclip (armed by not adding them to `persist_on_respawn`), and `modtools` no longer refusing them. `headless_run`'s last section is the picture's half: the overlay's fade, its coverage of the viewport (armed with the HUD's root inset and the per-frame sizing removed), a ping once a second rather than once a frame, the driver's marker round the bus, and the marker going with the flag and with the runner.
+
+**Every suite here counts sections as well as checks now.** Each section calls `_done()` at its end and before every early return, and the run fails unless `SECTIONS` of them did — the guard `docs/testing.md` asks for beside the total, and the one these three suites were missing. Each was armed by raising `SECTIONS` by one.
 
 **A round is everybody's new body.** `round_began` calls `mod_player_respawned` for every player, so a noclip or a freeze from last round ends with it and god carries over. `dedicated`'s live-tools section found that the hard way: a lone runner makes the sides playable, a round starts under the test, and a check that looked a frame late saw every command undone by the game doing its job — so it looks at the body the moment the command returns.
 
@@ -363,14 +374,17 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 114 checks, the simulation
-godot --headless --path . res://examples/headless_net.tscn   # 101 checks, over a loopback
-godot --headless --path . res://examples/dedicated.tscn      # 60 checks, as a server
+godot --headless --path . res://examples/headless_run.tscn   # 123 checks, 17 sections, the simulation
+godot --headless --path . res://examples/headless_net.tscn   # 109 checks, 15 sections, over a loopback
+godot --headless --path . res://examples/dedicated.tscn      # 67 checks, 9 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
 tools/shot.sh 9 scaffold.png --scaffold                      # the scaffold, from the end a runner climbs
 tools/shot.sh 9 ramp.png --ramp                              # the ramp, from the side
+tools/shot.sh 9 blind.png --blind                            # an admin's blind, through the HUD
+tools/shot.sh 14 beacon_bus.png --beacon --bus               # an admin's beacon round a driver's bus
+tools/shot.sh 9 beacon.png --beacon                          # the runner's own ring, from behind them
 ```
 
 **And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:

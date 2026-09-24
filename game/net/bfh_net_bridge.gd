@@ -557,6 +557,17 @@ func net_id_of_node(node: Node) -> int:
 	return 0
 
 
+## The node drawn for a replicated body, or null. The inverse of [method net_id_of_node],
+## and what a client turns `BfhPlayerNet.net_bus` back into a bus with.
+func body_of_net_id(net_id: int) -> Node3D:
+	var behaviour: BfhPropNet = _bodies.get(net_id)
+
+	if behaviour == null or behaviour.prop == null or not is_instance_valid(behaviour.prop):
+		return null
+
+	return behaviour.prop as Node3D
+
+
 # --- Server: the round -----------------------------------------------------
 
 func _on_ride_entered(
@@ -1295,6 +1306,12 @@ func _apply_seat(reader: DotNetReader) -> void:
 		return
 
 	behaviour.player.set_riding(bool(info["seated"]))
+
+	# The bus they are drawn at, at once. The snapshot's `net_bus` says the same thing and
+	# is what a client that joined later goes by; this is only the event arriving first.
+	if bool(info["seated"]):
+		behaviour.player.ridden = body_of_net_id(int(info["net_id"]))
+
 	seat_changed.emit(int(info["player_id"]), bool(info["seated"]))
 
 

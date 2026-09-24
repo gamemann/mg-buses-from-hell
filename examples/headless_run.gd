@@ -4,6 +4,7 @@ const BfhArena := preload("../game/bfh_arena.gd")
 const BfhConfig := preload("../game/bfh_config.gd")
 const BfhContent := preload("../game/bfh_content.gd")
 const BfhGame := preload("../game/bfh_game.gd")
+const BfhHud := preload("../game/bfh_hud.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
 const BfhReach := preload("../game/bfh_reach.gd")
 const SlopeMotor := preload("slope_motor_standin.gd")
@@ -26,12 +27,17 @@ const SlopeMotor := preload("slope_motor_standin.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 114
+const CHECKS := 123
+
+## Sections that must run to their last line. Each calls `_done()` there, and before
+## every early return.
+const SECTIONS := 17
 
 const TICK := 1.0 / 60.0
 
 var _passed := 0
 var _failed := 0
+var _completed := 0
 var _failures := PackedStringArray()
 
 ## Every world this run has built and not yet taken down. See [method _dispose].
@@ -63,6 +69,7 @@ func _run() -> void:
 	await _test_a_driver_arrives_mid_round()
 	await _test_bus_propulsion()
 	await _test_a_rolled_bus()
+	await _test_blind_and_beacon_drawn()
 
 	# Anything a section did not take down itself, before the counts are printed: a world
 	# freed after `quit()` is a world the engine reports as a leak.
@@ -76,6 +83,14 @@ func _run() -> void:
 
 	for line in _failures:
 		print("  FAIL  %s" % line)
+
+	# And the section counter, which is the other half: a section that aborted before its
+	# last line never reached its `_done()`. Neither guard is enough alone; see
+	# docs/testing.md for the run that reported "0 failed" with eight checks missing.
+	if _completed != SECTIONS:
+		print("ERROR: %d of %d sections ran to their last line." % [_completed, SECTIONS])
+		get_tree().quit(1)
+		return
 
 	# The total the section counter cannot be. A runtime error inside a section aborts
 	# that function and the section counter is satisfied, because the section had
@@ -115,6 +130,7 @@ func _test_a_rolled_bus() -> void:
 		_check(false, "which the game notices is upside down")
 		_check(false, "and puts back on its wheels")
 		await _dispose(game)
+		_done()
 		return
 
 	_check(true, "there is a bus to roll")
@@ -143,6 +159,110 @@ func _test_a_rolled_bus() -> void:
 	)
 
 	await _dispose(game)
+	_done()
+
+
+## A section reached its end. See [constant SECTIONS].
+func _done() -> void:
+	_completed += 1
+
+
+## An administrator's blind and beacon, as a client draws them.
+##
+## [b]What the server decides is `dedicated`'s and who is told is `headless_net`'s; this is
+## the picture.[/b] The world here is authoritative, which is an offline client — the same
+## flags a snapshot would have set, read by the same HUD and the same player. What no
+## assertion can say is whether it LOOKS right: `tools/shot.sh` with `--blind` and
+## `--beacon` is that.
+##
+## [b]The viewport is 64 × 64 here[/b] (docs/testing.md), so the coverage check says the
+## rect is the viewport's, not that the viewport is the window's. It was armed by moving
+## the HUD's root in from the edge with the per-frame sizing taken out.
+func _test_blind_and_beacon_drawn() -> void:
+	print("blind and beacon, as a client draws them")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.round_seconds = 120.0
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 20)
+
+	var hud := BfhHud.new()
+	add_child(hud)
+	hud.bind(game, runner)
+	await get_tree().process_frame
+
+	runner.blinded = true
+	hud.present_blind(BfhHud.BLIND_FADE_SEC + 0.05)
+	_check(
+		hud.blind_overlay.visible and is_equal_approx(hud.blind_overlay.modulate.a, 1.0),
+		"a blind fades the overlay all the way in"
+	)
+	var viewport := get_viewport().get_visible_rect()
+	_check(
+		hud.blind_rect().encloses(viewport),
+		"and it covers the whole viewport, not a HUD-sized rect inside it",
+		"%s against %s" % [str(hud.blind_rect()), str(viewport)]
+	)
+	_check(
+		hud.blind_overlay.get_index() == 0,
+		"under the clock, the health and the cover count, which still say the round is on"
+	)
+	runner.blinded = false
+	hud.present_blind(BfhHud.BLIND_FADE_SEC + 0.05)
+	_check(not hud.blind_overlay.visible, "and lifting it takes it away again")
+
+	runner.beacon = true
+	runner.present_beacon(0.0, false)
+	for _i in range(150):
+		runner.present_beacon(TICK, false)
+	var marker := runner.beacon_marker
+	_check(
+		marker != null and marker.pings == 3,
+		"a beacon pings the moment it comes on and once a second after, not once a frame",
+		"%d pings in 2.5 s" % (marker.pings if marker != null else -1)
+	)
+	runner.present_beacon(TICK, true)
+	_check(
+		marker != null and not marker.get_node("Column").visible
+		and marker.get_node("Ring").visible,
+		"and on the beaconed player's own screen the column is left out and the ring is not"
+	)
+
+	# A driver is marked round their bus, because the bus is the only thing of them anybody
+	# sees: their own position is where they sat down.
+	driver.beacon = true
+	driver.present_beacon(TICK, false)
+	var bus := driver.ridden
+	var on_bus := driver.beacon_marker
+	_check(
+		driver.riding and bus != null and on_bus != null and on_bus.is_on_bus()
+		and on_bus.global_position.distance_to(bus.global_position) < 0.01
+		and on_bus.ring_radius() > 4.0,
+		"a beaconed driver's marker is drawn round their bus, wide enough to circle it",
+		"riding %s, bus %s, ring %.1f m" % [
+			str(driver.riding), str(bus), on_bus.ring_radius() if on_bus != null else 0.0
+		]
+	)
+
+	runner.beacon = false
+	runner.present_beacon(TICK, false)
+	_check(runner.beacon_marker == null, "turning the beacon off takes the marker away")
+
+	driver.health.alive = false
+	driver.present_beacon(TICK, false)
+	_check(
+		driver.beacon_marker == null,
+		"and so does being out: a column over an empty patch of sand points at nobody"
+	)
+
+	remove_child(hud)
+	hud.free()
+	await _dispose(game)
+	_done()
 
 
 func _check(ok: bool, what: String, detail: String = "") -> void:
@@ -259,6 +379,7 @@ func _test_config() -> void:
 	config.bus_lethal_speed = 9.0
 	config.round_seconds = 0.0
 	_check(not config.validate().ok, "so is a round with no clock")
+	_done()
 
 
 # --- The world -------------------------------------------------------------
@@ -299,6 +420,7 @@ func _test_world_builds() -> void:
 		"and the rule has been told how to ask who is alive")
 
 	await _dispose(game)
+	_done()
 
 
 func _test_bowl_layout() -> void:
@@ -356,6 +478,7 @@ func _test_bowl_layout() -> void:
 	_check(inside, "every one of them inside the wall")
 
 	await _dispose(game)
+	_done()
 
 
 ## The stacks, which are the only permanent geometry on the floor.
@@ -483,6 +606,7 @@ func _test_the_stacks() -> void:
 
 	await _dispose(game)
 	await _test_driving_the_stacks()
+	_done()
 
 
 ## The check the rest of this section cannot make: a bot bus actually gets past one.
@@ -761,6 +885,7 @@ func _test_the_tank_farm() -> void:
 
 	await _dispose(game)
 	await _test_driving_the_farm()
+	_done()
 
 
 ## The check the rest of that section cannot make: a bot bus gets round a drum.
@@ -934,6 +1059,7 @@ func _test_reach() -> void:
 
 	# --- Thrown onto a stack of two by a barrel set off from the hammer's reach.
 	await _test_the_throw()
+	_done()
 
 
 ## A barrel throws a runner onto two crates, which nothing else does.
@@ -1198,6 +1324,7 @@ func _test_the_scaffold() -> void:
 		"%d of %d cells vacated" % [vacated, cells.size()])
 
 	await _dispose(game)
+	_done()
 
 
 func _test_sides() -> void:
@@ -1249,6 +1376,7 @@ func _test_sides() -> void:
 		"and a driver does not, because the bus is the weapon")
 
 	await _dispose(game)
+	_done()
 
 
 # --- The join this game exists for -----------------------------------------
@@ -1318,6 +1446,7 @@ func _test_standing_on_a_crate() -> void:
 	)
 
 	await _dispose(game)
+	_done()
 
 
 func _test_hammer() -> void:
@@ -1395,6 +1524,7 @@ func _test_hammer() -> void:
 		"a concrete block cannot be broken at all")
 
 	await _dispose(game)
+	_done()
 
 
 func _test_barrel() -> void:
@@ -1443,6 +1573,7 @@ func _test_barrel() -> void:
 	_check(not barrel.is_alive(), "the barrel is gone")
 
 	await _dispose(game)
+	_done()
 
 
 func _test_bus() -> void:
@@ -1526,6 +1657,7 @@ func _test_bus() -> void:
 	_check(survivor.is_alive(), "while a bus crawling into one leaves it standing")
 
 	await _dispose(game)
+	_done()
 
 
 func _test_round_ends() -> void:
@@ -1597,6 +1729,7 @@ func _test_round_ends() -> void:
 	)
 
 	await _dispose(game)
+	_done()
 
 
 # --- Driving ---------------------------------------------------------------
@@ -1638,6 +1771,7 @@ func _test_a_driver_arrives_mid_round() -> void:
 	_check(not extra.riding, "while a driver with no empty bus is left out of one")
 
 	await _dispose(game)
+	_done()
 
 
 func _test_bus_propulsion() -> void:
@@ -1675,6 +1809,7 @@ func _test_bus_propulsion() -> void:
 		_check(false, "the body is free to move at all")
 		_check(false, "and the throttle moves it")
 		await _dispose(game)
+		_done()
 		return
 
 	var body := bus.body()
@@ -1725,4 +1860,5 @@ func _test_bus_propulsion() -> void:
 	)
 
 	await _dispose(game)
+	_done()
 

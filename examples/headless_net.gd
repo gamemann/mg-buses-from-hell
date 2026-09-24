@@ -39,7 +39,11 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## the wrong reason. A real client is a separate program with its own export and its own
 ## `user://` config. Make them disagree, and let HELLO correct it.
 
-const CHECKS := 101
+const CHECKS := 109
+
+## Sections that must run to their last line. Each calls `_done()` there, and before
+## every early return.
+const SECTIONS := 15
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -61,6 +65,7 @@ const INPUT_LEAD := 3
 
 var _passed := 0
 var _failed := 0
+var _completed := 0
 var _failures := PackedStringArray()
 
 var _server_game: BfhGame = null
@@ -103,6 +108,7 @@ func _run() -> void:
 		await _test_voice()
 		await _test_a_gag()
 		await _test_a_lossy_link()
+		await _test_blind_and_beacon()
 		await _test_leaving()
 
 	print("")
@@ -110,6 +116,14 @@ func _run() -> void:
 
 	for line in _failures:
 		print("  FAIL  %s" % line)
+
+	# And the section counter, which is the other half: a section that aborted before its
+	# last line never reached its `_done()`. Neither guard is enough alone; see
+	# docs/testing.md for the run that reported "0 failed" with eight checks missing.
+	if _completed != SECTIONS:
+		print("ERROR: %d of %d sections ran to their last line." % [_completed, SECTIONS])
+		get_tree().quit(1)
+		return
 
 	# The total the section counter cannot be. A runtime error inside a section aborts
 	# that function and the section counter is satisfied, because the section had already
@@ -126,6 +140,11 @@ func _run() -> void:
 
 func _section(title: String) -> void:
 	print(title)
+
+
+## A section reached its end. See [constant SECTIONS].
+func _done() -> void:
+	_completed += 1
 
 
 func _check(ok: bool, what: String, detail: String = "") -> void:
@@ -264,6 +283,7 @@ func _test_the_wire() -> void:
 		BfhEvents.write_clock(3, 42.5, 27, 4, true).slice(0, 2)
 	))
 	_check(not bool(short_clock["ok"]), "and so is a truncated clock")
+	_done()
 
 
 # --- Bringing both halves up -----------------------------------------------
@@ -449,6 +469,7 @@ func _build() -> bool:
 		"%d bodies" % int(_server_bridge.describe()["bodies"])
 	)
 
+	_done()
 	return attached.ok and client_attached.ok
 
 
@@ -599,6 +620,7 @@ func _test_a_client_joins() -> void:
 		_server_game.team_of(BfhNetBridge.player_key(SESSION)) == BfhGame.TEAM_RUNNERS,
 		"which is the side the server put them on: the seats were already taken"
 	)
+	_done()
 
 
 # --- The bowl --------------------------------------------------------------
@@ -662,6 +684,7 @@ func _test_the_bowl_arrives() -> void:
 		"every mirrored body is frozen, or it fights the packets it is being moved by",
 		"%d of %d" % [frozen, total]
 	)
+	_done()
 
 
 ## The client's table, which is private on purpose — a suite is allowed to reach in.
@@ -718,6 +741,7 @@ func _test_the_bus() -> void:
 		_check(false, "there is a mirrored bus to drive")
 		_check(false, "the mirror's wheels are drawn from the wire")
 		_check(false, "and its position follows the server's")
+		_done()
 		return
 
 	_check(true, "there is a mirrored bus to drive")
@@ -748,6 +772,7 @@ func _test_the_bus() -> void:
 		"and the body is drawn there, rather than only the property being right",
 		"%.2f m apart" % mirror.prop.global_position.distance_to(server_bus.position())
 	)
+	_done()
 
 
 # --- Moving ----------------------------------------------------------------
@@ -760,6 +785,7 @@ func _test_moving() -> void:
 
 	if server_player == null or client_player == null:
 		_check(false, "both ends have the player")
+		_done()
 		return
 
 	_check(true, "both ends have the player")
@@ -789,6 +815,7 @@ func _test_moving() -> void:
 		"without being corrected on every snapshot",
 		"%d corrections" % _corrections()
 	)
+	_done()
 
 
 # --- The hammer ------------------------------------------------------------
@@ -802,6 +829,7 @@ func _test_the_hammer() -> void:
 		_check(false, "the runner has a hammer")
 		_check(false, "the button reaches the server")
 		_check(false, "and the crate it broke goes from the client too")
+		_done()
 		return
 
 	_check(true, "the runner has a hammer")
@@ -838,6 +866,7 @@ func _test_the_hammer() -> void:
 			or _server_game.prop_damage.health_of(crate.instance_id) < 100.0,
 		"and what it hit is the worse for it"
 	)
+	_done()
 
 
 # --- Driving ---------------------------------------------------------------
@@ -855,6 +884,7 @@ func _test_driving() -> void:
 		_check(false, "there is a bus to get into")
 		_check(false, "the client is told its player is driving")
 		_check(false, "and stops predicting them")
+		_done()
 		return
 
 	_check(true, "there is a bus to get into")
@@ -887,6 +917,7 @@ func _test_driving() -> void:
 	_server_game.ride.exit(buses[0], server_player.player_id, true)
 	await _steps(6)
 	_check(not _client_player().riding, "and is told when they get out again")
+	_done()
 
 
 # --- The clock -------------------------------------------------------------
@@ -923,6 +954,7 @@ func _test_the_clock() -> void:
 		_client_game.sides_are_playable() == _server_game.sides_are_playable(),
 		"and whether the round is playable at all"
 	)
+	_done()
 
 
 # --- Chat, voice and moderation --------------------------------------------
@@ -999,6 +1031,7 @@ func _test_chat() -> void:
 		_check(false, "with the speaker's name on it")
 		_check(false, "and the text intact")
 		router.queue_free()
+		_done()
 		return
 
 	var wire: Dictionary = heard[heard.size() - 1]
@@ -1025,6 +1058,7 @@ func _test_chat() -> void:
 	)
 
 	router.queue_free()
+	_done()
 
 
 func _test_voice() -> void:
@@ -1078,6 +1112,7 @@ func _test_voice() -> void:
 	)
 
 	router.queue_free()
+	_done()
 
 
 func _test_a_gag() -> void:
@@ -1162,6 +1197,7 @@ func _test_a_gag() -> void:
 
 	moderation.queue_free()
 	router.queue_free()
+	_done()
 
 
 # --- A lossy link ----------------------------------------------------------
@@ -1209,6 +1245,123 @@ func _test_a_lossy_link() -> void:
 		_corrections() >= before,
 		"with the corrections counted rather than hidden"
 	)
+	_done()
+
+
+# --- An admin's blind and beacon -------------------------------------------
+
+## An administrator's blind and beacon, through this game's real handlers, over a link
+## that drops one snapshot in five.
+##
+## [b]The audience is the whole point of both.[/b] This client owns player 42 and does not
+## own the bot driver. A blind is its owner's screen and nobody else's, so the client must
+## be told about its own and must NOT be told about the bot's — a driver who could read a
+## runner's blind would know who cannot see the bus coming, and this is the same audience
+## rule seen from the other seat. A beacon is for everybody, so the client must get both.
+## Asserted on the client's own copies of the players, which is what its HUD and its
+## beacon markers read.
+func _test_blind_and_beacon() -> void:
+	_section("an admin's blind and beacon: who is told")
+
+	var services := BfhServices.new()
+	services.game = _server_game
+	var handlers := services._mod_abilities()
+	var blind: Callable = handlers["blind"]
+	var beacon: Callable = handlers["beacon"]
+
+	var bot_session := BfhNetBridge.FIRST_BOT_SESSION
+	var bot_key := BfhNetBridge.player_key(bot_session)
+	var server_net := _server_player().get_node("Net") as DotNetBehaviour
+
+	_check(
+		server_net.find_var(&"net_blind").audience == DotNetVar.Audience.OWNER
+		and server_net.find_var(&"net_beacon").audience == DotNetVar.Audience.EVERYONE,
+		"the blind is declared owner-only and the beacon for everybody"
+	)
+
+	# The bot back behind a wheel, so the beacon on a DRIVER is asserted where it is drawn.
+	# `_test_driving` took it out of the first bus to seat this client in it.
+	var buses := _server_game.vehicles.all_vehicles()
+	var bot: BfhPlayer = _server_game.players.get(bot_key)
+	if not buses.is_empty() and bot != null and not bot.riding:
+		var sitting := _server_game.driver_of(buses[0].instance_id)
+		if sitting != &"":
+			_server_game.ride.exit(buses[0], sitting, true)
+		_server_game.ride.enter(buses[0], bot_key, bot, &"driver")
+
+	var results: Array[DotResult] = [
+		blind.call(StringName(str(SESSION)), {"on": true}),
+		blind.call(StringName(str(bot_session)), {"on": true}),
+		beacon.call(StringName(str(SESSION)), {"on": true}),
+		beacon.call(StringName(str(bot_session)), {"on": true}),
+	]
+	_check(
+		results.all(func(r: DotResult) -> bool: return r.ok),
+		"the server blinds and beacons this client's player and the bot driver"
+	)
+
+	_drop_every = 5
+	await _steps(30)
+	_drop_every = 0
+
+	var mine := _client_player()
+	var theirs: BfhPlayer = _client_game.players.get(bot_key)
+
+	_check(mine != null and mine.blinded, "the owner's client blacks its own screen out")
+	_check(
+		theirs != null and not theirs.blinded
+		and not bool((theirs.get_node("Net") as Object).get("net_blind")),
+		"and is never told about somebody else's blind",
+		"the bot's mirror received net_blind = %s" % str(
+			(theirs.get_node("Net") as Object).get("net_blind") if theirs != null else "?"
+		)
+	)
+	_check(
+		mine != null and mine.beacon and theirs != null and theirs.beacon,
+		"while it draws the beacon on both"
+	)
+
+	# The driver's beacon is drawn at the bus, and the client knows which bus from the
+	# snapshot rather than from a SEAT it might have missed.
+	var client_bus: Node3D = null
+	if not buses.is_empty():
+		client_bus = _client_bridge.body_of_net_id(
+			_server_bridge.net_id_of_node(buses[0].body())
+		)
+	_check(
+		theirs != null and theirs.riding and client_bus != null and theirs.ridden == client_bus
+		and theirs.drawn_position().distance_to(client_bus.global_position) < 0.01,
+		"and a beaconed driver is drawn where the client draws their bus",
+		"riding %s, ridden %s, bus %s" % [
+			str(theirs.riding) if theirs != null else "?",
+			str(theirs.ridden) if theirs != null else "?",
+			str(client_bus),
+		]
+	)
+
+	# A client that joined after the seat was taken was never sent the SEAT. Forgetting
+	# the bus here is that client; the next snapshot's `net_bus` has to put it back.
+	if theirs != null:
+		theirs.ridden = null
+	await _steps(6)
+	_check(
+		theirs != null and client_bus != null and theirs.ridden == client_bus,
+		"and a client that missed the SEAT finds the bus from the snapshot alone"
+	)
+
+	for id in [StringName(str(SESSION)), StringName(str(bot_session))]:
+		var _b: DotResult = blind.call(id, {"on": false})
+		var _c: DotResult = beacon.call(id, {"on": false})
+
+	await _steps(12)
+
+	_check(
+		not mine.blinded and not mine.beacon and not theirs.beacon,
+		"and turning both off reaches the client"
+	)
+
+	services.free()
+	_done()
 
 
 # --- Leaving ---------------------------------------------------------------
@@ -1253,3 +1406,4 @@ func _test_leaving() -> void:
 		"the bowl is still there",
 		"%d bodies" % int(_client_bridge.describe()["bodies"])
 	)
+	_done()

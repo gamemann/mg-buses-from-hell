@@ -353,7 +353,9 @@ func _physics_process(delta: float) -> void:
 		bridge.client_tick(net.clock.input_tick(), move)
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	_present_beacons(delta)
+
 	if camera == null or player == null:
 		return
 
@@ -364,6 +366,18 @@ func _process(_delta: float) -> void:
 	# jittery" with every simulated number correct.
 	var state := player.controller.state
 	camera.rotation = Vector3(deg_to_rad(state.pitch), deg_to_rad(state.yaw), 0.0)
+
+
+## Every player's beacon, this client's own included — somebody who has been beaconed
+## sees their ring and hears their ping too. Once a frame and here, because a server never
+## draws one and the world is the same class on both ends.
+func _present_beacons(delta: float) -> void:
+	if game == null:
+		return
+
+	for id: StringName in game.players:
+		var body: BfhPlayer = game.players[id]
+		body.present_beacon(delta, body == player)
 
 
 ## Whether the mouse button is down this frame. Read by [method _physics_process].

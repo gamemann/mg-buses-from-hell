@@ -20,7 +20,11 @@ const BfhGame := preload("../game/bfh_game.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 60
+const CHECKS := 67
+
+## Sections that must run to their last line. Each calls `_done()` there, and before
+## every early return.
+const SECTIONS := 9
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -35,6 +39,7 @@ const TICK_RATE := 40
 
 var _passed := 0
 var _failed := 0
+var _completed := 0
 var _failures := PackedStringArray()
 
 var server: DotServer = null
@@ -70,6 +75,13 @@ func _run() -> void:
 		print("  FAIL  %s" % line)
 
 	var code := 1 if _failed > 0 else 0
+
+	# And the section counter, which is the other half: a section that aborted before its
+	# last line never reached its `_done()`. Neither guard is enough alone; see
+	# docs/testing.md for the run that reported "0 failed" with eight checks missing.
+	if _completed != SECTIONS:
+		print("ERROR: %d of %d sections ran to their last line." % [_completed, SECTIONS])
+		code = 1
 
 	if _passed + _failed != CHECKS:
 		print("ERROR: %d checks ran, %d expected. A section aborted part-way." % [
@@ -116,6 +128,11 @@ func _shut_down() -> void:
 		server = null
 
 	await get_tree().process_frame
+
+
+## A section reached its end. See [constant SECTIONS].
+func _done() -> void:
+	_completed += 1
 
 
 func _check(ok: bool, what: String, detail: String = "") -> void:
@@ -215,6 +232,7 @@ func _test_no_message_preloads_itself() -> void:
 		"and none of them preloads itself, which leaks every script at exit",
 		", ".join(offenders)
 	)
+	_done()
 
 
 func _extends_message(source: String) -> bool:
@@ -333,6 +351,7 @@ func _test_the_module_loads() -> void:
 	_check(module != null, "and the host has it under its name")
 
 	if module == null:
+		_done()
 		return
 
 	# Through `get()`, because this module has no `class_name` — the shape a module
@@ -356,6 +375,7 @@ func _test_the_module_loads() -> void:
 		"and the world extent both ends decode positions against"
 	)
 	_check(not net.auto_tick, "the manager does not tick itself: the module drives it")
+	_done()
 
 
 func _test_the_commands() -> void:
@@ -370,6 +390,7 @@ func _test_the_commands() -> void:
 
 	var netstat := _run_command("bfh_net")
 	_check(_said(netstat, "bodies"), "`bfh_net` says what is being replicated")
+	_done()
 
 
 func _test_the_tunables() -> void:
@@ -382,6 +403,7 @@ func _test_the_tunables() -> void:
 		_check(false, "its default is the value the world was built with")
 		_check(false, "and setting it reaches the world")
 		_check(false, "a bus's top speed is tunable too")
+		_done()
 		return
 
 	_check(
@@ -403,6 +425,7 @@ func _test_the_tunables() -> void:
 		"a bus's top speed is tunable too",
 		"%.1f" % game.config.bus_top_speed
 	)
+	_done()
 
 
 # --- It actually plays -----------------------------------------------------
@@ -417,6 +440,7 @@ func _test_the_round_runs() -> void:
 		_check(false, "the bowl was laid out when the module loaded")
 		_check(false, "the module ticks the world")
 		_check(false, "and the round clock runs on an empty server")
+		_done()
 		return
 
 	_check(true, "the module is loaded")
@@ -445,6 +469,7 @@ func _test_the_round_runs() -> void:
 		"and the round clock runs on an empty server",
 		"%.2f s" % (game.round_elapsed - clock_before)
 	)
+	_done()
 
 
 ## The seats fill themselves, because this game has nothing for one side alone.
@@ -495,6 +520,7 @@ func _test_the_bots() -> void:
 		server.console.find_cvar("bfh_bots") != null,
 		"and an operator can turn them off"
 	)
+	_done()
 
 
 ## Chat, voice and moderation, as a module actually builds them.
@@ -520,6 +546,7 @@ func _test_the_services() -> void:
 		_check(false, "`bfh_say` is registered")
 		_check(false, "and it says something")
 		_check(false, "admission asks moderation")
+		_done()
 		return
 
 	_check(services.get("chat") != null, "with chat on it")
@@ -553,6 +580,7 @@ func _test_the_services() -> void:
 		services.call("check_admission", session).ok,
 		"admission asks moderation and lets an unpunished player in"
 	)
+	_done()
 
 
 ## dot-moderation's live tools, built by dot-game's services layer BY PATH, with this
@@ -578,8 +606,10 @@ func _test_the_live_tools() -> void:
 
 	if tools == null or module == null:
 		for what in ["a runner joins", "noclip", "off", "slay", "respawn refused",
-				"give refused", "describe", "forgotten on leave"]:
+				"give refused", "blind", "on the entity", "timed blind", "lifts", "beacon",
+				"a round keeps both", "nothing refused", "describe", "forgotten on leave"]:
 			_check(false, what)
+		_done()
 		return
 
 	# An adopted session has no peer, so the netcode's own sends to it would be an engine
@@ -601,9 +631,12 @@ func _test_the_live_tools() -> void:
 	_check(runner != null and not bool(runner.get("riding")), "a runner joins through the roster, on foot")
 
 	if runner == null:
-		for what in ["noclip", "off", "slay", "respawn refused", "give refused", "describe", "forgotten on leave"]:
+		for what in ["noclip", "off", "slay", "respawn refused", "give refused", "blind",
+				"on the entity", "timed blind", "lifts", "beacon", "a round keeps both",
+				"nothing refused", "describe", "forgotten on leave"]:
 			_check(false, what)
 		net.send_fn = previous_send
+		_done()
 		return
 
 	var controller: DotFpsController = runner.get("controller")
@@ -639,10 +672,56 @@ func _test_the_live_tools() -> void:
 	var given := await _run_command_later("give Runner rifle")
 	_check(_said(given, "hammer"), "`give` says why there is nothing to give", " | ".join(given))
 
+	# Blind and beacon: a flag each on the player, set here and drawn by the client. What a
+	# client sees of them is `headless_net`'s, and what they look like is `tools/shot.sh`'s.
+	var blinded := await _run_command_later("blind Runner")
+	_check(bool(runner.get("blinded")), "`blind Runner` blacks their screen out", " | ".join(blinded))
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var behaviour: Object = runner.get_node_or_null("Net")
+	_check(
+		behaviour != null and bool(behaviour.get("net_blind")),
+		"and it is on the entity the netcode sends them"
+	)
+
+	# A blind is a spell: dot-moderation lifts it through the same handler when the time
+	# is up, so what is checked is the flag and not the timer.
+	var _lift := await _run_command_later("blind Runner off")
+	var _spell := await _run_command_later("blind Runner 0.2")
+	_check(bool(runner.get("blinded")), "`blind Runner 0.2` blinds them for a fifth of a second")
+	await get_tree().create_timer(0.4).timeout
+	_check(not bool(runner.get("blinded")), "and it lifts on its own when the time is up")
+
+	var lit := await _run_command_later("beacon Runner")
+	_check(bool(runner.get("beacon")), "`beacon Runner` marks them for everybody", " | ".join(lit))
+
+	# A round is everybody's new body here, and both are about the person rather than the
+	# body: a round ending is what a player being punished would otherwise wait out. The
+	# noclip is the control — it must end, or this is not a new body at all.
+	var _dark := await _run_command_later("blind Runner")
+	var _fly := await _run_command_later("noclip Runner")
+	services.call("_on_round_began_for_tools", 99)
+	_check(
+		bool(runner.get("blinded")) and bool(runner.get("beacon"))
+		and not DotFpsAdminModifiers.is_noclipped(controller),
+		"a new round keeps blind and beacon, and ends the noclip"
+	)
+	var _unlit := await _run_command_later("beacon Runner off")
+	var _light := await _run_command_later("blind Runner off")
+
 	var described := await _run_command_later("modtools")
 	_check(
 		_said(described, "abilities") and _said(described, "refused"),
 		"`modtools` lists what this game supports and what it refuses"
+	)
+	var refusals := PackedStringArray()
+	for line in described:
+		if line.findn("blind (") >= 0 or line.findn("beacon (") >= 0:
+			refusals.append(line)
+	_check(
+		_said(described, "blind") and _said(described, "beacon") and refusals.is_empty(),
+		"and blind and beacon are among what it supports, not what it refuses",
+		" | ".join(described)
 	)
 
 	# Leaving forgets them: the next player given this userid must not inherit a god mode.
@@ -654,6 +733,7 @@ func _test_the_live_tools() -> void:
 	)
 
 	net.send_fn = previous_send
+	_done()
 
 
 ## Runs a line, asks [param look] about the world at once, then waits for the reply.
@@ -725,3 +805,4 @@ func _test_it_unloads_cleanly() -> void:
 		server.console.find_command("noclip") != null,
 		"the live tools' among them, rather than refused as taken"
 	)
+	_done()

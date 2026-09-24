@@ -19,6 +19,8 @@ func _run() -> void:
 	var look_at_scaffold := false
 	var look_at_ramp := false
 	var show_chat := false
+	var beacon := false
+	var blind := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
 			seconds = float(arg.substr(10))
@@ -36,6 +38,10 @@ func _run() -> void:
 			look_at_ramp = true
 		elif arg == "--chat":
 			show_chat = true
+		elif arg == "--beacon":
+			beacon = true
+		elif arg == "--blind":
+			blind = true
 
 	var client: Node = load("res://game/bfh.tscn").instantiate()
 	add_child(client)
@@ -55,6 +61,34 @@ func _run() -> void:
 	var elapsed := 0.0
 	while elapsed < seconds:
 		elapsed += get_process_delta_time()
+		await get_tree().process_frame
+
+	# An administrator's marks, set the way the handlers set them and then given a few
+	# frames to draw. `--beacon` beacons everybody — the bot driver's is round the bus, which
+	# `--bus` looks at; alone it stands off behind the local runner so their own ring and
+	# the column over the bus are both in the frame. `--blind` blacks the local player's
+	# screen out and looks through it, HUD and all.
+	var world_for_marks: BfhGame = client.get("game")
+	var local_player: Node3D = client.get("player")
+	if (beacon or blind) and world_for_marks != null:
+		for id in world_for_marks.players:
+			var someone: Node = world_for_marks.players[id]
+			if beacon:
+				someone.set("beacon", true)
+			if blind and someone == local_player:
+				someone.set("blinded", true)
+		var settle := 0.0
+		while settle < 0.6:
+			settle += get_process_delta_time()
+			await get_tree().process_frame
+
+	if beacon and not look_at_bus and local_player != null:
+		var cam := Camera3D.new()
+		add_child(cam)
+		var behind := local_player.global_basis.z.normalized()
+		cam.global_position = local_player.global_position + behind * 8.0 + Vector3(0.0, 4.0, 0.0)
+		cam.look_at(local_player.global_position + Vector3(0.0, 1.0, 0.0), Vector3.UP)
+		cam.current = true
 		await get_tree().process_frame
 
 	# Or stand over the stacks and look down the lane. A first-person camera dropped

@@ -27,6 +27,23 @@ var _status: Label = null
 var _crosshair: Control = null
 var _root: Control = null
 
+## An administrator's `blind`, over the world and under the four numbers.
+##
+## [b]Under the numbers, on purpose.[/b] A blind takes the bowl away, not the player's
+## bearings: the clock, their health and the cover count still say that the round is going
+## on and that they are in it, which is what makes it read as "an admin did this" rather
+## than as a client that stopped drawing. The chat box is its own layer above this one.
+##
+## Black rather than white. A white screen at full brightness is a thing a player can be
+## hurt by in a dark room, and taking the picture away is the whole of the point.
+var blind_overlay: ColorRect = null
+
+## Seconds a blind takes to come down and to lift. Short, so it is unmistakably on, and
+## not instant, so it reads as something done to the screen rather than a frame dropped.
+const BLIND_FADE_SEC := 0.25
+
+const BLIND_COLOUR := Color(0.01, 0.01, 0.015)
+
 
 func bind(p_game: BfhGame, p_player: BfhPlayer) -> void:
 	game = p_game
@@ -46,6 +63,16 @@ func _build() -> void:
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
+
+	# First, so every label added below draws over it. See [member blind_overlay].
+	blind_overlay = ColorRect.new()
+	blind_overlay.name = "Blind"
+	blind_overlay.color = BLIND_COLOUR
+	blind_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	blind_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	blind_overlay.modulate.a = 0.0
+	blind_overlay.visible = false
+	_root.add_child(blind_overlay)
 
 	var font_size := 22
 
@@ -105,7 +132,9 @@ func _label(size: int) -> Label:
 	return label
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	present_blind(delta)
+
 	if game == null or game.config == null:
 		return
 
@@ -125,7 +154,45 @@ func _process(_delta: float) -> void:
 	_status.text = _status_line()
 
 
+## Fades [member blind_overlay] toward whether this HUD's player is blinded.
+##
+## Read off [member player] rather than pushed by anybody, because the flag arrives in a
+## snapshot on a connected client and is set directly offline, and a HUD that had to be
+## told would need telling from two places. Public so a check can step it.
+##
+## [b]Sized to the viewport every frame it shows, not trusted to its anchors.[/b] The root
+## it sits in is full-rect under a [CanvasLayer], which today IS the viewport — but a blind
+## that left a strip of the bowl showing would be a blind a player can still play through,
+## and one line here costs less than finding that out from a picture.
+func present_blind(delta: float) -> void:
+	if blind_overlay == null:
+		return
+
+	var want := 1.0 if player != null and player.blinded else 0.0
+	blind_overlay.modulate.a = move_toward(
+		blind_overlay.modulate.a, want, maxf(delta, 0.0) / BLIND_FADE_SEC
+	)
+	blind_overlay.visible = blind_overlay.modulate.a > 0.0
+
+	if blind_overlay.visible and blind_overlay.is_inside_tree():
+		var inverse := blind_overlay.get_parent_control().get_global_transform().affine_inverse()
+		blind_overlay.position = inverse * Vector2.ZERO
+		blind_overlay.size = inverse.basis_xform(blind_overlay.get_viewport_rect().size)
+
+
+## The rectangle the blind covers, in viewport pixels. For a check.
+func blind_rect() -> Rect2:
+	if blind_overlay == null:
+		return Rect2()
+
+	return blind_overlay.get_global_rect()
+
+
 func _status_line() -> String:
+	# First, because a black screen with no reason on it reads as the client broken. The
+	# line is drawn over the blind; see [member blind_overlay].
+	if player != null and player.blinded:
+		return "blinded by an admin"
 	if not game.sides_are_playable():
 		return "waiting for both sides"
 	if player != null and player.riding:

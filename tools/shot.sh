@@ -6,6 +6,9 @@
 #   tools/shot.sh 9 tanks.png --tanks    # from a camera rather than the player's eyes
 #   tools/shot.sh 9 scaffold.png --scaffold   # the scaffold, from the end a runner climbs
 #   tools/shot.sh 9 ramp.png --ramp           # the ramp, from the side
+#   tools/shot.sh 9 beacon.png --beacon       # an admin's beacon: the runner's ring, the bus's column
+#   tools/shot.sh 9 beacon_bus.png --beacon --bus   # the beacon round a driver's bus
+#   tools/shot.sh 9 blind.png --blind         # an admin's blind, through the HUD
 #
 # Anything after the filename is passed through to the scene, which is how --bus,
 # --stacks, --tanks and --chat are reached. They were unreachable through this script

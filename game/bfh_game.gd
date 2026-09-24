@@ -290,8 +290,8 @@ func _build_vehicles() -> void:
 	# below are that seam, and this game is the half that knows what a player is.
 	ride = vehicles.ride
 	ride.carry_rider_nodes = false
-	ride.on_seated = func(rider_id: StringName, _v: DotVehicleInstance, _s: DotVehicleSeat) -> void:
-		_set_riding(rider_id, true)
+	ride.on_seated = func(rider_id: StringName, v: DotVehicleInstance, _s: DotVehicleSeat) -> void:
+		_set_riding(rider_id, true, Vector3.ZERO, v)
 	ride.on_unseated = func(
 		rider_id: StringName, _v: DotVehicleInstance, _s: DotVehicleSeat, at: Vector3
 	) -> void:
@@ -532,12 +532,20 @@ func remove_player(player_id: StringName) -> void:
 
 
 ## Flips a player between walking and driving. Called by the ride, never directly.
-func _set_riding(player_id: StringName, value: bool, at: Vector3 = Vector3.ZERO) -> void:
+func _set_riding(
+	player_id: StringName, value: bool, at: Vector3 = Vector3.ZERO,
+	vehicle: DotVehicleInstance = null
+) -> void:
 	var player: BfhPlayer = players.get(player_id)
 	if player == null:
 		return
 
 	player.set_riding(value)
+
+	# Where the driver is DRAWN from now on, because their own position stops meaning
+	# anything the moment they sit down. See [member BfhPlayer.ridden].
+	if value and vehicle != null:
+		player.ridden = vehicle.body()
 
 	if not value and at != Vector3.ZERO:
 		player.global_position = at
