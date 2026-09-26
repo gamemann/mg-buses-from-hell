@@ -28,25 +28,26 @@ const CHANNEL := "bfh.figure"
 ## One mesh set; the seven characters are seven atlases on it. Every Blocky Character
 ## carries byte-identical geometry and UVs, so the variety is a texture swap and nothing
 ## else — vendoring seven GLBs would be seven copies of one file.
-const MODEL := "res://assets/kenney/characters/character-a.glb"
+## Rebased where it is defined, like every path below: see [method BfhPaths.rebase].
+static var MODEL := BfhPaths.rebase("res://assets/kenney/characters/character-a.glb")
 
 ## Runners are drawn as a crowd, one of six ordinary people chosen by their id, so two
 ## runners standing together can be told apart. Chosen off the kit's preview for being
 ## people rather than robots or orcs: a runner is somebody who has wandered into a bowl
 ## with a bus in it.
-const RUNNER_ATLASES := [
-	"res://assets/kenney/characters/Textures/texture-a.png",
-	"res://assets/kenney/characters/Textures/texture-b.png",
-	"res://assets/kenney/characters/Textures/texture-c.png",
-	"res://assets/kenney/characters/Textures/texture-e.png",
-	"res://assets/kenney/characters/Textures/texture-f.png",
-	"res://assets/kenney/characters/Textures/texture-k.png",
+static var RUNNER_ATLASES: Array[String] = [
+	BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-a.png"),
+	BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-b.png"),
+	BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-c.png"),
+	BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-e.png"),
+	BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-f.png"),
+	BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-k.png"),
 ]
 
 ## A driver on foot wears the uniform. Rare — a driver is drawn AS the bus for almost the
 ## whole round — but a driver whose bus is wrecked, or who is between seats, is on the
 ## other side from every runner near them and should not look like one.
-const DRIVER_ATLAS := "res://assets/kenney/characters/Textures/texture-j.png"
+static var DRIVER_ATLAS := BfhPaths.rebase("res://assets/kenney/characters/Textures/texture-j.png")
 
 ## Which atlas this figure is wearing. Read by the suite.
 var atlas: String = ""
@@ -70,7 +71,7 @@ func build(height: float, atlas_path: String) -> void:
 		_model.queue_free()
 		_model = null
 
-	var scene: Variant = load(BfhPaths.rebase(MODEL))
+	var scene: Variant = load(MODEL)
 
 	if scene is PackedScene:
 		_model = (scene as PackedScene).instantiate() as Node3D
@@ -80,7 +81,7 @@ func build(height: float, atlas_path: String) -> void:
 		# end; a grey one is a player whose art did not ship, which is a lesser thing and
 		# still a person to steer round.
 		DotLog.warn(CHANNEL, "no character model; drawing a capsule", {
-			"path": BfhPaths.rebase(MODEL),
+			"path": MODEL,
 		})
 		_model = _capsule(height)
 		add_child(_model)

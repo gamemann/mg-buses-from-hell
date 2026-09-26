@@ -7,6 +7,7 @@ const BfhConfig := preload("../game/bfh_config.gd")
 const BfhContent := preload("../game/bfh_content.gd")
 const BfhGame := preload("../game/bfh_game.gd")
 const BfhHud := preload("../game/bfh_hud.gd")
+const BfhPaths := preload("../game/bfh_paths.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
 const BfhReach := preload("../game/bfh_reach.gd")
 const BfhSettings := preload("../game/bfh_settings.gd")
@@ -32,11 +33,11 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 167
+const CHECKS := 169
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 21
+const SECTIONS := 22
 
 const TICK := 1.0 / 60.0
 
@@ -79,6 +80,7 @@ func _run() -> void:
 	await _test_the_sounds()
 	await _test_progress()
 	_test_settings()
+	_test_pack_paths()
 
 	# Anything a section did not take down itself, before the counts are printed: a world
 	# freed after `quit()` is a world the engine reports as a leak.
@@ -2479,3 +2481,74 @@ func _test_settings() -> void:
 	remove_child(camera)
 	camera.free()
 	_done()
+
+
+## A delivered pack's own paths, as the scripts write them.
+##
+## [b]Form three of the family's one delivery bug:[/b] a script that names this game's own
+## file by a bare `"res://…"` resolves it against the HOST's root once the game is mounted
+## at `res://dot_cloud/<id>/<version>/` — another game's file, or nothing. Every such path
+## here is rebased where it is defined (`static var X := BfhPaths.rebase("res://…")`),
+## because a `const` rebased at each use is one new use away from a crate that silently
+## does not spawn in a delivered round. Armed: with `bfh_content.gd`'s CRATE_SCENE put back
+## to a bare `const`, the second check fails and names the line.
+func _test_pack_paths() -> void:
+	print("a delivered pack's own paths")
+
+	const MOUNT := "res://dot_cloud/tmc/buses/0.1.0"
+	_check(
+		BfhPaths.rebase_onto(BfhContent.CRATE_SCENE, MOUNT) == MOUNT + "/props/bfh_crate.tscn",
+		"a prop scene rebased onto a mount lands inside the pack"
+	)
+
+	var bare := _bare_own_paths()
+	_check(bare.is_empty(), "no shipped script names this game's own file by a bare res:// path", ", ".join(bare))
+	_done()
+
+
+## Every bare `"res://…"` string in a SHIPPED script that names one of this game's own
+## directories, as `file:line`. See the form-three check that calls it.
+##
+## The same rule `dot-server-deploy/tools/check.sh` counts, asked here because that tool is
+## not what somebody adding a file runs: comments are prose and skipped, a literal already
+## inside `<Game>Paths.rebase("…")` is the fixed form and skipped, and a path whose first
+## segment this game does not ship — `res://addons/…`, `res://audio/…` in a game with no
+## audio — names the HOST's file and is right as it stands.
+func _bare_own_paths() -> PackedStringArray:
+	var skip := ["addons", "examples", "tools", "screenshots"]
+	var owned := PackedStringArray()
+
+	for directory: String in DirAccess.get_directories_at("res://"):
+		if not directory.begins_with(".") and not skip.has(directory):
+			owned.append(directory)
+
+	var wrapped := RegEx.create_from_string("[A-Za-z0-9_]*Paths\\.rebase\\(\"res://[^\"]*\"\\)")
+	var bare := RegEx.create_from_string("\"res://([^/\"]+)")
+	var hits := PackedStringArray()
+	var pending: Array[String] = []
+
+	for directory: String in owned:
+		pending.append("res://".path_join(directory))
+
+	while not pending.is_empty():
+		var at: String = pending.pop_back()
+
+		for sub: String in DirAccess.get_directories_at(at):
+			pending.append(at.path_join(sub))
+
+		for file: String in DirAccess.get_files_at(at):
+			if not file.ends_with(".gd"):
+				continue
+
+			var path := at.path_join(file)
+			var lines := FileAccess.get_file_as_string(path).split("\n")
+
+			for i in lines.size():
+				if lines[i].strip_edges().begins_with("#"):
+					continue
+
+				for found in bare.search_all(wrapped.sub(lines[i], "", true)):
+					if owned.has(found.get_string(1)):
+						hits.append("%s:%d" % [path, i + 1])
+
+	return hits

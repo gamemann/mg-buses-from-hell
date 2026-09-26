@@ -21,7 +21,7 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](https:/
 
 ```bash
 godot --path .                                                # play it, alone
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 167 checks over 21 sections
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 169 checks over 22 sections
 godot --headless --path . res://examples/headless_net.tscn    # over the wire, 148 checks over 18 sections
 godot --headless --path . res://examples/dedicated.tscn       # as a server, 79 checks over 11 sections
 tools/shot.sh                                                 # render a frame and look at it

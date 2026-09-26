@@ -14,14 +14,16 @@ const BfhPaths := preload("bfh_paths.gd")
 
 ## Where the three bodies live, as this game was authored.
 ##
-## [b]Read through [method BfhPaths.rebase] and never used raw.[/b] A delivered pack
-## mounts at `res://dot_cloud/<id>/<version>/`, so an absolute path to this game's OWN
+## [b]Rebased where they are defined, so no use of them can forget to.[/b] A delivered
+## pack mounts at `res://dot_cloud/<id>/<version>/`, so an absolute path to this game's OWN
 ## files resolves against the host project root — which holds another game's props, or
 ## nothing. Rebasing returns these unchanged in a build and the mounted path in a pack,
-## which is one form that is right in both.
-const CRATE_SCENE := "res://props/bfh_crate.tscn"
-const BARREL_SCENE := "res://props/bfh_barrel.tscn"
-const BUS_SCENE := "res://props/bfh_bus.tscn"
+## which is one form that is right in both. They were `const`s rebased at every call site,
+## which was correct and was also one new call site away from not being: `static var` is
+## the only spelling that can hold the rebased value, because a `const` cannot call.
+static var CRATE_SCENE := BfhPaths.rebase("res://props/bfh_crate.tscn")
+static var BARREL_SCENE := BfhPaths.rebase("res://props/bfh_barrel.tscn")
+static var BUS_SCENE := BfhPaths.rebase("res://props/bfh_bus.tscn")
 
 ## The props' collision sizes, in metres, as the scenes above build them.
 ##
@@ -47,7 +49,7 @@ const BUS := &"bus"
 static func props(config: BfhConfig) -> DotPropCatalogue:
 	var catalogue := DotPropCatalogue.new()
 
-	var crate := DotPropDef.make(CRATE, BfhPaths.rebase(CRATE_SCENE))
+	var crate := DotPropDef.make(CRATE, CRATE_SCENE)
 	crate.display_name = "Crate"
 	crate.category = &"cover"
 	crate.size = DotPropDef.Size.SMALL
@@ -65,7 +67,7 @@ static func props(config: BfhConfig) -> DotPropCatalogue:
 	crate.break_impact_speed = 5.0
 	catalogue.add(crate)
 
-	var barrel := DotPropDef.make(BARREL, BfhPaths.rebase(BARREL_SCENE))
+	var barrel := DotPropDef.make(BARREL, BARREL_SCENE)
 	barrel.display_name = "Barrel"
 	barrel.category = &"hazard"
 	barrel.size = DotPropDef.Size.SMALL
@@ -85,7 +87,7 @@ static func props(config: BfhConfig) -> DotPropCatalogue:
 	# flatten the crates and then the runners have nowhere to be. A handful of blocks
 	# that cannot be broken and cannot be pushed are what make the last thirty seconds
 	# a game rather than a countdown.
-	var block := DotPropDef.make(BLOCK, BfhPaths.rebase(CRATE_SCENE))
+	var block := DotPropDef.make(BLOCK, CRATE_SCENE)
 	block.display_name = "Concrete block"
 	block.category = &"cover"
 	block.size = DotPropDef.Size.MEDIUM
@@ -114,7 +116,7 @@ static func vehicles(config: BfhConfig) -> DotVehicleCatalogue:
 	bus.id = BUS
 	bus.display_name = "Bus"
 	bus.category = &"vehicle"
-	bus.scene_path = BfhPaths.rebase(BUS_SCENE)
+	bus.scene_path = BUS_SCENE
 	bus.kind = DotVehicleDef.Kind.WHEELED
 	bus.max_health = 0.0
 

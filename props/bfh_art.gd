@@ -31,13 +31,15 @@ const BfhPaths := preload("../game/bfh_paths.gd")
 
 const CHANNEL := "bfh.art"
 
-## The two kits' atlases, as this game was authored. Rebased before they are loaded.
+## The two kits' atlases, rebased where they are defined. [method paint] rebases again,
+## which is a no-op on these and is what makes an [code]atlas_path[/code] set in a scene
+## safe too — the publisher has already rewritten that one onto the mount.
 ##
 ## [b]Two files with the same name, and they are different files.[/b] Flattening the kits
 ## into one folder paints the bus in the survival kit's palette, which is a
 ## plausible-looking wrong answer.
-const SURVIVAL_ATLAS := "res://assets/kenney/survival/Textures/colormap.png"
-const CAR_ATLAS := "res://assets/kenney/car/Textures/colormap.png"
+static var SURVIVAL_ATLAS := BfhPaths.rebase("res://assets/kenney/survival/Textures/colormap.png")
+static var CAR_ATLAS := BfhPaths.rebase("res://assets/kenney/car/Textures/colormap.png")
 
 
 ## Gives every untextured material under [param root] the atlas at [param atlas_path].

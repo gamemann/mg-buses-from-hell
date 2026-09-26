@@ -45,7 +45,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (167), headless_net (148), dedicated (79)
+examples/           headless_run (169), headless_net (148), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -406,7 +406,7 @@ Three models — a crate, a barrel and a garbage truck standing in for the bus �
 
 ## Decision 7: no `class_name`, anywhere in this repository
 
-Every script here is reached by a relative `preload`, and every `res://` string this game writes about its own files goes through `BfhPaths.rebase()`. That is not a style: **a mounted dot-cloud pack's `class_name` globals are not registered in the host**, so a delivered game that used one would mount, load its scenes, and have every script in it dead with nothing reporting a thing.
+Every script here is reached by a relative `preload`, and every `res://` string this game writes about its own files goes through `BfhPaths.rebase()`. That is not a style: **a mounted dot-cloud pack's `class_name` globals are not registered in the host**, so a delivered game that used one would mount, load its scenes, and have every script in it dead with nothing reporting a thing. **A path is rebased where it is DEFINED, not where it is used:** `static var CRATE_SCENE := BfhPaths.rebase("res://…")` rather than a `const` wrapped at every call site. Both are correct today; the second is one new call site away from a prop that does not spawn in a delivered round, and `dot-server-deploy/tools/check.sh` counted all of them (31 across this game and its sibling) because it cannot follow a `const` to its uses. headless_run's "a delivered pack's own paths" scans every shipped script for a bare `"res://…"` naming one of this game's own directories and fails naming the line; it was armed by putting `bfh_content.gd`'s CRATE_SCENE back to a bare `const`.
 
 This game was written with seven of them and converted when it was added to the deployment. `dot-server-deploy/tools/check.sh` refuses a new one in any game repository, which is what keeps it converted.
 
@@ -501,7 +501,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 167 checks, 21 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 169 checks, 22 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 148 checks, 18 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
