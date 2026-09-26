@@ -1,7 +1,7 @@
 # Tag it and the artifact lands on the release. What gets built is decided by shape:
 # an addon repository ships addons/<name>/ as a zip that installs by being unpacked at
 # a project root, everything else ships the tracked tree as a tarball. Both come with
-# a SHA256SUMS. See modcommunity/dot-ci.
+# a SHA256SUMS, and a game adds its pack zip. See modcommunity/dot-ci.
 #
 # The release may already exist by the time this runs -- the tag is what the sync
 # reacts to -- so this uploads into one that is there rather than failing on it.
@@ -23,8 +23,15 @@ jobs:
         secrets:
             DEPS_TOKEN: ${{ secrets.DOT_DEPS_TOKEN }}
 
+    # pack: true also attaches <repo>-<version>-pack.zip, the imported tree website-city
+    # publishes as this game's signed pack; the source tarball alone cannot be one.
+    # @v1.1.0 until v1 is moved onto it.
     release:
         needs: validate
-        uses: modcommunity/dot-ci/.github/workflows/release.yml@v1
+        uses: modcommunity/dot-ci/.github/workflows/release.yml@v1.1.0
         permissions:
             contents: write
+        with:
+            pack: true
+        secrets:
+            DEPS_TOKEN: ${{ secrets.DOT_DEPS_TOKEN }}
