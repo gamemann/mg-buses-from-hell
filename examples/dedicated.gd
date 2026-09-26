@@ -313,6 +313,8 @@ func _boot() -> void:
 	# prints its results, calls `quit()`, and hangs. It is the right default for a real
 	# dedicated server, where an operator types into the terminal; a test has nobody at the
 	# keyboard.
+	# Kept after dot-server 5f46687, which no longer reads a pipe unless `stdin_console_pipes`
+	# is on: a terminal is still read, and a suite takes no commands from either.
 	config.stdin_console_enabled = false
 
 	server = DotServer.new()
