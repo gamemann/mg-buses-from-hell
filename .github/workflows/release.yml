@@ -25,10 +25,10 @@ jobs:
 
     # pack: true also attaches <repo>-<version>-pack.zip, the imported tree website-city
     # publishes as this game's signed pack; the source tarball alone cannot be one.
-    # @v1.1.0 until v1 is moved onto it.
+    # @v1.2.0 (the pack carries requires.json) until v1 is moved onto it.
     release:
         needs: validate
-        uses: modcommunity/dot-ci/.github/workflows/release.yml@v1.1.0
+        uses: modcommunity/dot-ci/.github/workflows/release.yml@v1.2.0
         permissions:
             contents: write
         with:
