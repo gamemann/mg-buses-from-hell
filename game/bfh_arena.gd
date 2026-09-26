@@ -1134,7 +1134,13 @@ func _inside_a_pillar(x: float, z: float) -> bool:
 ## Crates high, per column, along the scaffold's length. Two columns per step so a runner
 ## lands with a metre to run before the next face: measured, a jump from standing against
 ## a face clears a 1 m rise by 9 cm and misses one time in three.
-const SCAFFOLD_STEPS: Array[int] = [1, 1, 2, 2, 3, 3]
+##
+## [b]A saddle, climbable from both ends.[/b] It was a staircase with a sheer 3 m back, so
+## the drivers always knew which end to break and a runner who saw the bus coming at it had
+## nowhere to go but off the top. With two ends, a bus that comes through one has left the
+## other standing, and the runner on top has a way down that is not the one the bus took.
+## The peak is the same two columns three high it always was.
+const SCAFFOLD_STEPS: Array[int] = [1, 1, 2, 2, 3, 3, 2, 2, 1, 1]
 
 ## Columns across. Two, so the climb has room to be made at an angle and a crate knocked
 ## out of one row leaves the other.
@@ -1247,6 +1253,16 @@ func scaffold_steps() -> Array[AABB]:
 	return steps
 
 
+## The index into [method scaffold_steps] of the highest step: the one a runner climbs to.
+func scaffold_peak() -> int:
+	var steps := scaffold_steps()
+	var best := 0
+	for i in range(steps.size()):
+		if steps[i].end.y > steps[best].end.y:
+			best = i
+	return best
+
+
 func scaffold_footprint() -> AABB:
 	return AABB(_scaffold_origin, scaffold_size()) if _has_scaffold else AABB()
 
@@ -1332,12 +1348,24 @@ func climbs(config: BfhConfig) -> Array:
 		up.rise = maxf(lips.x, lips.y)
 		out.append(up)
 
+	# Up from each end to the peak: the west half from the west, the east half from the
+	# east, and the peak from both sides.
 	var steps := scaffold_steps()
+	var peak := scaffold_peak()
 	for i in range(steps.size()):
-		var from := sand if i == 0 else steps[i - 1]
-		out.append(BfhReach.Climb.between(
-			"the scaffold's step %d, from %s" % [i + 1, "the sand" if i == 0 else "the one below"],
-			BfhReach.How.JUMP, from, steps[i]))
+		if i <= peak:
+			var from := sand if i == 0 else steps[i - 1]
+			out.append(BfhReach.Climb.between(
+				"the scaffold's step %d, from %s" % [i + 1, "the sand" if i == 0 else "the west"],
+				BfhReach.How.JUMP, from, steps[i]))
+		if i >= peak and steps.size() > 1:
+			var last := steps.size() - 1
+			if i == last and i == peak:
+				continue
+			var from := sand if i == last else steps[i + 1]
+			out.append(BfhReach.Climb.between(
+				"the scaffold's step %d, from %s" % [i + 1, "the sand" if i == last else "the east"],
+				BfhReach.How.JUMP, from, steps[i]))
 
 	return out
 
