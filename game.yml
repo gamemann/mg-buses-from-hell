@@ -1,0 +1,31 @@
+# This game's descriptor: what a server runs when it installs this repository's pack.
+#
+# It travels INSIDE the pack (dot-ci's package.sh --pack keeps it at the root), so a
+# server started with `TMC_GAMES=<owner>/<repo>` needs nothing but the content origin:
+# `./server install-games` fetches the pack, verifies it, and writes this file to
+# content/<repo>/game.yml, where an operator can then edit cvars and player counts.
+#
+# content_id, version and kind are STAMPED by the installer from the pack it verified --
+# the site addresses a pack as <site username>/<repo> and a re-sync publishes 1.2.0+r2,
+# neither of which this file can know. What is written here for them is a placeholder.
+#
+# Paths are relative to the pack's mount point, which is also this repository's root.
+# Keep scene, client_scene and module in step with dot-server-deploy/content/buses/game.yml,
+# which describes the same game for a deployment that publishes it itself;
+# dot-server-deploy's examples/install_descriptor suite fails when the two disagree.
+
+content_id: gamemann/mg-buses-from-hell
+version: 0.0.0
+kind: pack
+
+name: Buses From Hell
+max_players: 24
+
+scene: scenes/bfh_server.tscn
+client_scene: game/bfh.tscn
+module: game/bfh_module.gd
+
+cvars:
+  bfh_drivers: "2"
+  bfh_bots: "1"
+  bfh_round_seconds: "180"
