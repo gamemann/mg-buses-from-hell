@@ -45,7 +45,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (169), headless_net (148), dedicated (79)
+examples/           headless_run (171), headless_net (148), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -355,6 +355,14 @@ The stacks are cover you watch a bus through and the tank farm is cover you gues
 
 `headless_run`'s section drives it both ways. A runner bot climbs from the sand to the top step by pressing keys — the first thing in this repository that moves a runner that way — and then the ordinary bus autopilot, told nothing about the scaffold, is pointed at them from 24 m off the low end. The check is that the runner ends up on the sand and that the scaffold is no longer where it stood: measured, 4.5 s, six of 24 cells vacated and one crate broken.
 
+### A saddle since 2026-09-26, because a staircase told the drivers which end to break
+
+The staircase had one way up and a sheer 3 m back, so every driver knew which end of it to drive through, and a runner on top who saw the bus coming had nowhere to go but off the top into the sand beside it. **It is climbable from both ends now**: `SCAFFOLD_STEPS` is `[1, 1, 2, 2, 3, 3, 2, 2, 1, 1]`, 36 crates, the same two-column peak three high in the middle. A bus that comes through one end has left the other standing. The runner it knocks off the peak lands on the far side's steps, which is the way down the bus did not take. `climbs()` declares both halves, and `scaffold_peak()` is the step a runner climbs to.
+
+`headless_run` asserts the peak has a climbable end on each side, has a runner bot climb to it from the east end and then from the west, and requires both climbs to leave every crate in its cell. The bus check is now "brings them down off the peak", not "to the sand". On the first run the bus knocked the runner onto the east end's first step, which is the point of the saddle. Measured: off the peak in 4.2 s, 30 of 36 crates standing, 24 out of their cells. Armed with the old staircase: the peak check fails.
+
+**What it found, and it is not this game's bug:** the east-end climb also passes on the OLD staircase. Held against the sheer 3 m face and jumping, the route bot reaches 2.98 m with no crate moved. That is dot-player-controller's airborne creep up a face too steep to stand on (`[steep-climb-1]` in the nightly list), and here it means a runner can climb any stack of crates by jumping into its side. Until that is decided, the peak check, not the climb, is what tells the two shapes apart.
+
 ### What building it found
 
 - **A crate spawned touching the floor is driven into it.** The floor is one very large convex, and contact generation against one at zero separation is the same unreliable judgement dot-player-controller documents for a swept capsule: the bottom layer went 0.8 m into the sand on the first step and came back up half-buried. Every layer is dropped from a few centimetres now (`SCAFFOLD_DROP`), which is also why the scatter has always dropped things from above.
@@ -501,7 +509,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 169 checks, 22 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 171 checks, 22 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 148 checks, 18 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8

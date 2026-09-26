@@ -33,7 +33,7 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 169
+const CHECKS := 171
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
@@ -1194,6 +1194,17 @@ func _run_route(game: BfhGame, player: BfhPlayer, waypoints: Array, ticks: int) 
 
 # --- The scaffold ------------------------------------------------------------
 
+## How far the scaffold crate furthest from its cell is from it, in metres.
+func _scaffold_drift(game: BfhGame, cells: Array[AABB]) -> float:
+	var worst := 0.0
+	for i in range(mini(cells.size(), game.scaffold_ids.size())):
+		var prop := game.props.get_prop(game.scaffold_ids[i])
+		if prop == null or not prop.is_alive():
+			return INF
+		worst = maxf(worst, prop.body().global_position.distance_to(cells[i].get_center()))
+	return worst
+
+
 ## The height a runner can climb and a bus can take away, which is the whole level.
 ##
 ## [b]Two drives, and the second is the point.[/b] A runner bot climbs the three steps to
@@ -1252,23 +1263,56 @@ func _test_the_scaffold() -> void:
 			strays += 1
 	_check(strays == 0, "and nothing scattered was dropped into it", "%d" % strays)
 
-	# --- A runner climbs it. The route is the steps' own tops, from the low end.
+	# --- A runner climbs it, from each end. The route is the steps' own tops, low end
+	# first. The east end first, because the west climb ends where the bus section wants
+	# the runner, and the east one is the one the saddle added.
 	var steps := arena.scaffold_steps()
+	var peak := arena.scaffold_peak()
+	var top: AABB = steps[peak]
+	_check(peak > 0 and peak < steps.size() - 1 and top.end.y > steps[0].end.y,
+		"its peak is between two ends a runner can climb",
+		"peak is step %d of %d" % [peak + 1, steps.size()])
+
+	var east: Array = []
+	for i in range(steps.size() - 1, peak - 1, -1):
+		east.append(Vector3(steps[i].end.x - 0.6, steps[i].end.y, steps[i].get_center().z))
+	east.append(Vector3(top.position.x + 0.6, top.end.y, top.get_center().z))
+
+	_put(runner, Vector3(footprint.end.x + 5.0, 0.05, footprint.get_center().z))
+	await _step(game, 5)
+	var best_east := await _run_route(game, runner, east, 600)
+	var on_east := game.carry.prop_under(runner.controller.state.ground_id)
+	# [b]With the scaffold where it was[/b], so a way up made by shoving crates is not a
+	# climb. [b]And this check alone does not tell the saddle from the old sheer end:[/b]
+	# held against that 3 m face and jumping, a runner reached 2.98 m with no crate moved,
+	# which is dot-player-controller's airborne creep up a face too steep to stand on
+	# (`[steep-climb-1]` in the nightly list). The peak check above is what does.
+	var shoved_east := _scaffold_drift(game, cells)
+	_check(
+		runner.global_position.y > top.end.y - 0.1
+		and on_east != null and on_east.instance_id in game.scaffold_ids
+		and shoved_east < 0.2,
+		"a runner climbs to the top of it from the east end too, moving no crate",
+		"best %.2f, feet at %.2f, top %.2f, a crate moved %.2f m"
+		% [best_east, runner.global_position.y, top.end.y, shoved_east])
+
 	var route: Array = []
-	for step in steps:
-		route.append(Vector3(step.position.x + 0.6, step.end.y, step.get_center().z))
-	var top: AABB = steps[steps.size() - 1]
+	for i in range(peak + 1):
+		route.append(Vector3(steps[i].position.x + 0.6, steps[i].end.y, steps[i].get_center().z))
 	route.append(Vector3(top.end.x - 0.6, top.end.y, top.get_center().z))
 
 	_put(runner, Vector3(footprint.position.x - 5.0, 0.05, footprint.get_center().z))
 	await _step(game, 5)
 	var best := await _run_route(game, runner, route, 600)
 	var standing_on := game.carry.prop_under(runner.controller.state.ground_id)
+	var shoved := _scaffold_drift(game, cells)
 	_check(
 		runner.global_position.y > top.end.y - 0.1
-		and standing_on != null and standing_on.instance_id in game.scaffold_ids,
-		"a runner climbs to the top of it in three jumps",
-		"best %.2f, feet at %.2f, top %.2f" % [best, runner.global_position.y, top.end.y])
+		and standing_on != null and standing_on.instance_id in game.scaffold_ids
+		and shoved < 0.2,
+		"a runner climbs to the top of it in three jumps, moving no crate",
+		"best %.2f, feet at %.2f, top %.2f, a crate moved %.2f m"
+		% [best, runner.global_position.y, top.end.y, shoved])
 
 	# --- And a bus brings them down. The bot, pointed at them from 24 m off the low end.
 	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
@@ -1294,13 +1338,17 @@ func _test_the_scaffold() -> void:
 		game.simulate(TICK)
 		await get_tree().physics_frame
 		took += 1
-		if not runner.health.alive or runner.global_position.y < 0.5:
+		# Off the peak by a whole crate. [b]Not "on the sand"[/b], since the saddle: the
+		# first run of it knocked the runner off the peak onto the east end's first step,
+		# which is the way down the bus did not take and the reason the saddle is there.
+		if not runner.health.alive or runner.global_position.y < top.end.y - BfhContent.CRATE_SIZE:
 			down = true
 			break
-	print("  ..    %s after %.1f s" % [
-		"killed" if not runner.health.alive else "on the sand", float(took) * TICK])
+	print("  ..    %s after %.1f s, feet at %.2f" % [
+		"killed" if not runner.health.alive else "off the peak", float(took) * TICK,
+		runner.global_position.y])
 
-	_check(down, "and a bus chasing them brings them down to the sand",
+	_check(down, "and a bus chasing them brings them down off the peak",
 		"feet at %.2f, %s, %d of %d crates standing" % [
 			runner.global_position.y, "alive" if runner.health.alive else "dead",
 			game.scaffold_standing(), game.scaffold_ids.size()])
