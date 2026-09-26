@@ -62,6 +62,21 @@ var net_beacon: bool = false
 ## changes twice a round, and nothing on a tick where it did not.
 var net_bus: int = 0
 
+# --- Where they look while they are out ------------------------------------
+
+## `DotSpectatorView.Mode` of the view the server has them in; 0 when they are playing.
+##
+## [b]Owner-only, and state rather than an event, like the blind.[/b] Nobody else's screen
+## is drawn from it, so nobody else is sent it. And the death camera is three timed modes
+## handing over to each other on the SERVER's clock: a client told each hand-over by an
+## event it might miss would be left on a freeze camera until the round ended, where a
+## client told the state gets the next snapshot's answer.
+var net_watch: int = 0
+
+## Who that view is on: the session id of the target, or of the killer a death camera looks
+## at. 0 for nobody.
+var net_watch_target: int = 0
+
 ## Retained, not cleared: a player whose packet was lost keeps moving in a straight line
 ## rather than stopping dead. The controller says the same of its own command.
 var last_move: DotFpsCommand = DotFpsCommand.new()
@@ -91,6 +106,10 @@ func _register_net_vars() -> void:
 	replicate(&"net_blind", DotNetVar.Type.BOOL).to_owner_only()
 	replicate(&"net_beacon", DotNetVar.Type.BOOL)
 	replicate(&"net_bus", DotNetVar.Type.VARINT)
+
+	# Seven modes fit in three bits. The owner's alone: see [member net_watch].
+	replicate(&"net_watch", DotNetVar.Type.UINT).bits(3).to_owner_only()
+	replicate(&"net_watch_target", DotNetVar.Type.VARINT).to_owner_only()
 
 
 func _net_apply_input(input: DotNetInput, _tick: int) -> void:
@@ -143,6 +162,14 @@ func pull() -> void:
 
 	if player.riding and bridge != null and player.ridden != null:
 		net_bus = int(bridge.call("net_id_of_node", player.ridden))
+
+	net_watch = 0
+	net_watch_target = 0
+
+	if bridge != null:
+		var watching: Vector2i = bridge.call("watch_state", player.player_id)
+		net_watch = watching.x
+		net_watch_target = watching.y
 
 	# No relevance decision for the beacon, unlike a game with an interest set: every
 	# player here is already always relevant (see `BfhNetBridge._build_entity`), because a
@@ -209,3 +236,8 @@ func _adopt() -> void:
 		var bus: Variant = bridge.call("body_of_net_id", net_bus)
 		if bus is Node3D:
 			player.ridden = bus as Node3D
+
+	# Only the owner is ever sent a view, and the bridge adopts it only for the player this
+	# client IS — see [method BfhNetBridge.adopt_watch] for why that is not `is_owner`.
+	if bridge != null:
+		bridge.call("adopt_watch", player.player_id, net_watch, net_watch_target)

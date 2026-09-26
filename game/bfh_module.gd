@@ -5,6 +5,7 @@ const BfhServices := preload("bfh_services.gd")
 const BfhPlayer := preload("bfh_player.gd")
 
 const BfhGame := preload("bfh_game.gd")
+const BfhStats := preload("bfh_stats.gd")
 
 ## Where the services keep punishments. Empty is [DotGameServices]'s own default,
 ## `user://buses_punishments.json` — the store a real server enforces.
@@ -122,6 +123,10 @@ func _game_load() -> DotResult:
 	add_command("bfh_status", _cmd_status, "Show the round, the bowl and the buses")
 	add_command("bfh_net", _cmd_net, "Show what the netcode is doing")
 	add_command("bfh_say", _cmd_say, "Say something to everybody, as the server")
+	add_command(
+		"bfh_stats", _cmd_stats,
+		"A player's numbers this session and what they have earned: bfh_stats <userid>"
+	)
 
 	_wire_chat()
 
@@ -354,6 +359,45 @@ func _cmd_say(ctx: DotCmdContext) -> void:
 		return
 
 	ctx.reply("Said: %s" % text)
+
+
+## One player's session: the five numbers and what they have earned. With no argument,
+## everybody counted, one line each.
+##
+## [b]By userid, as the player list prints it, not by the storage key.[/b] The key is an
+## implementation detail (`bfh-u<userid>`) and an operator types what `status` shows.
+func _cmd_stats(ctx: DotCmdContext) -> void:
+	var world := game as BfhGame
+
+	if world == null or world.progress == null:
+		ctx.reply("This server is not counting anything.")
+		return
+
+	var wanted := ctx.rest().strip_edges()
+
+	if wanted != "":
+		ctx.reply_lines(world.progress.player_lines(BfhNetBridge.player_key(wanted.to_int())))
+		return
+
+	var any := false
+
+	for id: StringName in world.players:
+		if world.progress.key_of(id) == "":
+			continue
+		any = true
+		var values: DotStatsValues = world.progress.session_values(id)
+		ctx.reply("%-8s %-20s flattened %d  survived %d  broken %d  in the way %d  %d s" % [
+			String(id).trim_prefix("u"),
+			(world.players[id] as BfhPlayer).display_name,
+			int(values.get_value(BfhStats.RUNNERS_FLATTENED)),
+			int(values.get_value(BfhStats.ROUNDS_SURVIVED)),
+			int(values.get_value(BfhStats.CRATES_BROKEN)),
+			int(values.get_value(BfhStats.CRATES_INTO_PATH)),
+			int(values.get_value(BfhStats.SECONDS_SURVIVED)),
+		])
+
+	if not any:
+		ctx.reply("Nobody is being counted. Bots are not.")
 
 
 func _cmd_status(ctx: DotCmdContext) -> void:

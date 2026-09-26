@@ -1,12 +1,18 @@
 extends Node
 
 const BfhArena := preload("../game/bfh_arena.gd")
+const BfhAudio := preload("../game/bfh_audio.gd")
+const BfhAwards := preload("../game/bfh_awards.gd")
 const BfhConfig := preload("../game/bfh_config.gd")
 const BfhContent := preload("../game/bfh_content.gd")
 const BfhGame := preload("../game/bfh_game.gd")
 const BfhHud := preload("../game/bfh_hud.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
 const BfhReach := preload("../game/bfh_reach.gd")
+const BfhSettings := preload("../game/bfh_settings.gd")
+const BfhSounds := preload("../game/bfh_sounds.gd")
+const BfhSpectate := preload("../game/bfh_spectate.gd")
+const BfhStats := preload("../game/bfh_stats.gd")
 
 ## Proves the bowl, the crates, the hammer, the barrels and the buses all actually work.
 ##
@@ -26,11 +32,11 @@ const BfhReach := preload("../game/bfh_reach.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 123
+const CHECKS := 167
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 17
+const SECTIONS := 21
 
 const TICK := 1.0 / 60.0
 
@@ -69,6 +75,10 @@ func _run() -> void:
 	await _test_bus_propulsion()
 	await _test_a_rolled_bus()
 	await _test_blind_and_beacon_drawn()
+	await _test_spectating()
+	await _test_the_sounds()
+	await _test_progress()
+	_test_settings()
 
 	# Anything a section did not take down itself, before the counts are printed: a world
 	# freed after `quit()` is a world the engine reports as a leak.
@@ -1848,3 +1858,624 @@ func _test_bus_propulsion() -> void:
 	await _dispose(game)
 	_done()
 
+
+# --- A runner who is out -----------------------------------------------------
+
+## Where a runner who has been run down looks, decided by the authority.
+##
+## [b]Until 2026-09-25 they looked at the sand they were run over on, for the rest of the
+## round.[/b] Out is out here, so that is not the two seconds before a respawn; it is most
+## of a round. What is asserted is the policy as much as the camera: the living do not
+## watch, the bus is watchable and is watched FROM ITS CAB rather than from where its driver
+## sat down, nobody watches themselves or the dead, a leaver hands the camera on, and a new
+## round ends it.
+func _test_spectating() -> void:
+	print("a runner who is out, and where they look")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.round_seconds = 120.0
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var driver := game.add_player(&"d", "Dee", BfhGame.TEAM_DRIVERS)
+	var out := game.add_player(&"r1", "Out", BfhGame.TEAM_RUNNERS)
+	var _up := game.add_player(&"r2", "Up", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 10)
+
+	var spectate := game.spectate
+	_check(
+		spectate != null and spectate.manager != null and spectate.manager.authoritative,
+		"an authoritative world has a spectator manager that decides"
+	)
+
+	if spectate == null or driver.ridden == null:
+		for _i in range(10):
+			_check(false, "(no spectate, or no bus to be run over by)")
+		await _dispose(game)
+		_done()
+		return
+
+	var refused := spectate.request(&"r1", BfhSpectate.ASK_NEXT)
+	_check(
+		not refused.ok and not spectate.is_spectating(&"r1"),
+		"a runner who is up is playing, and asking to watch is refused",
+		refused.error.message if not refused.ok else "it was allowed"
+	)
+
+	var bus := driver.ridden
+	game._bus_hit(out, &"d", 30.0, Vector3(0.0, 0.0, 1.0))
+	var eye := spectate.camera_for(&"r1")
+	var to_bus := (bus.global_position - eye.origin).normalized()
+	_check(
+		not out.health.alive
+		and spectate.mode_of(&"r1") == DotSpectatorView.Mode.DEATH_CAM
+		and spectate.target_of(&"r1") == &"d"
+		and (-eye.basis.z).dot(to_bus) > 0.95,
+		"run over, they look from where they fell at the bus that did it",
+		"%s, facing %.2f of the way to the bus" % [spectate.describe_view(&"r1"), (-eye.basis.z).dot(to_bus)]
+	)
+
+	await _step(game, int(BfhSpectate.DEATH_CAM_SEC * 60.0) + 2)
+	var cab := spectate.camera_for(&"r1").origin
+	_check(
+		spectate.mode_of(&"r1") == DotSpectatorView.Mode.FREEZE_CAM
+		and spectate.target_of(&"r1") == &"d"
+		and cab.distance_to(bus.global_position) < 5.0
+		and cab.distance_to(driver.global_position) > 5.0,
+		"then from the CAB of that bus, not from where its driver sat down",
+		"%s, %.1f m from the bus, %.1f m from the driver's own body" % [
+			spectate.describe_view(&"r1"),
+			cab.distance_to(bus.global_position),
+			cab.distance_to(driver.global_position),
+		]
+	)
+
+	await _step(game, int(BfhSpectate.FREEZE_CAM_SEC * 60.0) + 2)
+	var first := spectate.target_of(&"r1")
+	_check(
+		spectate.mode_of(&"r1") == DotSpectatorView.Mode.FIRST_PERSON
+		and (first == &"d" or first == &"r2"),
+		"and then somebody to follow, through their eyes",
+		spectate.describe_view(&"r1")
+	)
+	_check(
+		spectate.manager.targets_for("r1") == PackedStringArray(["d", "r2"]),
+		"anybody up may be watched, the bus included, and never themselves",
+		str(spectate.manager.targets_for("r1"))
+	)
+
+	var clicked := spectate.request(&"r1", BfhSpectate.ASK_NEXT)
+	var second := spectate.target_of(&"r1")
+	_check(
+		clicked.ok and second != first and (second == &"d" or second == &"r2"),
+		"a click moves them to the next",
+		"%s -> %s" % [first, second]
+	)
+
+	spectate.manager.watch("r1", "r2")
+	var eyes := spectate.pose_of("r2").origin
+	var viewed := spectate.request(&"r1", BfhSpectate.ASK_VIEW)
+	var behind := spectate.camera_for(&"r1").origin
+	_check(
+		viewed.ok and spectate.mode_of(&"r1") == DotSpectatorView.Mode.CHASE
+		and behind.distance_to(eyes) > 5.0 and behind.distance_to(eyes) < 10.0,
+		"space puts the camera behind them rather than in their head",
+		"%s, %.1f m from their eyes" % [spectate.describe_view(&"r1"), behind.distance_to(eyes)]
+	)
+
+	var line := BfhHud.watching_line(game, out)
+	_check(
+		line.contains("Up") and line.contains("click"),
+		"and the HUD says whose eyes, and how to change them",
+		line
+	)
+
+	# The target leaves. dot-spectate picks the replacement from the participants, so the
+	# world has to have dropped them first or the leaver is picked again.
+	game.remove_player(&"r2")
+	_check(
+		spectate.target_of(&"r1") == &"d",
+		"a target who leaves hands the camera to somebody still there",
+		spectate.describe_view(&"r1")
+	)
+
+	# Nobody up on the runners' side: the round turns over, and a round is a new body.
+	await _step(game, 30)
+	_check(
+		not spectate.is_spectating(&"r1") and out.health.alive,
+		"a new round is everybody's new body, so nobody is watching any more",
+		spectate.describe_view(&"r1")
+	)
+
+	await _dispose(game)
+	_done()
+
+
+# --- What the bowl sounds like -------------------------------------------------
+
+## The catalogue, the stand-ins, and every noise reaching a client's ears.
+##
+## [b]The two directions that fail silently, first.[/b] An id with no recipe is a sound
+## that stays silent for ever on a deployment with no audio files — every deployment, today
+## — and a recipe for an id the catalogue lacks is a decision that reaches nothing. Then the
+## world: every noise it is supposed to make, made, and heard by `BfhAudio` through the null
+## sink a headless run gets (dot-audio's own honest device check). What no assertion here can
+## reach is whether a speaker moves; see CLAUDE.md.
+func _test_the_sounds() -> void:
+	print("what the bowl sounds like")
+
+	var catalogue := BfhSounds.catalogue()
+	var recipes := BfhSounds.sound_recipes()
+	_check(catalogue.validate().ok, "the catalogue is a document dot-audio accepts")
+
+	var silent := PackedStringArray()
+	for id in catalogue.ids():
+		if not recipes.has(id):
+			silent.append(String(id))
+	_check(silent.is_empty(), "every sound has a stand-in voice, so none is silent for ever", str(silent))
+
+	var orphans := PackedStringArray()
+	for id: Variant in recipes.keys():
+		if not catalogue.has(StringName(id)):
+			orphans.append(str(id))
+	_check(orphans.is_empty(), "and every stand-in names a sound the catalogue has", str(orphans))
+
+	var unsent := BfhSounds.WORLD.filter(func(id: StringName) -> bool: return not catalogue.has(id))
+	_check(
+		unsent.is_empty() and BfhSounds.WORLD.size() <= (1 << BfhSounds.WORLD_BITS),
+		"every noise a server sends by index is catalogued, and the list fits its bits",
+		str(unsent)
+	)
+
+	# Inside a pack. Built in, the root is `res://` and every path is under it whatever the
+	# code says, so the question is asked with a mount prefix: see BfhPaths.rebase_onto.
+	var mount := "res://dot_cloud/buses/9"
+	var outside := PackedStringArray()
+	for def in BfhSounds.catalogue(mount).defs:
+		if not def.path.begins_with(mount + "/audio/"):
+			outside.append(def.path)
+	_check(
+		outside.is_empty(),
+		"inside a pack, every sound's path is under the pack's own root, not the host's",
+		str(outside)
+	)
+
+	var bank := DotAudioSynth.bank(catalogue, recipes)
+	var unbaked := PackedStringArray()
+	for id in catalogue.ids():
+		if not bank.has(id):
+			unbaked.append(String(id))
+	_check(unbaked.is_empty(), "the synthesiser bakes a stand-in for every one", str(unbaked))
+
+	# The world, and a client's ears on it.
+	var game := _world(func(c: BfhConfig) -> void:
+		c.round_seconds = 120.0
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var driver := game.add_player(&"d", "Dee", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Arr", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 10)
+
+	var audio := BfhAudio.new()
+	add_child(audio)
+	var built := audio.setup(game, func() -> BfhPlayer: return runner)
+	var sink := audio.audio.sink as DotAudioSinkNull if audio.audio != null else null
+	_check(
+		built.ok and sink != null,
+		"headless, a client's audio builds on the sink that writes down what it would play",
+		str(built.error) if not built.ok else ""
+	)
+
+	if sink == null:
+		for _i in range(8):
+			_check(false, "(no sink to listen on)")
+		remove_child(audio)
+		audio.free()
+		await _dispose(game)
+		_done()
+		return
+
+	var heard: Array[StringName] = []
+	game.noise.connect(func(id: StringName, _at: Vector3) -> void: heard.append(id))
+
+	var origin := Vector3(0.0, 0.5, 2.0)
+	var forward := Vector3(0.0, 0.0, 1.0)
+	var mask := 0xFFFFFFF
+	audio.present(0.0, origin)
+	# The swing is heard from the swinger's eyes, so the swinger is put where the listener
+	# is. Left where the round scattered them, the swing is culled for distance — which is
+	# dot-audio doing its job, and was this check's first failure.
+	_put(runner, Vector3(0.0, 0.1, 0.4))
+
+	runner.hammer.swing(game, origin, forward, game.props, game.prop_damage, game.carry, &"r", mask)
+	_check(
+		heard == [BfhSounds.HAMMER_SWING],
+		"a hammer swung at nothing is a swing and nothing else",
+		str(heard)
+	)
+
+	heard.clear()
+	var crate := game.props.spawn(BfhContent.CRATE, &"world", Vector3(0.0, 0.5, 4.0))
+	crate.body().freeze = true
+	await _step(game, 2)
+	for _i in range(3):
+		runner.hammer.cooldown = 0.0
+		runner.hammer.swing(game, origin, forward, game.props, game.prop_damage, game.carry, &"r", mask)
+	_check(
+		heard.count(BfhSounds.HAMMER_HIT) == 3 and heard.count(BfhSounds.CRATE_SHOVE) == 2
+		and heard.count(BfhSounds.CRATE_BREAK) == 1,
+		"three blows on a crate: three hits, two shoves and then the break",
+		str(heard)
+	)
+
+	heard.clear()
+	var block := game.props.spawn(BfhContent.BLOCK, &"world", Vector3(0.0, 0.5, 4.0))
+	block.body().freeze = true
+	await _step(game, 2)
+	runner.hammer.cooldown = 0.0
+	runner.hammer.swing(game, origin, forward, game.props, game.prop_damage, game.carry, &"r", mask)
+	_check(
+		heard.has(BfhSounds.HAMMER_HIT) and not heard.has(BfhSounds.CRATE_SHOVE),
+		"a concrete block takes the blow and does not scrape, because it did not move",
+		str(heard)
+	)
+
+	heard.clear()
+	var sounded := game.sound_horn(driver)
+	var again := game.sound_horn(driver)
+	_check(
+		sounded and not again and heard == [BfhSounds.BUS_HORN],
+		"a driver's horn sounds, and not again on the same tick however hard it is pressed",
+		str(heard)
+	)
+
+	heard.clear()
+	game._bus_hit(runner, &"d", 2.0, Vector3(0.0, 0.0, 1.0))
+	game._bus_hit(runner, &"d", 30.0, Vector3(0.0, 0.0, 1.0))
+	_check(
+		heard == [BfhSounds.RUNNER_HIT, BfhSounds.RUNNER_DOWN],
+		"a bump is a hit and a flattening is somebody going down: two different sounds",
+		str(heard)
+	)
+
+	# And every one of those reached the client's ears, plus the flat cues of a round that
+	# ended with the drivers' win — this client is a runner, so it is a loss.
+	await _step(game, 30)
+	var played := sink.played_ids()
+	var missing := PackedStringArray()
+	for id: StringName in [
+		BfhSounds.HAMMER_SWING, BfhSounds.HAMMER_HIT, BfhSounds.CRATE_SHOVE,
+		BfhSounds.CRATE_BREAK, BfhSounds.BUS_HORN, BfhSounds.RUNNER_HIT,
+		BfhSounds.RUNNER_DOWN, BfhSounds.ROUND_LOST, BfhSounds.ROUND_START,
+	]:
+		if not played.has(String(id)):
+			missing.append(String(id))
+	_check(
+		missing.is_empty() and not played.has(String(BfhSounds.ROUND_WON)),
+		"and a client hears every one, and the round's end as a loss for its side",
+		"missing %s of %s" % [str(missing), str(played)]
+	)
+
+	# The engine, from the bus as drawn. Still, it idles; moved at 18 m/s it pulses faster
+	# and the client hears the speed it is being drawn at.
+	#
+	# Every pulse is finished as soon as it starts: the null sink never ends a sound on its
+	# own, and a pulse is 75 ms, so without this the engine's concurrency cap would be what
+	# this counted.
+	var bus := driver.ridden
+	sink.stop_all()
+	sink.forget()
+	for _i in range(60):
+		audio.present(1.0 / 60.0, bus.global_position)
+		sink.stop_all()
+	var idle := sink.count_of(BfhSounds.BUS_ENGINE)
+
+	sink.forget()
+	var heading := -bus.global_basis.z
+	for _i in range(60):
+		bus.global_position += heading * (18.0 / 60.0)
+		audio.present(1.0 / 60.0, bus.global_position)
+		sink.stop_all()
+	var running := sink.count_of(BfhSounds.BUS_ENGINE)
+	var speed := audio.engine_speed(bus)
+	_check(
+		idle >= 1 and running >= idle * 2 and absf(speed - 18.0) < 3.0,
+		"a driven bus's engine pulses faster the faster it is drawn moving",
+		"%d pulses standing, %d at speed, heard at %.1f m/s" % [idle, running, speed]
+	)
+
+	# A bus nobody is driving has no engine: a thud from one would tell runners to be
+	# afraid of nothing.
+	game.ride.exit(game.vehicles.get_vehicle(game.ride.vehicle_id_of(&"d")), &"d", true)
+	sink.forget()
+	for _i in range(60):
+		audio.present(1.0 / 60.0, bus.global_position)
+	_check(
+		sink.count_of(BfhSounds.BUS_ENGINE) == 0,
+		"and an empty bus is silent",
+		"%d pulses" % sink.count_of(BfhSounds.BUS_ENGINE)
+	)
+
+	remove_child(audio)
+	audio.free()
+	await _dispose(game)
+	_done()
+
+
+# --- A player's numbers ---------------------------------------------------------
+
+## The five numbers, counted from what happened, and what they earn.
+##
+## [b]Every reading is a world signal[/b], so this section drives the real paths — a hammer,
+## a bus's impact rule, the round clock — and reads the tracker. The two documents are
+## checked against each other in both directions first: an achievement over a stat nothing
+## records never unlocks, and a stat no achievement reads is counted for nobody.
+func _test_progress() -> void:
+	print("what a player's numbers are, and what they earn")
+
+	var schema := BfhStats.schema()
+	var awards := BfhAwards.catalogue()
+	_check(schema.validate().ok and awards.validate().ok, "the stats schema and the achievements are valid documents")
+
+	var unread := PackedStringArray()
+	for id in BfhStats.ids():
+		if awards.affected_by(id).is_empty():
+			unread.append(String(id))
+	var undeclared := PackedStringArray()
+	for id in awards.watched_stats():
+		if not schema.has(id):
+			undeclared.append(String(id))
+	_check(
+		unread.is_empty() and undeclared.is_empty() and schema.size() == BfhStats.ids().size(),
+		"every stat is read by an achievement, and every achievement reads a declared stat",
+		"unread %s, undeclared %s" % [str(unread), str(undeclared)]
+	)
+
+	var game := _world(func(c: BfhConfig) -> void:
+		# The shortest round the configuration allows, run out on the clock below.
+		c.round_seconds = 10.0
+		c.crate_count = 0
+		c.barrel_count = 0)
+	var driver := game.add_player(&"d", "Dee", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Arr", BfhGame.TEAM_RUNNERS)
+	var victim := game.add_player(&"v", "Vee", BfhGame.TEAM_RUNNERS)
+	var bot := game.add_player(&"b", "Bot", BfhGame.TEAM_RUNNERS, false, true)
+	game.start()
+	await _step(game, 10)
+
+	var progress := game.progress
+	_check(
+		progress != null and progress.key_of(&"r") == "bfh-r" and progress.key_of(&"b") == "",
+		"an authoritative world counts people, and not bots"
+	)
+
+	if progress == null or driver.ridden == null:
+		for _i in range(7):
+			_check(false, "(no progress, or no bus)")
+		await _dispose(game)
+		_done()
+		return
+
+	var earned: Array = []
+	game.earned.connect(func(id: StringName, title: String, _points: int) -> void:
+		earned.append("%s:%s" % [id, title]))
+
+	# A crate broken with a hammer.
+	var origin := Vector3(0.0, 0.5, 2.0)
+	var forward := Vector3(0.0, 0.0, 1.0)
+	var mask := 0xFFFFFFF
+	var crate := game.props.spawn(BfhContent.CRATE, &"world", Vector3(0.0, 0.5, 4.0))
+	crate.body().freeze = true
+	await _step(game, 2)
+	for _i in range(3):
+		runner.hammer.cooldown = 0.0
+		runner.hammer.swing(game, origin, forward, game.props, game.prop_damage, game.carry, &"r", mask)
+
+	# The same, by a bot: nobody is credited.
+	var bots_crate := game.props.spawn(BfhContent.CRATE, &"world", Vector3(6.0, 0.5, 4.0))
+	bots_crate.body().freeze = true
+	await _step(game, 2)
+	for _i in range(3):
+		bot.hammer.cooldown = 0.0
+		bot.hammer.swing(game, Vector3(6.0, 0.5, 2.0), forward, game.props, game.prop_damage, game.carry, &"b", mask)
+
+	_check(
+		progress.session_values(&"r").get_value(BfhStats.CRATES_BROKEN) == 1.0
+		and not bots_crate.is_alive()
+		and progress.session_values(&"b").get_value(BfhStats.CRATES_BROKEN) == 0.0,
+		"a crate a runner breaks is theirs, and one a bot breaks is nobody's",
+		"runner %.0f, bot %.0f" % [
+			progress.session_values(&"r").get_value(BfhStats.CRATES_BROKEN),
+			progress.session_values(&"b").get_value(BfhStats.CRATES_BROKEN),
+		]
+	)
+
+	# A crate shoved out ahead of the bus, and then the bus arriving on it. The bus is not
+	# driven there — nothing about physics is under test — the crate is put where the bus's
+	# own impact rule looks, which is what a bus arriving at it amounts to.
+	var body := driver.ridden
+	var shoved := game.props.spawn(
+		BfhContent.CRATE, &"world", body.global_transform * Vector3(0.0, -0.4, -6.0)
+	)
+	shoved.body().freeze = true
+	await _step(game, 2)
+	var from := body.global_transform * Vector3(0.0, -0.4, -8.2)
+	runner.hammer.cooldown = 0.0
+	runner.hammer.swing(
+		game, from, (shoved.body().global_position - from).normalized(),
+		game.props, game.prop_damage, game.carry, &"r", mask
+	)
+	shoved.body().global_position = body.global_transform * Vector3(0.0, -0.4, -3.0)
+	var vehicle := game.vehicles.get_vehicle(game.ride.vehicle_id_of(&"d"))
+	# Under the speed a crate breaks at, so it is struck and survives; then at speed, so
+	# it goes. Struck twice and credited once.
+	game._break_props_under(vehicle, 4.5, &"d")
+	game._break_props_under(vehicle, 18.0, &"d")
+	_check(
+		progress.session_values(&"r").get_value(BfhStats.CRATES_INTO_PATH) == 1.0
+		and progress.session_values(&"d").get_value(BfhStats.CRATES_BROKEN) == 1.0,
+		"a crate a runner shoved and a bus then hit was put in its path — once — and the "
+		+ "driver broke it",
+		"runner %.0f in the way, driver %.0f broken" % [
+			progress.session_values(&"r").get_value(BfhStats.CRATES_INTO_PATH),
+			progress.session_values(&"d").get_value(BfhStats.CRATES_BROKEN),
+		]
+	)
+
+	# A runner flattened, and the seconds they had stood.
+	var stood := game.round_elapsed
+	game._bus_hit(victim, &"d", 30.0, Vector3(0.0, 0.0, 1.0))
+	_check(
+		progress.session_values(&"d").get_value(BfhStats.RUNNERS_FLATTENED) == 1.0
+		and progress.session_values(&"v").get_value(BfhStats.SECONDS_SURVIVED) == floorf(stood),
+		"a runner run down is the driver's, and the seconds they stood are theirs",
+		"flattened %.0f, stood %.0f of %.1f s" % [
+			progress.session_values(&"d").get_value(BfhStats.RUNNERS_FLATTENED),
+			progress.session_values(&"v").get_value(BfhStats.SECONDS_SURVIVED),
+			stood,
+		]
+	)
+
+	# The clock runs out with the runner on their feet. Ticked without awaiting physics:
+	# nothing below is about a body moving, and a real-time clock for ten simulated seconds
+	# would be ten seconds of this suite doing nothing.
+	var round_was := game.round_number
+	for _i in range(int(10.5 * 60.0)):
+		game.simulate(TICK)
+		if game.round_number != round_was:
+			break
+	_check(
+		progress.session_values(&"r").get_value(BfhStats.ROUNDS_SURVIVED) == 1.0
+		and progress.session_values(&"v").get_value(BfhStats.ROUNDS_SURVIVED) == 0.0
+		and progress.session_values(&"r").get_value(BfhStats.SECONDS_SURVIVED) >= 9.0,
+		"standing when the clock ran out is a round survived, and being out is not",
+		"runner %.0f round(s), %.0f s; the flattened one %.0f" % [
+			progress.session_values(&"r").get_value(BfhStats.ROUNDS_SURVIVED),
+			progress.session_values(&"r").get_value(BfhStats.SECONDS_SURVIVED),
+			progress.session_values(&"v").get_value(BfhStats.ROUNDS_SURVIVED),
+		]
+	)
+
+	_check(
+		earned.has("d:Road Rage") and earned.has("r:Traffic Control")
+		and earned.has("r:Still Standing") and not earned.any(func(e: String) -> bool: return e.begins_with("b:")),
+		"and each of those earned its first achievement, for the person and never the bot",
+		str(earned)
+	)
+	_check(
+		progress.is_unlocked(&"d", &"bfh.road_rage") and not progress.is_unlocked(&"d", &"bfh.rush_hour"),
+		"the tracker holds the first tier and not the second"
+	)
+
+	game.remove_player(&"r")
+	_check(
+		not progress.stats.has_player(&"bfh-r") and progress.describe()["players"] == 2,
+		"and a player who leaves is forgotten by the counters",
+		str(progress.describe()["players"])
+	)
+
+	await _dispose(game)
+	_done()
+
+
+# --- A player's settings -----------------------------------------------------------
+
+## The document, what reads it, and the screen that changes it.
+##
+## [b]A value loaded from disk has not CHANGED, and that is the family's repeated bug.[/b]
+## So the check that matters saves a document with one launch and reads it back with the
+## next, and asserts that the loaded values reached the sampler, the camera and the mixer
+## with nobody touching anything. It uses a memory store, because a suite that wrote to
+## `user://` would pass differently the second time it ran (docs/testing.md).
+func _test_settings() -> void:
+	print("a player's settings")
+
+	var schema := BfhSettings.schema()
+	_check(
+		schema.validate().ok and schema.keys().size() == 5,
+		"the settings document is valid, and it is five settings",
+		str(schema.keys())
+	)
+
+	var fov := schema.find(&"field_of_view")
+	var turn := schema.find(&"sensitivity")
+	_check(
+		turn != null and turn.scope == DotSettingsDef.Scope.ACCOUNT
+		and fov != null and fov.scope == DotSettingsDef.Scope.SERVER_CLAMPED
+		and fov.min_value == 70.0 and fov.max_value == 120.0,
+		"sensitivity follows the person, and a server may cap the field of view"
+	)
+
+	# One launch saves...
+	var store := DotSettingsStoreMemory.new()
+	var first := BfhSettings.new()
+	add_child(first)
+	var _first_built := first.setup(store, false)
+	var _a := first.settings.set_value(&"sensitivity", 4.0)
+	var _b := first.settings.set_value(&"field_of_view", 110)
+	var _c := first.settings.set_value(&"master_volume", 0.3)
+	var _flushed := first.settings.flush()
+	remove_child(first)
+	first.free()
+
+	# ...and the next one loads, binds, and has changed nothing.
+	var look := DotFpsTunables.new()
+	var camera := Camera3D.new()
+	add_child(camera)
+	var mixed := DotAudioManager.new()
+	mixed.register_as_service = false
+	mixed.catalogue = DotAudioCatalogue.new()
+	add_child(mixed)
+	var _mixed := mixed.setup()
+
+	var next := BfhSettings.new()
+	add_child(next)
+	var built := next.setup(store, true)
+	next.bind_look(look)
+	next.bind_camera(camera)
+	next.bind_audio(mixed)
+
+	_check(
+		built.ok
+		and is_equal_approx(look.mouse_sensitivity, 4.0 * BfhSettings.DEGREES_PER_COUNT)
+		and is_equal_approx(camera.fov, 110.0)
+		and is_equal_approx(mixed.mixer.master, 0.3),
+		"a saved setting reaches the sampler, the camera and the mixer on load, "
+		+ "though loading changed nothing",
+		"turn %.4f, fov %.0f, master %.2f" % [look.mouse_sensitivity, camera.fov, mixed.mixer.master]
+	)
+
+	var _d := next.settings.set_value(&"sensitivity", 1.0)
+	_check(
+		is_equal_approx(look.mouse_sensitivity, BfhSettings.DEGREES_PER_COUNT),
+		"and one changed while playing is applied as it changes",
+		"%.4f" % look.mouse_sensitivity
+	)
+
+	var _e := next.settings.set_value(&"field_of_view", 200)
+	_check(
+		camera.fov <= 120.0,
+		"a field of view past the document's bound never reaches the camera",
+		"%.0f" % camera.fov
+	)
+
+	_check(
+		next.stack != null and next.screen != null and not next.is_open(),
+		"the settings screen is built, and closed"
+	)
+	next.open()
+	_check(
+		next.is_open() and next.screen.visible,
+		"it opens over the bowl"
+	)
+	next.close()
+	_check(not next.is_open() and not next.screen.visible, "and closes again")
+
+	remove_child(next)
+	next.free()
+	remove_child(mixed)
+	mixed.free()
+	remove_child(camera)
+	camera.free()
+	_done()

@@ -14,6 +14,7 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## tools/shot.sh 6 net.png --net              # four consecutive frames, net_0..net_3.png
 ## tools/shot.sh 6 net.png --net --no-interp  # the same, with the client's interpolation off
 ## tools/shot.sh 6 near.png --net --close      # four metres off, to judge the body itself
+## tools/shot.sh 8 walk.png --net --walk       # THIS client runs, and is it predicted?
 ## [/codeblock]
 ##
 ## A server and a client in one process, joined by the same loopback `headless_net` uses:
@@ -26,6 +27,14 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## line at a constant speed should have the same apparent speed every frame, and the spread
 ## of it is the judder. `--no-interp` is there to show what the spread looks like when it is
 ## wrong, because a number with nothing to compare it to proves nothing.
+##
+## [b]`--walk` is the other probe: this client's OWN runner.[/b] It stands for half a second,
+## runs nine metres east, stands, runs back, through the same `client_tick` the real client
+## calls, and reports three numbers a player feels: how many ticks after a key is pressed
+## the runner is drawn moving (the prediction latency: 0 is the tick it was pressed in),
+## the predictor's corrections per second, and the eye's apparent speed per frame while the
+## server has them at full speed. Until 2026-09-25 the client predicted nothing, and this is
+## where that shows as a number rather than as a feeling.
 ##
 ## xvfb-run, never --headless: headless gives a null renderer and saves a frame of nothing.
 
@@ -65,6 +74,26 @@ var _settle := 0
 ## which is the distance a body's proportions and facing can be judged from.
 var _ahead := 10.0
 
+## `--walk`: this client runs its own runner. See the class note.
+var _walk := false
+
+## Ticks into the walk cycle, the tick the current press began on, and where the local
+## runner was drawn when it did. -1 when no press is waiting to be seen.
+var _walk_tick := 0
+var _pressed_at := -1
+var _pressed_from := Vector3.ZERO
+var _latencies: Array[int] = []
+var _eye_speeds: Array[float] = []
+var _last_eye := Vector3.INF
+var _corrections_from := -1
+var _snaps_from := -1
+var _walk_ticks := 0
+
+## Idle, then running, per half-cycle, in ticks. Ninety ticks at 6.5 m/s is about nine
+## metres, which keeps the runner on the open floor either side of where they start.
+const WALK_IDLE := 30
+const WALK_RUN := 90
+
 
 func _ready() -> void:
 	DotLog.set_level(DotLog.Level.ERROR)
@@ -85,6 +114,8 @@ func _run() -> void:
 			_interp = false
 		elif arg == "--close":
 			_ahead = 4.0
+		elif arg == "--walk":
+			_walk = true
 
 	_build()
 
@@ -104,6 +135,8 @@ func _run() -> void:
 		print("saved %s" % path)
 
 	_report()
+	if _walk:
+		_report_walk()
 	# Frames the interpolator rendered at or past its newest snapshot (stalls) and guessed
 	# beyond it (extrapolations), out of all it sampled. Near zero on a clean loopback; most
 	# frames while dot-net subtracted a buffer counted in snapshots from a tick number.
@@ -232,8 +265,60 @@ func _physics_process(delta: float) -> void:
 	var _ticks := _client_net.clock.advance(delta)
 	_server_bridge.server_tick(_tick)
 	_flush()
-	_client_bridge.client_tick(_tick + INPUT_LEAD, DotFpsCommand.new())
+	_client_bridge.client_tick(_tick + INPUT_LEAD, _local_command())
 	_flush()
+
+	if _walk:
+		_watch_the_press()
+
+
+## What this client's own keys say this tick: nothing, or with `--walk` the cycle in the
+## class note.
+func _local_command() -> DotFpsCommand:
+	var command := DotFpsCommand.new()
+
+	if not _walk or not _running or _settle > 0:
+		return command
+
+	var half := WALK_IDLE + WALK_RUN
+	var at := _walk_tick % half
+	var east := (_walk_tick / half) % 2 == 0
+	_walk_tick += 1
+
+	# Facing north, as the camera does, and strafing: the view never turns, so what moves
+	# on screen is the runner and nothing else.
+	command.yaw = 0.0
+	if at >= WALK_IDLE:
+		command.move = Vector2(1.0 if east else -1.0, 0.0)
+
+		if at == WALK_IDLE:
+			var mine: BfhPlayer = _client_game.players.get(BfhNetBridge.player_key(SESSION))
+			if mine != null:
+				_pressed_at = _tick
+				_pressed_from = mine.global_position
+
+	if _corrections_from < 0 and _client_net.predictor != null:
+		var d := _client_net.predictor.describe()
+		_corrections_from = int(d["corrections"])
+		_snaps_from = int(d["snaps"])
+
+	_walk_ticks += 1
+	return command
+
+
+## The first tick after a press on which this client DRAWS its runner somewhere else.
+## Read off the node, which is what the camera and the predictor both read.
+func _watch_the_press() -> void:
+	if _pressed_at < 0:
+		return
+
+	var mine: BfhPlayer = _client_game.players.get(BfhNetBridge.player_key(SESSION))
+	if mine == null:
+		return
+
+	if mine.global_position.distance_to(_pressed_from) > 0.01:
+		_latencies.append(_tick - _pressed_at)
+		_pressed_at = -1
 
 
 ## Bea runs back and forth across the client's view, turning at each end.
@@ -246,7 +331,8 @@ func _drive_runner() -> void:
 	# ramp. The client's runner stands looking north and Bea runs across in front of them,
 	# ten metres off, so the pillars are behind her rather than in her way. Put back whenever
 	# a round starts and scatters everybody, which is what moved them the first time.
-	if not _running or mine.controller.state.position.distance_to(OPEN_FLOOR) > 1.0:
+	# With `--walk` this client moves its own runner, so it is placed once and then left alone.
+	if not _running or (not _walk and mine.controller.state.position.distance_to(OPEN_FLOOR) > 1.0):
 		_put(mine, OPEN_FLOOR)
 		_put(_runner, OPEN_FLOOR + Vector3(-5.0, 0.0, -_ahead))
 		_heading = -90.0
@@ -289,6 +375,19 @@ func _process(delta: float) -> void:
 		_camera.global_position = eye
 		_camera.look_at(eye + Vector3(0.0, -0.25, -1.0), Vector3.UP)
 
+		# The eye's apparent speed, while the SERVER has this runner flat out: the same
+		# measurement as the other probe, on the one runner a player never sees from outside.
+		if _walk and delta > 0.0:
+			var server_mine: BfhPlayer = _server_game.players.get(mine.player_id)
+			var flat := 0.0
+			if server_mine != null:
+				flat = Vector2(
+					server_mine.controller.state.velocity.x, server_mine.controller.state.velocity.z
+				).length()
+			if _last_eye != Vector3.INF and flat > 6.0 and _settle <= 0:
+				_eye_speeds.append(eye.distance_to(_last_eye) / delta)
+			_last_eye = eye
+
 		# Close up, the eye turns to follow her, as a player would: a body at four metres
 		# crossing a fixed view is out of frame most of the time.
 		var watched: BfhPlayer = _client_game.players.get(_runner.player_id) \
@@ -310,6 +409,45 @@ func _process(delta: float) -> void:
 		elif _last_drawn != Vector3.INF and server_speed > 6.0:
 			_speeds.append(at.distance_to(_last_drawn) / delta)
 		_last_drawn = at
+
+
+func _report_walk() -> void:
+	var d := _client_net.predictor.describe() if _client_net.predictor != null else {}
+	var seconds := float(_walk_ticks) / float(maxi(_client_game.tick_rate, 1))
+	var corrections := int(d.get("corrections", 0)) - maxi(_corrections_from, 0)
+	var snaps := int(d.get("snaps", 0)) - maxi(_snaps_from, 0)
+
+	var lat := "none seen"
+	if not _latencies.is_empty():
+		var sorted := _latencies.duplicate()
+		sorted.sort()
+		lat = "%d presses, %d..%d ticks (median %d)" % [
+			sorted.size(), sorted[0], sorted[sorted.size() - 1], sorted[sorted.size() / 2]
+		]
+
+	var eye := "nothing sampled"
+	if not _eye_speeds.is_empty():
+		var sorted_eye := _eye_speeds.duplicate()
+		sorted_eye.sort()
+		var median: float = sorted_eye[sorted_eye.size() / 2]
+		var still := 0
+		var off := 0
+		for v in _eye_speeds:
+			if v < 0.01:
+				still += 1
+			if absf(v - median) / maxf(median, 0.001) > 0.2:
+				off += 1
+		eye = "%d frames, median %.2f m/s, %d standing still, %d more than 20%% off" % [
+			_eye_speeds.size(), median, still, off
+		]
+
+	print("walk: predicted %d of %d players; key to motion: %s" % [
+		_client_net.registry.predicted().size(), _client_game.players.size(), lat
+	])
+	print("walk: %.1f s walking, %d corrections (%.2f/s), %d snaps; predictor %s" % [
+		seconds, corrections, float(corrections) / maxf(seconds, 0.001), snaps, str(d)
+	])
+	print("walk: this client's eye: %s" % eye)
 
 
 func _report() -> void:

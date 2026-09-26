@@ -1,5 +1,6 @@
 extends Node
 
+const BfhAudio := preload("bfh_audio.gd")
 const BfhClientChat := preload("bfh_client_chat.gd")
 const BfhNetBridge := preload("net/bfh_net_bridge.gd")
 const BfhNetCommand := preload("net/bfh_net_command.gd")
@@ -8,6 +9,8 @@ const BfhConfig := preload("bfh_config.gd")
 const BfhGame := preload("bfh_game.gd")
 const BfhHud := preload("bfh_hud.gd")
 const BfhPlayer := preload("bfh_player.gd")
+const BfhSettings := preload("bfh_settings.gd")
+const BfhSpectate := preload("bfh_spectate.gd")
 
 ## One local player, a camera and a HUD over a [BfhGame] — offline, or against a server.
 ##
@@ -43,6 +46,15 @@ var hud: BfhHud = null
 
 ## The chat box and the microphone. Built in both halves: offline it echoes what you type.
 var chat: BfhClientChat = null
+
+## What this client hears. See [BfhAudio]. Null only if dot-audio refused its catalogue.
+var audio: BfhAudio = null
+
+## The player's own settings and the screen that changes them. See [BfhSettings].
+var settings: BfhSettings = null
+
+## Whether the camera was last put on somebody else's eyes. See [method _process].
+var _spectating: bool = false
 
 var net: DotNetManager = null
 var bridge: BfhNetBridge = null
@@ -97,6 +109,8 @@ func _ready() -> void:
 
 	_build_hud()
 	_build_chat()
+	_build_audio()
+	_build_settings()
 
 	if _offline:
 		_start_offline()
@@ -130,13 +144,24 @@ func _start_offline() -> void:
 	# here. What the bot is for is having a bus on the floor to run away from, which is
 	# the thing worth looking at.
 	for i in range(offline_bots):
-		var bot := game.add_player(
-			StringName("bot%d" % i), "Bus driver %d" % (i + 1), BfhGame.TEAM_DRIVERS
+		var _bot := game.add_player(
+			StringName("bot%d" % i), "Bus driver %d" % (i + 1), BfhGame.TEAM_DRIVERS,
+			false, true
 		)
-		bot.is_bot = true
 
 	_adopt(game.add_player(&"local", "You", BfhGame.TEAM_RUNNERS, true))
 	game.start()
+
+	# An achievement, told the way a connected client is told one: as a notice. There is
+	# no server to send it, so the world's own signal is the whole path.
+	game.earned.connect(func(player_id: StringName, title: String, points: int) -> void:
+		if player == null or player_id != player.player_id:
+			return
+		if chat != null:
+			chat.notice("Achievement unlocked: %s (+%d)" % [title, points])
+		if audio != null:
+			audio.notice()
+	)
 
 	# No bridge: the box still opens and still echoes, because a chat box that does nothing
 	# at all reads as broken rather than as absent.
@@ -197,6 +222,8 @@ func _build_netcode() -> DotResult:
 	bridge.notice_received.connect(func(text: String) -> void:
 		if chat != null:
 			chat.notice(text)
+		if audio != null:
+			audio.notice()
 	)
 	bridge.seat_changed.connect(_on_seat_changed)
 
@@ -249,6 +276,12 @@ func _adopt(candidate: BfhPlayer) -> void:
 	player = candidate
 	_build_camera()
 
+	if settings != null:
+		settings.bind_camera(camera)
+		# Offline the player samples for themselves, from their controller's own tunables.
+		if player.sampler != null:
+			settings.bind_look(player.sampler.tunables)
+
 	if hud != null:
 		hud.bind(game, player)
 
@@ -292,6 +325,68 @@ func _build_hud() -> void:
 	add_child(hud)
 
 
+## The player's settings, applied to everything that reads them. See [BfhSettings].
+##
+## After the audio and the sampler, because both are bound here and a binding applies at
+## once. The camera arrives with the player and is bound in [method _adopt].
+func _build_settings() -> void:
+	settings = BfhSettings.new()
+	settings.name = "Settings"
+	add_child(settings)
+
+	var built: DotResult = settings.setup()
+
+	if not built.ok:
+		DotLog.warn(CHANNEL, "no settings; everything is at its default", {"why": built.error.message})
+		remove_child(settings)
+		settings.free()
+		settings = null
+		return
+
+	if _sampler != null:
+		settings.bind_look(_sampler.tunables)
+
+	if audio != null:
+		settings.bind_audio(audio.audio)
+
+	if settings.stack != null:
+		# [b]Walking is off while the menu is up, as it is while typing.[/b] The sampler
+		# polls the keyboard, and a player dragging a volume slider with the arrow keys
+		# would otherwise walk into the bus they had stopped to turn up.
+		settings.stack.menu_state_changed.connect(func(any_open: bool) -> void:
+			_suspend_input(any_open or (chat != null and chat.is_typing()))
+			# Back into the game on desktop. A browser needs the click that follows, which
+			# `_unhandled_input` already turns into a capture.
+			if not any_open and not DotPlatform.is_web():
+				_capture()
+		)
+
+
+func _suspend_input(value: bool) -> void:
+	if _sampler != null:
+		_sampler.suspended = value
+	if player != null and player.sampler != null:
+		player.sampler.suspended = value
+
+
+## What this client hears, listening to its own world. See [BfhAudio].
+##
+## Not fatal: a client whose audio was refused is a silent client, which is what this game
+## was for its first eleven days, and a WARN is what says so.
+func _build_audio() -> void:
+	audio = BfhAudio.new()
+	audio.name = "Audio"
+	add_child(audio)
+
+	var built: DotResult = audio.setup(game, func() -> BfhPlayer: return player)
+
+	if not built.ok:
+		DotLog.warn(CHANNEL, "no audio", {"why": built.error.message})
+		remove_child(audio)
+		audio.free()
+		audio = null
+
+
 ## The chat box, before the netcode and before any player exists.
 ##
 ## [b]Built in both halves and attached to the bridge afterwards.[/b] A box that only
@@ -308,11 +403,7 @@ func _build_chat() -> void:
 	# coming — and, in this game, what stops a driver steering with the letters of the word
 	# they are typing.
 	chat.typing_changed.connect(func(typing: bool) -> void:
-		if _sampler != null:
-			_sampler.suspended = typing
-
-		if player != null and player.sampler != null:
-			player.sampler.suspended = typing
+		_suspend_input(typing or (settings != null and settings.is_open()))
 	)
 
 
@@ -359,6 +450,24 @@ func _process(delta: float) -> void:
 	if camera == null or player == null:
 		return
 
+	# Somebody else's eyes, while this player is out. After the frame's interpolation, so
+	# the camera is where this frame draws whoever it is on.
+	if present_spectator_camera(game, player, camera):
+		_spectating = true
+		if audio != null:
+			audio.present(delta, camera.global_position)
+		return
+
+	if _spectating:
+		# Back into their own head: the view the seat or the sand gives them, which the lines
+		# below then move every frame. Without it the camera keeps the last spectator
+		# transform's LOCAL offset and a new round starts with the view floating wherever
+		# the last target was.
+		_spectating = false
+		camera.transform = Transform3D(Basis.IDENTITY, Vector3(
+			0.0, BfhPlayer.EYE_HEIGHT + (0.9 if player.riding else 0.0), 0.0
+		))
+
 	# Drawn every FRAME from the controller's own interpolated view, not once per tick.
 	# Another game in this family measured what the other way costs: a client stepping
 	# physics at one rate and drawing at another advances the camera in bursts, which is a
@@ -380,6 +489,33 @@ func _process(delta: float) -> void:
 	if not player.riding:
 		camera.global_position = player.controller.render_state().position \
 			+ Vector3(0.0, BfhPlayer.EYE_HEIGHT, 0.0)
+
+	if audio != null:
+		audio.present(delta, camera.global_position)
+
+
+## Puts [param eye] where a runner who is out is looking. Returns whether it did.
+##
+## [b]Static, so the net suite drives this and not a copy of it[/b] — the same reason
+## [method present_frame] is. The answer is the world's spectator camera, which on a
+## connected client is a mirror computing it from the view the server sent and the
+## positions this frame is drawing; see [BfhSpectate].
+static func present_spectator_camera(p_game: BfhGame, own: BfhPlayer, eye: Camera3D) -> bool:
+	if p_game == null or own == null or eye == null or p_game.spectate == null:
+		return false
+
+	if not p_game.spectate.is_spectating(own.player_id):
+		return false
+
+	var view := p_game.spectate.camera_for(own.player_id)
+
+	# Identity is dot-spectate's "no pose to give", which is a target that has not been drawn
+	# yet. The last frame's transform is a better picture than the world's origin.
+	if view == Transform3D.IDENTITY:
+		return true
+
+	eye.global_transform = view
+	return true
 
 
 ## Everything a frame draws that a tick does not, in this order: the netcode's
@@ -446,7 +582,21 @@ func _unhandled_input(event: InputEvent) -> void:
 		# Releases, never toggles. A browser exits pointer lock on Escape itself and then
 		# refuses to re-enter for about a second, so a toggle bound to it does nothing
 		# every other press.
+		#
+		# And opens the settings, because a released pointer with nothing on screen to click
+		# was a key that did half a job. A second Escape never reaches here: dot-ui's stack
+		# sits deeper in the tree, sees it first, and closes the screen.
 		_release()
+		if settings != null:
+			settings.open()
+		return
+
+	# A runner who is out: the mouse and the jump key are the spectator's, and nothing
+	# below — a swing, a turn — means anything for somebody who is not in the round.
+	if player != null and game.spectate != null and game.spectate.is_spectating(player.player_id):
+		var ask := spectator_ask(event)
+		if ask >= 0:
+			_ask_to_watch(ask)
 		return
 
 	if event is InputEventMouseButton:
@@ -471,8 +621,51 @@ func _unhandled_input(event: InputEvent) -> void:
 			_sampler.handle_event(event)
 
 
+## Which spectator request an input event is, or -1. Left click is next, right click is
+## back, and jump changes between their eyes and behind them.
+static func spectator_ask(event: InputEvent) -> int:
+	if event is InputEventMouseButton and (event as InputEventMouseButton).pressed:
+		match (event as InputEventMouseButton).button_index:
+			MOUSE_BUTTON_LEFT:
+				return BfhSpectate.ASK_NEXT
+			MOUSE_BUTTON_RIGHT:
+				return BfhSpectate.ASK_PREVIOUS
+			MOUSE_BUTTON_MIDDLE:
+				return BfhSpectate.ASK_VIEW
+
+	if event is InputEventKey and (event as InputEventKey).pressed \
+			and not (event as InputEventKey).echo \
+			and (event as InputEventKey).physical_keycode == KEY_SPACE:
+		return BfhSpectate.ASK_VIEW
+
+	return -1
+
+
+## Offline the world answers; connected, the server does, and a refusal comes back as a
+## notice like every other one.
+func _ask_to_watch(ask: int) -> void:
+	if audio != null:
+		audio.click()
+
+	if _offline:
+		var answered: DotResult = game.spectate.request(player.player_id, ask)
+		if not answered.ok and chat != null:
+			chat.notice(answered.error.message)
+	elif bridge != null:
+		bridge.ask_watch(ask)
+
+
 func _swing_locally() -> void:
-	if player == null or player.hammer == null or player.riding:
+	if player == null or game == null:
+		return
+
+	# A driver's swing button is the horn. Connected, the button rides the command and the
+	# server sounds it; offline the world is right here.
+	if player.riding:
+		game.sound_horn(player)
+		return
+
+	if player.hammer == null:
 		return
 
 	player.hammer.swing(
@@ -499,6 +692,15 @@ func describe() -> Dictionary:
 
 	if chat != null:
 		out["chat"] = chat.describe()
+
+	if audio != null:
+		out["audio"] = audio.describe()
+
+	if settings != null:
+		out["settings"] = settings.describe()
+
+	if player != null and game != null and game.spectate != null:
+		out["watching"] = game.spectate.describe_view(player.player_id)
 
 	if game != null:
 		out["world"] = game.describe()

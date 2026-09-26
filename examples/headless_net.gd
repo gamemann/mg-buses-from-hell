@@ -1,5 +1,6 @@
 extends Node
 
+const BfhAudio := preload("../game/bfh_audio.gd")
 const BfhBusNet := preload("../game/net/bfh_bus_net.gd")
 const BfhClient := preload("../game/bfh_client.gd")
 const BfhEvents := preload("../game/net/bfh_events.gd")
@@ -12,6 +13,8 @@ const BfhConfig := preload("../game/bfh_config.gd")
 const BfhContent := preload("../game/bfh_content.gd")
 const BfhGame := preload("../game/bfh_game.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
+const BfhSounds := preload("../game/bfh_sounds.gd")
+const BfhSpectate := preload("../game/bfh_spectate.gd")
 
 ## game-buses-from-hell over the wire: a real server, a real client, and a lossy loopback
 ## between them.
@@ -40,11 +43,11 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## the wrong reason. A real client is a separate program with its own export and its own
 ## `user://` config. Make them disagree, and let HELLO correct it.
 
-const CHECKS := 123
+const CHECKS := 148
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 16
+const SECTIONS := 18
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -102,6 +105,7 @@ func _run() -> void:
 		await _test_the_bowl_arrives()
 		await _test_the_bus()
 		await _test_moving()
+		await _test_the_local_runner_is_predicted()
 		await _test_the_hammer()
 		await _test_driving()
 		await _test_the_clock()
@@ -111,6 +115,7 @@ func _run() -> void:
 		await _test_a_lossy_link()
 		await _test_blind_and_beacon()
 		await _test_somebody_else_is_drawn()
+		await _test_a_runner_who_is_out()
 		await _test_leaving()
 
 	print("")
@@ -285,6 +290,28 @@ func _test_the_wire() -> void:
 		BfhEvents.write_clock(3, 42.5, 27, 4, true).slice(0, 2)
 	))
 	_check(not bool(short_clock["ok"]), "and so is a truncated clock")
+
+	var sound := BfhEvents.read_sound(DotNetReader.new(
+		BfhEvents.write_sound(BfhSounds.world_index(BfhSounds.RUNNER_DOWN), at)
+	))
+	_check(
+		bool(sound["ok"]) and BfhSounds.world_id(int(sound["index"])) == BfhSounds.RUNNER_DOWN
+		and (sound["position"] as Vector3).distance_to(at) < 0.01,
+		"a noise round-trips, as an index into the world's list and a place"
+	)
+	_check(
+		BfhSounds.world_id(BfhSounds.WORLD.size()) == &""
+		and BfhSounds.world_index(BfhSounds.BUS_ENGINE) < 0,
+		"an index this build does not know is silence, and the engine is never sent"
+	)
+
+	var watch := BfhEvents.read_watch(DotNetReader.new(
+		BfhEvents.write_watch(BfhSpectate.ASK_VIEW)
+	))
+	_check(
+		bool(watch["ok"]) and int(watch["ask"]) == BfhSpectate.ASK_VIEW,
+		"a spectator's click round-trips, and it is only the ask — never who to watch"
+	)
 	_done()
 
 
@@ -816,6 +843,211 @@ func _test_moving() -> void:
 		_corrections() < 20,
 		"without being corrected on every snapshot",
 		"%d corrections" % _corrections()
+	)
+	_done()
+
+
+# --- Prediction ------------------------------------------------------------
+
+func _identity_of(player: BfhPlayer) -> DotNetIdentity:
+	if player == null:
+		return null
+
+	return player.get_node_or_null("Identity") as DotNetIdentity
+
+
+## What the client shows of its own runner. The node, because that is what the camera
+## hangs off and what the predictor measures a correction against.
+func _client_shown() -> Vector3:
+	var p := _client_player()
+	return p.global_position if p != null else Vector3.ZERO
+
+
+## Prediction corrections per second over [param ticks] ticks of [param command].
+func _corrections_per_second(ticks: int, command: DotFpsCommand) -> float:
+	var before := _corrections()
+	await _steps(ticks, command)
+	return float(_corrections() - before) * float(SERVER_TICK_RATE) / float(ticks)
+
+
+## [b]The local runner is predicted, and nobody else is.[/b]
+##
+## Until 2026-09-25 `BfhNetBridge._apply_join` mirrored every player with owner 0, this
+## client's own included, so `is_owner` was false for the local runner, `predicted()` was
+## empty, and the runner moved only when a snapshot came back. "A runner moves" passed
+## throughout, because a client adopting the server's answer also agrees with the server,
+## and its "without being corrected" passed with zero corrections because the predictor
+## never ran. So these assert the MECHANISM rather than the agreement: who owns the entity,
+## what the registry predicts, that a key moves the runner in the tick it is pressed with
+## no snapshot in between, and that a disagreement is corrected and converges.
+func _test_the_local_runner_is_predicted() -> void:
+	_section("the local runner is predicted, and nobody else is")
+
+	var client_player := _client_player()
+	var server_player := _server_player()
+	var mine := _identity_of(client_player)
+
+	if mine == null or server_player == null:
+		_check(false, "the client has an identity for its own runner")
+		for _i in range(11):
+			_check(false, "(skipped: no local identity)")
+		_done()
+		return
+
+	_check(true, "the client has an identity for its own runner")
+	_check(
+		mine.owner_peer_id == _client_net.local_peer_id and mine.is_owner,
+		"which this client owns",
+		"owner %d, local peer %d, is_owner %s" % [
+			mine.owner_peer_id, _client_net.local_peer_id, mine.is_owner
+		]
+	)
+
+	var predicted := _client_net.registry.predicted()
+	_check(
+		mine.is_predicted() and predicted.has(mine),
+		"and predicts: the registry's predicted set holds it",
+		"%d predicted" % predicted.size()
+	)
+
+	# The bot driver is somebody else's, and a client predicting them would be simulating
+	# a person whose keys it never had.
+	var bot: BfhPlayer = null
+
+	for id: StringName in _client_game.players:
+		if id != BfhNetBridge.player_key(SESSION):
+			bot = _client_game.players[id]
+
+	var theirs := _identity_of(bot)
+	_check(
+		theirs != null and not theirs.is_owner and not theirs.is_predicted()
+			and not predicted.has(theirs),
+		"and nobody else's runner is predicted",
+		"%d predicted of %d players" % [predicted.size(), _client_game.players.size()]
+	)
+
+	# Stand still first, so the next tick starts from agreement.
+	await _steps(30)
+
+	# [b]One tick by hand, measured between the client's tick and the flush that would
+	# carry anything back.[/b] The server has already simulated this tick without the
+	# command — it is stamped `INPUT_LEAD` ahead — so any movement here is the client's own.
+	_tick += 1
+	_client_net.clock.advance(1.0 / float(maxi(_client_game.tick_rate, 1)))
+	_server_bridge.server_tick(_tick)
+	_flush()
+
+	var shown_before := _client_shown()
+	var server_before := server_player.controller.state.position
+	_client_bridge.client_tick(_tick + INPUT_LEAD, _forward())
+	var shown_after := _client_shown()
+
+	_check(
+		shown_after.distance_to(shown_before) > 0.005,
+		"a key moves the runner on the client in the tick it is pressed",
+		"%.4f m" % shown_after.distance_to(shown_before)
+	)
+	_check(
+		server_player.controller.state.position.distance_to(server_before) < 0.0001,
+		"before the server has simulated it, and before any snapshot",
+		"server moved %.4f m" % server_player.controller.state.position.distance_to(
+			server_before
+		)
+	)
+
+	_flush()
+	await get_tree().physics_frame
+
+	# A straight line: the two ends run the same controller from the same commands, so a
+	# healthy predictor is corrected rarely. Printed, because it is the number to watch.
+	var straight := await _corrections_per_second(120, _forward())
+	# Signed, along the run (-Z): positive is the client showing the runner AHEAD of the
+	# server, which is what prediction with an input lead looks like; negative is a client
+	# drawing what the server said a round trip ago.
+	var lead := (_client_shown() - server_player.controller.state.position).dot(Vector3.FORWARD)
+	print("        corrections/s running straight: %.2f  (client shows the runner %+.2f m from the server)" % [
+		straight, lead
+	])
+
+	await _steps(30)
+	_check(
+		_client_shown().distance_to(server_player.controller.state.position) < 0.05,
+		"stopped, the client shows the runner where the server has them",
+		"%.3f m apart" % _client_shown().distance_to(server_player.controller.state.position)
+	)
+
+	# [b]A disagreement the client cannot know about[/b]: an admin moves the runner on
+	# the server. The client predicted standing still, so the next snapshot is a
+	# correction — and the proof that the predictor RUNS rather than the client simply
+	# adopting what it is sent is that the correction counter moves.
+	var corrections_before := _corrections()
+	var moved_to := server_player.controller.state.position + Vector3(1.2, 0.0, 0.0)
+	server_player.controller.teleport(
+		moved_to, server_player.controller.state.yaw, server_player.controller.state.pitch
+	)
+	await _steps(30)
+
+	_check(
+		_corrections() > corrections_before,
+		"a move the client did not predict is corrected",
+		"%d corrections" % (_corrections() - corrections_before)
+	)
+	_check(
+		_client_shown().distance_to(server_player.controller.state.position) < 0.05
+			and client_player.controller.state.position.distance_to(moved_to) < 0.1,
+		"and converges on where the server put them",
+		"%.3f m apart, %.3f m from the teleport" % [
+			_client_shown().distance_to(server_player.controller.state.position),
+			client_player.controller.state.position.distance_to(moved_to),
+		]
+	)
+
+	var settled := _corrections()
+	await _steps(30)
+	_check(
+		_corrections() == settled,
+		"and then stays converged: no correction while nothing disagrees",
+		"%d more" % (_corrections() - settled)
+	)
+
+	# Into a crate: a body the server simulates and the client only mirrors, frozen, at the
+	# snapshot's position. The one place the two ends are computing against different
+	# geometry, so the one place corrections are expected. Measured, not asserted.
+	var ahead := server_player.controller.state.position + Vector3(0.0, 0.6, -2.4)
+	var crate := _server_game.props.spawn(BfhContent.CRATE, &"world", ahead)
+	await _steps(10)
+	var runner_from := server_player.controller.state.position
+	var crate_from := crate.body().global_position if crate != null and crate.body() != null \
+		else Vector3.ZERO
+	var bump := await _corrections_per_second(90, _forward())
+	var crate_moved := (
+		crate.body().global_position.distance_to(crate_from)
+		if crate != null and crate.body() != null else -1.0
+	)
+	print("        corrections/s running into a crate: %.2f  (runner %.2f m before it stopped them, crate %.2f m)" % [
+		bump, server_player.controller.state.position.distance_to(runner_from), crate_moved,
+	])
+
+	await _steps(30)
+	_check(
+		_client_shown().distance_to(server_player.controller.state.position) < 0.1,
+		"and after the crate, the two ends agree again",
+		"%.3f m apart" % _client_shown().distance_to(server_player.controller.state.position)
+	)
+
+	# [b]A JOIN that beat its HELLO.[/b] `_admit` sends HELLO first, so the order this
+	# guards is not one the server produces today — which is exactly why it is driven
+	# through the real path rather than trusted: the local entity is put back to how an
+	# early JOIN would have built it (owned by nobody here), and the server admits the peer
+	# again, so a real HELLO arrives for a player the client already has.
+	var _unclaimed := _client_net.registry.change_owner(mine.net_id, 0)
+	_server_bridge._admit(CLIENT_PEER)
+	_exchange()
+	await _steps(2)
+	_check(
+		mine.owner_peer_id == _client_net.local_peer_id and mine.is_predicted(),
+		"a local runner mirrored before HELLO is claimed when HELLO arrives",
+		"owner %d, predicted %s" % [mine.owner_peer_id, mine.is_predicted()]
 	)
 	_done()
 
@@ -1586,4 +1818,174 @@ func _test_leaving() -> void:
 		"the bowl is still there",
 		"%d bodies" % int(_client_bridge.describe()["bodies"])
 	)
+	_done()
+
+
+# --- A runner who is out, over the wire --------------------------------------------
+
+## Run down on the server, the client's camera goes where the server says, and every noise
+## and cue on the way reaches the client's world as the same signal an offline one emits.
+##
+## [b]The server decides and the client draws.[/b] What crosses is the view as per-player,
+## owner-only state (`net_watch`, `net_watch_target`) and each click as a request; the
+## camera itself is computed on the client from the positions it is already drawing. So the
+## checks are that the client's mirror is in the view the server chose, that its camera is
+## on the client's OWN copy of the bus, and that a click is answered by the server's list.
+func _test_a_runner_who_is_out() -> void:
+	_section("a runner who is out: where the server says to look, and what the client hears")
+
+	var mine_on_server := _server_player()
+	var bot_key := BfhNetBridge.player_key(BfhNetBridge.FIRST_BOT_SESSION)
+	var bot: BfhPlayer = _server_game.players.get(bot_key)
+
+	# A second runner, so this client going down does not end the round under the test.
+	var other := _server_bridge.add_bot("Cy", BfhGame.TEAM_RUNNERS)
+	await _steps(6)
+
+	var server_net := mine_on_server.get_node("Net") as DotNetBehaviour
+	_check(
+		server_net.find_var(&"net_watch").audience == DotNetVar.Audience.OWNER
+		and server_net.find_var(&"net_watch_target").audience == DotNetVar.Audience.OWNER,
+		"where a runner who is out looks is sent to them and to nobody else"
+	)
+
+	if bot == null or not bot.riding or other == null:
+		for _i in range(9):
+			_check(false, "(no bot in a bus to be run over by, or no second runner)")
+		_done()
+		return
+
+	# The client's ears, on the client's world, with the null sink a headless run gets.
+	var ears := BfhAudio.new()
+	add_child(ears)
+	var _built := ears.setup(_client_game, func() -> BfhPlayer: return _client_player())
+	var sink := ears.audio.sink as DotAudioSinkNull
+	var heard: Array = []
+	_client_game.noise.connect(func(id: StringName, at: Vector3) -> void:
+		heard.append({"id": id, "at": at}))
+	var deaths: Array[StringName] = []
+	_client_game.player_died.connect(func(id: StringName, _by: StringName) -> void:
+		deaths.append(id))
+
+	var fell_at := mine_on_server.global_position
+	_server_game._bus_hit(mine_on_server, bot_key, 30.0, Vector3(0.0, 0.0, 1.0))
+	await _steps(4)
+
+	var mine := _client_player()
+	var spectate := _client_game.spectate
+	_check(
+		spectate != null and not spectate.manager.authoritative
+		and spectate.mode_of(mine.player_id) == DotSpectatorView.Mode.DEATH_CAM
+		and spectate.target_of(mine.player_id) == bot_key,
+		"the client's mirror is put on the death camera, looking at the bus that did it",
+		spectate.describe_view(mine.player_id) if spectate != null else "no spectate"
+	)
+
+	var down: Array = heard.filter(func(h: Dictionary) -> bool: return h["id"] == BfhSounds.RUNNER_DOWN)
+	_check(
+		down.size() == 1 and (down[0]["at"] as Vector3).distance_to(fell_at) < 0.5
+		and deaths.has(mine.player_id),
+		"a flattening on the server is a noise on the client's world, where it happened, "
+		+ "and a death its world says it saw",
+		"%d noises, deaths %s" % [down.size(), str(deaths)]
+	)
+
+	var eye := Camera3D.new()
+	var client_side := _client_game.get_parent()
+	client_side.add_child(eye)
+	var client_bus := _client_bridge.body_of_net_id(_server_bridge.net_id_of_node(bot.ridden))
+	var drew := BfhClient.present_spectator_camera(_client_game, mine, eye)
+	# At the client's copy's CAB, which is where `BfhSpectate.pose_of` puts a bus's eyes and
+	# so what a death camera looks at — not at the hull's centre. Measured to the centre
+	# this held only at range: once the runner was flattened 6.5 m from the bus, the cab
+	# 3.8 m up and 1.2 m forward of it read as 0.88 of the way there, with the camera
+	# exactly right. What makes it the client's OWN copy is `client_bus`, not the point.
+	var toward := (
+		((client_bus.global_transform * BfhSpectate.CAB_EYE) - eye.global_position).normalized()
+		if client_bus != null else Vector3.ZERO
+	)
+	_check(
+		drew and client_bus != null and (-eye.global_basis.z).dot(toward) > 0.9,
+		"and the client's camera looks at its OWN copy of that bus",
+		"facing %.2f of the way to its cab, %.1f m from the bus" % [
+			(-eye.global_basis.z).dot(toward),
+			eye.global_position.distance_to(client_bus.global_position) if client_bus != null
+				else -1.0,
+		]
+	)
+
+	# Past the death camera and the freeze on the cab, on the server's clock.
+	await _steps(int((BfhSpectate.DEATH_CAM_SEC + BfhSpectate.FREEZE_CAM_SEC) * 60.0) + 10)
+	var following := spectate.target_of(mine.player_id)
+	var watched: BfhPlayer = _client_game.players.get(following)
+	var _drew := BfhClient.present_spectator_camera(_client_game, mine, eye)
+	_check(
+		spectate.mode_of(mine.player_id) == DotSpectatorView.Mode.FIRST_PERSON
+		and watched != null
+		and eye.global_position.distance_to(spectate.pose_of(String(following)).origin) < 0.01,
+		"then through somebody's eyes, as this client draws them",
+		"%s" % spectate.describe_view(mine.player_id)
+	)
+
+	_client_bridge.ask_watch(BfhSpectate.ASK_NEXT)
+	_exchange()
+	await _steps(4)
+	var next := spectate.target_of(mine.player_id)
+	_check(
+		next != following and next == _server_game.spectate.target_of(mine.player_id),
+		"a click is asked of the server, and the client is moved to the server's next",
+		"%s -> %s, server says %s" % [following, next, _server_game.spectate.target_of(mine.player_id)]
+	)
+
+	_client_bridge.ask_watch(BfhSpectate.ASK_VIEW)
+	_exchange()
+	await _steps(4)
+	_check(
+		spectate.mode_of(mine.player_id) == DotSpectatorView.Mode.CHASE,
+		"and space asks for the view behind them",
+		spectate.describe_view(mine.player_id)
+	)
+
+	# An achievement, from the server's tracker to the one person who earned it. Unlocked
+	# by hand rather than earned — earning is `headless_run`'s — so what is under test is
+	# everything after the tracker: the world's signal, the bridge, a notice, the client.
+	var notices: Array[String] = []
+	_client_bridge.notice_received.connect(func(text: String) -> void: notices.append(text))
+	var awarded := _server_game.progress.achievements.unlock(
+		_server_game.progress.key_of(mine_on_server.player_id), &"bfh.demolition"
+	)
+	_exchange()
+	await _steps(2)
+	_check(
+		awarded.ok and notices.any(func(t: String) -> bool: return t.contains("Demolition")),
+		"an achievement the server awards is told to the one player who earned it",
+		"%s, notices %s" % [str(awarded.value) if awarded.ok else str(awarded.error), str(notices)]
+	)
+
+	# The last runner goes; the round turns over on the server, and the client's world says
+	# so with the signals an offline world emits, and hears it.
+	var rounds: Array = []
+	_client_game.round_over.connect(func(n: int, winner: int) -> void: rounds.append([n, winner]))
+	_server_game._bus_hit(other, bot_key, 30.0, Vector3(0.0, 0.0, 1.0))
+	await _steps(12)
+	_check(
+		not spectate.is_spectating(mine.player_id),
+		"a new round ends the client's spectating, because the server's did",
+		spectate.describe_view(mine.player_id)
+	)
+	_check(
+		not rounds.is_empty() and int(rounds[0][1]) == BfhGame.TEAM_DRIVERS
+		and sink.played_ids().has(String(BfhSounds.RUNNER_DOWN))
+		and sink.played_ids().has(String(BfhSounds.ROUND_LOST))
+		and sink.played_ids().has(String(BfhSounds.ROUND_START)),
+		"and the connected client HEARS it: the flattening, the round lost, the next one",
+		"rounds %s, played %s" % [str(rounds), str(sink.played_ids())]
+	)
+
+	eye.queue_free()
+	remove_child(ears)
+	ears.free()
+	_server_bridge.remove_player(BfhNetBridge.session_of(other.player_id))
+	_exchange()
+	await _steps(2)
 	_done()

@@ -151,6 +151,14 @@ func _process(delta: float) -> void:
 
 	_cover.text = "%d cover   %d alive" % [game.crates_left(), game.alive_runners()]
 
+	# No aiming point on somebody else's eyes: the dot is where THIS player's hammer lands,
+	# and a runner who is out has no hammer to land.
+	if _crosshair != null:
+		_crosshair.visible = not (
+			player != null and game.spectate != null
+			and game.spectate.is_spectating(player.player_id)
+		)
+
 	_status.text = _status_line()
 
 
@@ -198,5 +206,34 @@ func _status_line() -> String:
 	if player != null and player.riding:
 		return "driving"
 	if player != null and player.health != null and not player.health.alive:
-		return "down — next round"
+		return watching_line(game, player)
 	return ""
+
+
+## What a runner who is out is told about the camera they are looking through.
+##
+## [b]Who, and how to change it, on one line.[/b] A camera that moved to somebody else's
+## eyes with nothing on screen saying whose reads as the client having lost track of the
+## player, and the three controls are the kind nobody finds by pressing keys at random.
+## Static and public so the suite reads the words a player would.
+static func watching_line(p_game: BfhGame, own: BfhPlayer) -> String:
+	if p_game == null or own == null or p_game.spectate == null \
+			or not p_game.spectate.is_spectating(own.player_id):
+		return "down — next round"
+
+	var target := p_game.spectate.target_of(own.player_id)
+	var who: BfhPlayer = p_game.players.get(target)
+	var name := who.display_name if who != null else "nobody"
+
+	if who != null and p_game.team_of(target) == BfhGame.TEAM_DRIVERS:
+		name = "%s's bus" % name
+
+	match p_game.spectate.mode_of(own.player_id):
+		DotSpectatorView.Mode.DEATH_CAM:
+			return "down — run over by %s" % name
+		DotSpectatorView.Mode.FREEZE_CAM:
+			return "down — %s, from the cab" % name
+		DotSpectatorView.Mode.FIXED:
+			return "down — next round"
+
+	return "down — watching %s   (click: next · right-click: back · space: view)" % name

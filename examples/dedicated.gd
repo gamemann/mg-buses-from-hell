@@ -2,6 +2,8 @@ extends Node
 
 const BfhConfig := preload("../game/bfh_config.gd")
 const BfhGame := preload("../game/bfh_game.gd")
+const BfhContent := preload("../game/bfh_content.gd")
+const BfhPlayer := preload("../game/bfh_player.gd")
 
 ## Boots a real [DotServer], loads this game into it as a module, and runs the commands
 ## an operator would actually type.
@@ -20,7 +22,7 @@ const BfhGame := preload("../game/bfh_game.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 72
+const CHECKS := 79
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -33,7 +35,7 @@ const SERVER_DIR := "user://bfh_dedicated"
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 10
+const SECTIONS := 11
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -81,6 +83,7 @@ func _run() -> void:
 		await _test_the_bots()
 		_test_the_services()
 		await _test_the_live_tools()
+		await _test_progress_and_spectating()
 		await _test_it_unloads_cleanly()
 		_test_no_message_preloads_itself()
 
@@ -1018,3 +1021,109 @@ func _line_with(text: String, needle: String) -> String:
 func _last_lines(text: String, count: int) -> String:
 	var lines := text.strip_edges().split("\n")
 	return "\n".join(lines.slice(maxi(0, lines.size() - count)))
+
+
+## Statistics, achievements and the spectator camera, as a server's world builds them.
+##
+## [b]What the other two suites cannot say: that a world built by a module under a real
+## `DotServer` has both, and that the operator can read them.[/b] A runner joins through the
+## roster the way a client does, breaks a crate, and `bfh_stats` reports it; a bot is not
+## counted; a slain runner is put on a death camera by the server's own world; and a leaver
+## is forgotten by the counters.
+func _test_progress_and_spectating() -> void:
+	print("statistics, achievements and where the out look")
+
+	var module := _module()
+	_check(
+		game.progress != null and game.spectate != null and game.spectate.manager.authoritative,
+		"the server's world counts, and decides where a runner who is out looks"
+	)
+	_check(server.console.find_command("bfh_stats") != null, "`bfh_stats` is registered")
+
+	if module == null or game.progress == null or game.spectate == null:
+		for what in ["counted", "detail", "bots", "death camera", "forgotten"]:
+			_check(false, what)
+		_done()
+		return
+
+	var net: DotNetManager = module.get("net")
+	var previous_send := net.send_fn
+	net.send_fn = func(_peer: int, _payload: PackedByteArray, _delivery: int) -> void:
+		pass
+
+	var session := DotClientSession.new()
+	session.peer_id = 6161
+	session.userid = 616
+	session.display_name = "Tally"
+	var _adopted := server.adopt_session(session)
+	server.events.fire("client_spawn", {"userid": 616, "name": "Tally"})
+
+	var runner: BfhPlayer = game.players.get(&"u616")
+
+	if runner == null or runner.hammer == null:
+		for what in ["counted", "detail", "bots", "death camera", "forgotten"]:
+			_check(false, "%s (no runner joined)" % what)
+		net.send_fn = previous_send
+		_done()
+		return
+
+	# A crate where the runner is looking, broken by the hammer the world gave them.
+	var eye := runner.eye_position()
+	var aim := runner.aim_direction()
+	var crate := game.props.spawn(BfhContent.CRATE, &"world", eye + aim * 1.4 - Vector3(0.0, 0.5, 0.0))
+	crate.body().freeze = true
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	for _i in range(3):
+		runner.hammer.cooldown = 0.0
+		runner.hammer.swing(
+			game, eye, ((crate.body().global_position) - eye).normalized(),
+			game.props, game.prop_damage, game.carry, runner.player_id, 0xFFFFFFF
+		)
+
+	var everybody := _run_command("bfh_stats")
+	_check(
+		not crate.is_alive() and _said(everybody, "Tally") and _said(everybody, "broken 1"),
+		"a runner who broke a crate is on `bfh_stats`, with it counted",
+		" | ".join(everybody)
+	)
+
+	var detail := _run_command("bfh_stats 616")
+	_check(
+		_said(detail, "Crates broken") and _said(detail, "Rounds survived"),
+		"and `bfh_stats <userid>` prints all five of their numbers",
+		" | ".join(detail)
+	)
+
+	var bot := game.drivers()[0] if not game.drivers().is_empty() else null
+	# The userid spelled out rather than through `BfhNetBridge.session_of`: this suite does
+	# not preload the netcode, because loading it before the module does is what hides the
+	# leak `_test_no_message_preloads_itself` is about. See docs/gdscript-hazards.md.
+	var bot_line := _run_command(
+		"bfh_stats %s" % String(bot.player_id).trim_prefix("u") if bot != null else "bfh_stats 1"
+	)
+	_check(
+		bot != null and bot.is_bot and _said(bot_line, "not counted"),
+		"a bot driver is not counted, so a server's numbers are its people's",
+		" | ".join(bot_line)
+	)
+
+	# Looked at the moment the command returns: a lone runner slain ends the round on the
+	# next tick, and the next round is a new body that stops the camera.
+	var slain := await _run_and_look("slay Tally", func() -> bool:
+		return game.spectate.is_spectating(&"u616"))
+	_check(
+		bool(slain[1]),
+		"a runner slain on a server is put on a death camera by that server's world",
+		" | ".join(slain[0])
+	)
+
+	module.get("roster").call("remove", session)
+	var _released := server.release_session(session.peer_id)
+	_check(
+		game.progress.key_of(&"u616") == "" and not game.progress.stats.has_player(&"bfh-u616"),
+		"and a player who leaves is forgotten by the counters"
+	)
+
+	net.send_fn = previous_send
+	_done()

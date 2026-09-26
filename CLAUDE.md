@@ -27,6 +27,13 @@ game/
   bfh_hud.gd        four numbers and a dot, and an admin's blind under them
   bfh_beacon.gd     an admin's beacon: a ring, a ripple, a column through walls, a ping
   bfh_figure.gd     what somebody else looks like: a Kenney blocky character, client side
+  bfh_spectate.gd   where a runner who is out looks: the server decides, a client mirrors
+  bfh_sounds.gd     every sound as a document, and the synthesised voice standing in for it
+  bfh_audio.gd      what a client hears: the world's noises, the round's cues, every engine
+  bfh_stats.gd      the five per-player numbers, declared once
+  bfh_awards.gd     what they earn, as rules over them
+  bfh_progress.gd   dot-stats and dot-achievements, fed by the world's own signals
+  bfh_settings.gd   the player's settings, and the screen Escape opens
   bfh_client.gd     one local player, alone or against a server
   bfh_client_chat.gd  the client's chat box and its microphone
   bfh_services.gd   chat, voice and moderation. Sixty lines over dot-game's base
@@ -38,9 +45,10 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (123), headless_net (123), dedicated (72)
+examples/           headless_run (167), headless_net (148), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
-                    connected client watching another runner, with a jitter probe
+                    connected client watching another runner, with a jitter probe, and
+                    (--walk) running its own, with a prediction probe
 ```
 
 ## The moderator's live tools, and what this game refuses
@@ -74,6 +82,110 @@ What it refuses is refused for a reason about this game, and `modtools` prints e
 `headless_net`'s **somebody else has a body** section adds a second runner and asserts: placed in the bowl on arrival (armed: removing the placement, fired at `(0, 0, 0)`), a Kenney body for them and none for this client or the seated driver (armed: showing every body, three fired), the body where the server placed them, and then, running 60 ticks with four frames a tick at fractions 0, ¼, ½, ¾, every frame on the path the server ran them along (worst under 0.25 m), well away from the origin, **an even step every frame** and facing the server's yaw. Armed by taking `interpolate_frame` out of `present_frame`: the even-step check fired at 0.0000..0.3281 m against a 0.0266 m mean; armed by not building the body: eight fired.
 
 `tools/shot.sh 6 net.png --net` renders a connected client — a server and a client in one process over the same loopback — watching another runner cross its view, saves four consecutive frames and prints a probe: each frame's drawn movement over its own delta. Measured under lavapipe at ~30 fps against 60 ticks: interpolated, **0 of 144 frames standing still and 1 more than 20% off the median 6.56 m/s**; `--no-interp`, **58 of 147 standing still and 49% off**. `--close` brings the runner to four metres to judge the body itself. The same probe found a dot-net bug it cannot fix from here: the interpolation delay is counted in snapshots and subtracted from ticks, so every remote entity is extrapolated past the newest snapshot rather than blended between two — game-playground's CLAUDE.md has the numbers.
+
+## Where a runner who is out looks
+
+**Until 2026-09-25 a runner who was run down looked at the sand they were run over on, for the rest of the round.** Out is out here — there is no respawn until the next round, by design — so the part of the game a runner spends dead is not two seconds before a respawn, it is most of a round on a bad one. `bfh_spectate.gd` is dot-spectate's `DotSpectatorManager` with this game's policy and this game's idea of where a bus's eyes are.
+
+**The chain:** a death camera for a second, from where they fell, looking at the bus that did it; a freeze for two seconds from that bus's CAB — who got you, and where they are going next; then first person on somebody still up, sorted by key so "next" is stable. Left click is next, right click is back, space (or the middle button) swaps between their eyes and a chase camera seven metres behind. `BfhHud.watching_line` says whose eyes and how to change them, and the crosshair goes, because the dot is where this player's hammer lands and a runner who is out has none.
+
+**A bus's eyes are its cab.** A driver's own position is where they sat down — nothing moves a rider — so a camera on a driver's body would watch an empty patch of sand while the bus chased somebody else. `BfhSpectate.pose_of` answers with the bus: `CAB_EYE` over the cab roof, pitched down the road. The first render at seat height put the Kenney truck's container across the bottom third of the frame; `tools/shot.sh 5 watch_follow.png --watch=follow` is the picture it was tuned against.
+
+**The policy is the loosest in the family, and each line has a reason about this game:**
+
+- **Anybody may be watched, a bus included** (`force_camera 0`). The obvious worry — a dead runner calling out the bus behind a tank — is not one a camera can defend against here: every player and every bus is always relevant (`BfhNetBridge._build_entity`), so every client already HAS every position the camera could show it. Forbidding the bus would protect nothing from a modified client and would deny an honest one the most watchable thing on the server; "own side only" would mean runners watching runners, the half of the round nothing is chasing.
+- **No delay**, for the same reason — a delay a client enforces over data it already has is theatre — and because dot-spectate records its delay history on the authority only, so a delayed mirror has no pose to draw.
+- **No roaming.** A free camera over the bowl is a map of it, and above the tanks it is exactly the view the farm exists to take away.
+- **The living do not watch**, and a driver cannot be out.
+
+**The server decides and the client draws.** What crosses is the view as per-player state, `BfhPlayerNet.net_watch` and `net_watch_target`, **owner-only** like the blind, and a click as `BfhEvents.Ask.WATCH` carrying only next, back or view — never who to watch, so a client cannot name somebody the policy would refuse. State rather than an event because the death camera is three timed modes handing over on the SERVER's clock; a client told each hand-over by an event it might miss would sit on a freeze camera until the round ended. The client's `BfhSpectate` is a mirror: `adopt` puts the view on its own manager and the camera is computed from the positions that frame is already drawing, so it is as smooth as the picture. `BfhClient.present_spectator_camera` is static so `headless_net` drives the real one.
+
+Two things wiring it found. **`DotSpectatorView.to_wire` does not carry `death_position`**, so a mirror left alone draws every death camera from the world origin — `adopt` takes the place from where this machine last drew the player, on the transition into watching; worked around here and reported upstream. **Fixed upstream 2026-09-25** (`"d"` on the wire), and `adopt` stays: this game replicates `net_watch` (a mode and a target), not dot-spectate's wire, so the upstream fix does not reach it. And **`DotNetIdentity.is_owner` was false for this client's own player**, which is the next section, and was this game's bug rather than dot-net's.
+
+## A connected client predicted nothing, and nothing said so
+
+**Until 2026-09-25 the local runner on a connected client was moved by snapshots alone.** `BfhNetBridge._apply_join` built every mirrored player with `owner_peer_id` 0, this client's own included, so `DotNetIdentity.is_owner` was false for the local runner, `is_predicted()` was false, `net.registry.predicted()` was EMPTY, and `client_tick` simulated nobody. The runner moved a round trip behind the keys. Found while wiring the spectator view, and measured there: `predicted 0`, `corrections 0`, local peer 7, the local entity's owner 0. game-g2gfast and game-arena get this right by carrying the owner's peer id in their JOIN. **game-playground and mg-smash-copter have the same `_build_entity(player, 0)` line in their `_apply_join` and no claim anywhere, so they almost certainly have the same bug.** That comes from reading their code, not from running it.
+
+**Why no check saw it.** "A runner moves" asserted that the client's position agrees with the server's, and a client that adopts every snapshot agrees with the server too. Its "without being corrected on every snapshot" read zero corrections, which was zero because the predictor never ran, not because the prediction was right. Its own comment said "not that the client moved at all, which a client simply adopting snapshots would also do", and then asserted something that such a client also passes. **The agreement between client and server was a symptom both the fixed and the broken code share. Only the mechanism tells them apart.**
+
+**The fix.** `_apply_join` builds the mirror with `_mirror_owner(session_id)`, which returns `net.local_peer_id` for the player whose session is `local_player_id` and 0 for everybody else. It keys on the session rather than on a peer id in the wire message, because JOIN carries no peer id and `is_owner` compares the owner with THIS registry's local peer, so the local peer id is the only right value whatever the server calls the connection. HELLO is sent before every JOIN in `_admit`, on the same reliable channel, so `local_player_id` is known by the time the join arrives. `_apply_hello` still calls `_claim_local_player()` (through `registry.change_owner`) for a local mirror that got there first, because the order is a property of the server rather than of the bridge. Nothing in dot-net needed to change.
+
+**The bus is not predicted, and that is dot-vehicle's decision rather than a gap.** dot-vehicle's CLAUDE.md and game-playground's `playground_vehicle_net.gd` both reject predicting a vehicle: two machines diverge on a rigid body within a second or two, and a correction on something being steered reads worse than latency. A driver's keys still go round trip, as "A driver is not predicted either" under The netcode says. With the local player now predicted, `BfhPlayerNet._net_simulate` applies a riding owner's command without simulating it, and `_net_state_applied` keeps writing the node from the server's answer while riding. "Driving" in `headless_net` passes unchanged.
+
+**`adopt_watch` still keys on the session id.** It was a workaround for `is_owner` being wrong. The two keys now agree, and the session is kept because it is what the server keys the view by, it is right from the moment HELLO lands, and `is_owner` would be true of every owner-0 mirror on a registry whose local peer was 0.
+
+**Which checks see it now.** `headless_net`'s **the local runner is predicted, and nobody else is** section has 12 checks:
+
+- the local entity is owned by this client's peer, and `predicted()` holds it
+- the bot driver is not predicted
+- a key moves the runner on the client within the `client_tick` it is pressed in, while the server has not moved them, with no snapshot in between
+- stopped, the client shows the runner where the server has them
+- an admin teleport of 1.2 m on the server is corrected (the correction counter moves), converges within 5 cm, and then stays converged with no further correction
+- after running into a crate the two ends agree again
+- a local runner whose entity is unclaimed when HELLO arrives is claimed (driven through a real second `_admit`)
+
+**Armed** by making `_mirror_owner` return 0: five fired ("which this client owns", "and predicts", "a key moves the runner… 0.0000 m", "a move the client did not predict is corrected… 0 corrections", "claimed when HELLO arrives"). Removing the `_claim_local_player()` call from `_apply_hello` on its own fired the last one.
+
+**And one existing check was wrong in a way this exposed.** "The client's camera looks at its OWN copy of that bus" measured the direction to the hull's centre, but a death camera looks at the bus's CAB (`BfhSpectate.CAB_EYE`, 3.8 m up and 1.2 m forward). It held only at range. Once the new section had moved the runner, they were flattened 6.5 m from the bus and it read 0.88, with the camera exactly right, with the fix and without it. It measures to the client copy's cab now.
+
+**Measured.** On the loopback suite, running straight for 120 ticks gives **0.50 corrections/s** (one correction in two seconds). Running into a standing crate gives **0.00/s**: a crate the runner stops against is in the same place on both ends, so the two ends compute against the same geometry. Before the fix both were 0.00, because nothing was predicted. The honest before/after number is from the renderer: `tools/shot.sh 8 walk.png --net --walk` has this client run 9 m east, stand, and run back through the real `client_tick`, and reports the following.
+
+| | before | after |
+| --- | --- | --- |
+| entities predicted | 0 | 1 |
+| key to motion (4 presses, zero-latency loopback) | 3 ticks each | 0 ticks each |
+| corrections/s while walking | 0.00 | 0.14–0.29 (plus one snap, at the round-2 scatter) |
+| the eye's apparent speed per frame (110 frames at full speed) | median 137.9 m/s, 102 more than 20% off | median 6.50 m/s, 1–3 more than 20% off |
+
+The last row is the one a player would have felt. `BfhClient` draws the camera from `controller.render_state()`, which blends the controller's last two simulated ticks. A controller that never simulates has a stale previous tick, so every frame blended between that and the newest snapshot, and the camera lurched metres at a time while walking. That is a bug in the picture, invisible to every assertion about positions, and it is gone because the controller simulates now. The key-to-motion latency is 3 ticks on a link with no latency at all; on a real one it is that plus the round trip.
+
+## What the bowl sounds like
+
+**Until 2026-09-25 this game made one sound, an administrator's beacon.** A bus doing 22 m/s at somebody was silent — in the one game in this family whose whole threat is a vehicle nobody can outrun, and where a runner behind a 4.4 m tank judges which side the bus is coming round by EAR, because hearing is the one sense the tank does not block.
+
+`bfh_sounds.gd` is the document: fifteen ids, positional for anything that happens somewhere (engine, horn, hammer swing and hit, crate shove and break, a runner bumped and a runner flattened, a barrel) and flat on the interface bus for the round's cues (start, won, lost, the swap) and the interface's (a click, a notice). **Won and lost are two sounds**, because in an asymmetric game "the round ended" is good news for two people and bad news for six. `sound_recipes()` names the dot-audio synthesiser voice standing in for each, fed to `DotAudioSynth.bank` for `DotAudioSinkGodot.bank` — the family's pattern (see `docs/status.md`) — and every path is under `BfhPaths.root()`, because a pack's `res://audio/…` would otherwise resolve against the host and play another game's file in preference to the stand-in. `sound_dir(root)` takes a root so the suite can ask that question with a mount prefix, where built in it is a tautology.
+
+**The world decides what made a noise; `BfhAudio` plays it and never learns which half it is in.** The authority emits `BfhGame.noise(id, at)` at the point the thing happened — a hammer's `hit`/`missed`, dot-props' `broken`, `_bus_hit`, `sound_horn`. The bridge sends the seven in `BfhSounds.WORLD` as `BfhEvents.Kind.SOUND` — an index and a place, five bits of id, append-only because it is wire format — and a client's bridge **re-emits it as the client world's own `noise`**. It does the same for `round_began`, `round_over`, `player_died`, `barrel_exploded` and, once per swap, `sides_swapped`: a client world emits the signals a server's does, from the events it is sent (`BfhNetBridge._heard_a_swap`). Without that an offline game made a noise at the end of a round and a connected one did not, and no check could have said so, because every check read one half.
+
+**The engine is the one sound nobody sends, and it is a pulse rather than a loop.** It is continuous, it is a function of speed, and every client is already drawing every bus at the speed it is going — measured frame to frame from the drawn position, because a mirrored bus is a frozen body whose `linear_velocity` is zero. A pulse whose RATE rises with speed (2.2 to 11 a second) is what a runner needs through a tank; it was also all dot-audio could do, because `DotAudioSinkGodot` did not loop. It does since 2026-09-25 (a looping def now loops, on a copy of the stream), and the pulse stays: its rate is the speed, which a steady loop with a rising pitch would not say as clearly through a tank. Only a DRIVEN bus has an engine: an empty one thudding would tell runners to fear nothing.
+
+**A driver's swing button is the horn.** Somebody whose weapon is the bus has no hammer, and one button meaning "use what you have" is one fewer control for the half of the game a player drives every third round. `sound_horn` rate-limits on the authority (0.8 s, 6 s for a bot, which only sounds it at a runner squarely in front within 22 m), because a horn is heard by everybody and a held button would otherwise be a server-wide siren.
+
+**The swing sound comes from the server, a round trip late, on purpose.** It says the server swung; a predicted swing sound would be a sound for a swing the server may refuse on its cooldown. The beacon's ping is still `bfh_beacon.gd`'s own player on the marker node rather than a catalogue id, because it follows the beaconed player every frame and predates this.
+
+`headless_run`'s **what the bowl sounds like** asserts both directions (every id has a recipe; every recipe names an id), the bank, the mount paths, every world noise emitted by the real paths, a client's `BfhAudio` hearing all of them through the null sink a headless run gets, won/lost by side, the engine pulsing faster at speed and silent in an empty bus. Its first failure was dot-audio doing its job: the swing is heard from the swinger's eyes and the swinger was 30 m from the listener. `headless_net` asserts a flattening on the server is a noise on the client's world where it happened, and that the connected client hears the flattening, the round lost and the next one. **What no assertion reaches is a speaker moving**; there is no `tools/audio_probe.sh` here yet.
+
+## What a player's numbers are, and what they earn
+
+`bfh_stats.gd` declares five counters, each one side's half of the game: **runners flattened** (a driver's), **rounds survived** and **seconds survived** (the clock the runners win on), **crates broken** by any means, and **crates put in a bus's path**. What is deliberately not here is a kill count and a death count: a runner cannot kill and a driver cannot die, so a symmetric game's two most-read numbers would be one number and a column of zeros.
+
+**"In a bus's path" is measured by what happened next.** Judged at the swing, it is a guess about where a bus is going, and the autopilot changes its mind every tick. A crate a runner's hammer moved and did not break, that a bus then drove into — `bus_struck`, from the same box test that breaks crates, or a stuck bus's rule — within `BfhProgress.SHOVE_CREDIT_SEC` (3 s), credits that runner once.
+
+`bfh_awards.gd` is eight achievements in four series as rules over them, and **three of the four series are the runners'**, because the obvious list is the driver's and would leave most of the server with nothing to earn. "Traffic Control" is secret rather than hidden: its name is on the list, and what it is — a crate you moved, driven into by a bus — is the lesson the game is trying to teach.
+
+`bfh_progress.gd` is a child of the **authoritative** world only — a client counting its own crates is a client awarding itself achievements — and it **listens and nothing calls it**: `run_over`, `swung`, `bus_struck`, dot-props' `broken`, `player_died` and the round's two signals. dot-stats' `recorded` carries a session total, so the two trackers are joined by `DotAchievementStatsLink` rather than a `connect`. An unlock is `BfhGame.earned`, which the bridge turns into a notice to the one player who earned it and an offline client into a chat line.
+
+**A bot is not counted, and the flag had to move for that.** `is_bot` was set by the bridge and the offline client on the line after `add_player` returned — after `player_added`, which is what begins a player's counting — so every listener read it as false. It is `add_player`'s fifth argument now.
+
+**In memory, and reported nowhere, because this game has no identity layer.** A key is `bfh-u<session>`, and a session id is handed out again after a restart: a file store would give one person's lifetime to whoever next got their number, and a backbone report would file it under a name meaning nobody. When `BfhModule._wants_platform_module` turns on, the key becomes the scoped pseudonymous one and both become one line. `bfh_stats [userid]` prints a session.
+
+## A player's settings, and the screen Escape opens
+
+`bfh_settings.gd`: five settings, each read by something — `sensitivity` into every sampler's look tunables, `field_of_view` into the camera (a literal 90 before), and three volumes into dot-audio's mixer. **The client had a place for a settings document only once it had audio**; before, two of the five would have been read by nothing. Escape, which only ever let go of the mouse, now also opens dot-ui's `DotSettingsScreen` over the bowl — a released pointer with nothing to click on was a key doing half a job — and the stack, deeper in the tree, sees the second Escape first and closes it. Walking is suspended while it is open, as while typing, and the stack neither manages the pointer (a browser only captures on a click) nor pauses (a networked round does not stop for one player's volume).
+
+**A loaded setting has not changed**, so `apply_all()` runs after load and every `bind_*` applies the current value as it binds; `changed` does the rest. The scopes are the family's: `sensitivity` is ACCOUNT under `tmc_account`, converted at the family's 0.022 degrees per unit — which moves this game's default turn from dot-player-controller's unchosen 0.25 to 0.055 — and `field_of_view` is SERVER_CLAMPED, a bound a server may set and never read.
+
+## Which addons this game links, and the four it stopped linking
+
+The `.gitignore` is the dependency manifest, and on 2026-09-25 five linked addons were referenced by nothing in `game/`. Each was either the right tool or not:
+
+- **dot-player stays**, because dot-player-controller's `DotPlayerController` and `DotPlayerControllerSwitch` `extends DotPlayerComponent`. The game uses no `DotPlayer` of its own — a runner is a `CharacterBody3D` with a controller, a driver is a bus's passenger — but unlinking it would fail to parse the controller this game moves with.
+- **dot-spawn is unlinked.** There is no respawn — out stays out until the round — and where a runner stands at the top of a round is a seeded scatter over the bowl whose keep-outs come from `BfhArena`'s one description of its obstacles. A catalogue of spawn sites would be a second description of the bowl to drift from the first. The one place it might pay is a late joiner placed in front of a moving bus; that is unmeasured.
+- **dot-team is unlinked.** `sides` is two entries, asymmetric and capped by seats rather than balanced, and dot-match's teams already carry what the round rule reads. dot-team's balance and policy are about symmetric sides — the case `_side_for_new_player` exists to not be — and its spectate bridge would have restricted the camera to one's own side, which this game decided against (above).
+- **dot-physics is unlinked.** Nothing names a layer or a surface: the hammer's ray is all layers and the bowl has one kind of floor. Only comments in dot-props and dot-spawn mention it.
+- **dot-fx is unlinked, and it is the right tool for the one thing still missing** — a barrel going off is heard now and still not drawn. It was linked for two weeks without a single effect; a manifest line that fetches and parses an addon nobody uses is a dependency that lies. Re-link it with the first effect.
+
+And four were linked for this work: **dot-spectate, dot-stats, dot-achievements, dot-settings** (dot-audio was already linked, for the beacon). dot-server-deploy already vendors all five, so a delivered pack finds them.
 
 ## Decision 1: metres and seconds, not a genre's units
 
@@ -389,9 +501,9 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 123 checks, 17 sections, the simulation
-godot --headless --path . res://examples/headless_net.tscn   # 123 checks, 16 sections, over a loopback
-godot --headless --path . res://examples/dedicated.tscn      # 72 checks, 10 sections, as a server
+godot --headless --path . res://examples/headless_run.tscn   # 167 checks, 21 sections, the simulation
+godot --headless --path . res://examples/headless_net.tscn   # 148 checks, 18 sections, over a loopback
+godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
@@ -401,6 +513,9 @@ tools/shot.sh 9 blind.png --blind                            # an admin's blind,
 tools/shot.sh 14 beacon_bus.png --beacon --bus               # an admin's beacon round a driver's bus
 tools/shot.sh 9 beacon.png --beacon                          # the runner's own ring, from behind them
 tools/shot.sh 6 net.png --net                                # a connected client watching another runner, and the jitter probe
+tools/shot.sh 8 walk.png --net --walk                        # the client running its OWN runner: prediction latency, corrections, eye smoothness
+tools/shot.sh 5 watch_follow.png --watch=follow              # run down, then the camera: death, cab, follow or chase
+tools/shot.sh 5 settings.png --settings                      # the settings screen Escape opens, over the bowl
 ```
 
 **And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:

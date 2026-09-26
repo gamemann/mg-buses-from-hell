@@ -11,18 +11,18 @@
 # gains a dependency is the repository that has to ignore its link.
 /addons/dot_core
 /addons/dot_entity
-/addons/dot_physics
 /addons/dot_player
 /addons/dot_player_controller
 /addons/dot_props
 /addons/dot_combat
 /addons/dot_match
-/addons/dot_team
-/addons/dot_spawn
 /addons/dot_vehicle
 /addons/dot_ui
-/addons/dot_fx
 /addons/dot_audio
+/addons/dot_spectate
+/addons/dot_stats
+/addons/dot_achievements
+/addons/dot_settings
 /addons/dot_net
 /addons/dot_server
 /addons/dot_game

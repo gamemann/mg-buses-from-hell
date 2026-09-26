@@ -5,6 +5,9 @@ const BfhConfig := preload("bfh_config.gd")
 const BfhContent := preload("bfh_content.gd")
 const BfhReach := preload("bfh_reach.gd")
 const BfhPlayer := preload("bfh_player.gd")
+const BfhProgress := preload("bfh_progress.gd")
+const BfhSounds := preload("bfh_sounds.gd")
+const BfhSpectate := preload("bfh_spectate.gd")
 
 ## The simulation. Headless, authoritative, and the only thing that decides anything.
 ##
@@ -72,6 +75,29 @@ signal player_died(player_id: StringName, by: StringName)
 ## A barrel went off. The client draws it; this decides it.
 signal barrel_exploded(at: Vector3, radius: float)
 
+## Something in the bowl made a noise worth hearing: one of `BfhSounds.WORLD`, where it
+## happened.
+##
+## [b]Emitted by the authority, and by a connected client's world when the server says
+## so[/b] (`BfhEvents.Kind.SOUND`), so the thing that plays it — `BfhAudio` — listens to
+## one signal in both halves and never learns which it is in. A sound is presentation: it
+## is decided here because WHAT happened is decided here, and it never changes anything.
+signal noise(id: StringName, at: Vector3)
+
+## A bus touched a runner. [param lethal] is whether they are out, read AFTER the damage
+## rather than predicted from the speed — a runner an admin has put in god mode is hit at
+## a lethal speed and is not flattened.
+signal run_over(player_id: StringName, by: StringName, lethal: bool)
+
+## A hammer went round. [param instance_id] is the prop it landed on, 0 for a miss.
+signal swung(player_id: StringName, instance_id: int, broke: bool)
+
+## A bus drove into a prop, at speed or stuck on it. [param by] is its driver, or empty.
+signal bus_struck(instance_id: int, by: StringName)
+
+## Somebody earned an achievement. Authority only; see `BfhProgress`.
+signal earned(player_id: StringName, title: String, points: int)
+
 @export var config: BfhConfig = null
 
 ## Whether this instance decides anything. A client sets this false.
@@ -89,6 +115,13 @@ signal barrel_exploded(at: Vector3, radius: float)
 ## and dead-reckon every remote one from stale state.
 @export var external_tick: bool = false
 
+## Whether this world counts statistics and achievements. Authority only either way.
+##
+## On by default, because a server and an offline game both want it. A suite that builds a
+## world to test a bus does not need two trackers under it, but pays nothing much for them
+## either, so the default is not about cost — it is here so a caller can say "no".
+@export var track_progress: bool = true
+
 ## Whether this world publishes itself under [constant SERVICE].
 ##
 ## Off on a client that shares a process with a server -- the suite, an editor session
@@ -104,6 +137,17 @@ var ride: DotVehicleRide = null
 var combat: DotCombatManager = null
 var match_node: DotMatch = null
 var random: DotRandomManager = null
+
+## Where a runner who is out looks. On every world: the authority decides, a connected
+## client's world mirrors what it is told. See [BfhSpectate].
+var spectate: BfhSpectate = null
+
+## Statistics and achievements. The authority's only; null on a connected client and
+## when [member track_progress] is off. See [BfhProgress].
+var progress: BfhProgress = null
+
+## player id -> the tick their horn may next sound. See [method sound_horn].
+var _horn_ready: Dictionary = {}
 
 ## player id -> BfhPlayer.
 var players: Dictionary = {}
@@ -177,6 +221,8 @@ func _ready() -> void:
 	_build_vehicles()
 	_build_combat()
 	_build_match()
+	_build_spectate()
+	_build_progress()
 
 	if register_service:
 		DotRegistry.register(SERVICE, self)
@@ -258,6 +304,7 @@ func _build_props() -> void:
 	prop_damage.authoritative = authoritative
 	props.add_child(prop_damage)
 	prop_damage.exploded.connect(_on_prop_exploded)
+	prop_damage.broken.connect(_on_prop_broken)
 
 	carry = DotPropCarry.new()
 	carry.name = "PropCarry"
@@ -363,6 +410,49 @@ func _build_match() -> void:
 	match_node.round_started.connect(_on_round_started)
 	match_node.round_ended.connect(_on_round_ended)
 
+
+## Where a runner who is out looks. See [BfhSpectate]. Not fatal: a world with no
+## spectator camera is the world this game had until it existed.
+func _build_spectate() -> void:
+	spectate = BfhSpectate.new()
+	spectate.name = "Spectate"
+	add_child(spectate)
+
+	var built: DotResult = spectate.setup(self, authoritative, tick_rate)
+
+	if not built.ok:
+		DotLog.warn(CHANNEL, "spectating is off", {"why": built.error.message})
+		remove_child(spectate)
+		spectate.free()
+		spectate = null
+
+
+## Statistics and achievements, on the authority. See [BfhProgress].
+##
+## [b]Not fatal either, and deliberately loud:[/b] a server that cannot count is a server
+## people can still play on, and a WARN is what tells the operator their players are not
+## earning anything.
+func _build_progress() -> void:
+	if not authoritative or not track_progress:
+		return
+
+	progress = BfhProgress.new()
+	progress.name = "Progress"
+	add_child(progress)
+
+	var attached: DotResult = progress.attach(self)
+
+	if not attached.ok:
+		DotLog.warn(CHANNEL, "progress is off", {"why": attached.error.message})
+		remove_child(progress)
+		progress.free()
+		progress = null
+		return
+
+	progress.unlocked.connect(func(player_id: StringName, achievement: DotAchievement) -> void:
+		earned.emit(player_id, achievement.display_name, achievement.points)
+	)
+
 	var teams: Array[DotTeam] = [
 		DotTeam.make(TEAM_DRIVERS, "Drivers", Color(0.92, 0.74, 0.17)),
 		DotTeam.make(TEAM_RUNNERS, "Runners", Color(0.35, 0.62, 0.88)),
@@ -387,11 +477,17 @@ func _build_match() -> void:
 # --- Players ---------------------------------------------------------------
 
 ## Puts somebody in the world. [param wanted_team] is a TEAM_* constant, or 0 to be placed.
+##
+## [param bot] is here rather than set by the caller afterwards, because [signal
+## player_added] is answered by things that need to know: `BfhProgress` does not count a
+## bot, and a flag set on the line after this returns is a flag every listener read as
+## false. The bridge and the offline client both used to set it that way.
 func add_player(
 	player_id: StringName,
 	display_name: String,
 	wanted_team: int = 0,
 	samples_input: bool = false,
+	bot: bool = false,
 ) -> BfhPlayer:
 	if players.has(player_id):
 		return players[player_id]
@@ -403,6 +499,7 @@ func add_player(
 	player.player_id = player_id
 	player.display_name = display_name
 	player.samples_input = samples_input
+	player.is_bot = bot
 	player.tick_rate = tick_rate
 	# Before `add_child`, because `_ready` is what builds the controller and its tunables.
 	player.config = config
@@ -453,7 +550,7 @@ func add_player(
 		})
 
 	if team == TEAM_RUNNERS:
-		player.give_hammer(config)
+		_arm(player)
 
 	# [b]Somebody arriving in the middle of a round is placed NOW, not at the next one.[/b]
 	# `_place_players` only runs when a round is laid out, so a runner who joined a live
@@ -540,9 +637,87 @@ func remove_player(player_id: StringName) -> void:
 
 	players.erase(player_id)
 	sides.erase(player_id)
+	_horn_ready.erase(player_id)
 	player.queue_free()
 
+	# After the roster has dropped them: dot-spectate picks a new target for anybody who
+	# was watching them from the participants, and before the erase that is the leaver.
+	if spectate != null:
+		spectate.on_leave(player_id)
+
 	player_removed.emit(player_id)
+
+
+## Hands a runner their hammer and listens to it.
+##
+## [b]The hammer is a plain object that swings and emits, and this is where its two
+## signals become the world's.[/b] A swing is a sound and a number: `noise` for whoever
+## is listening to the bowl, `swung` for [BfhProgress]. Both are decided on the authority,
+## because the authority is the only place a hammer is ever swung.
+func _arm(player: BfhPlayer) -> void:
+	player.give_hammer(config)
+
+	var id := player.player_id
+	player.hammer.hit.connect(func(instance_id: int, at: Vector3, broke: bool) -> void:
+		_on_hammer_hit(id, instance_id, at, broke))
+	player.hammer.missed.connect(func(_at: Vector3) -> void:
+		_on_hammer_missed(id))
+
+
+func _on_hammer_hit(player_id: StringName, instance_id: int, at: Vector3, broke: bool) -> void:
+	var player: BfhPlayer = players.get(player_id)
+
+	if player != null:
+		noise.emit(BfhSounds.HAMMER_SWING, player.eye_position())
+
+	noise.emit(BfhSounds.HAMMER_HIT, at)
+
+	# Moved rather than broken, and only if it CAN move: a block takes the blow and stays
+	# exactly where it was, and a scrape from one would be a sound saying the opposite.
+	var prop := props.get_prop(instance_id) if props != null else null
+	if not broke and prop != null and prop.def != null and prop.def.id != BfhContent.BLOCK \
+			and prop.body() != null:
+		noise.emit(BfhSounds.CRATE_SHOVE, prop.body().global_position)
+
+	swung.emit(player_id, instance_id, broke)
+
+
+func _on_hammer_missed(player_id: StringName) -> void:
+	var player: BfhPlayer = players.get(player_id)
+
+	if player != null:
+		noise.emit(BfhSounds.HAMMER_SWING, player.eye_position())
+
+	swung.emit(player_id, 0, false)
+
+
+## A driver's horn. The swing button, for somebody whose only weapon is the bus.
+##
+## [b]Rate-limited here, on the authority,[/b] because a horn is heard by everybody and a
+## modified client holding the button down would otherwise be a server-wide siren. A bot
+## sounds it far less often than a person may, and only when it has somebody lined up —
+## see [method _autopilot]. Returns whether it sounded.
+func sound_horn(player: BfhPlayer) -> bool:
+	if player == null or not player.riding or player.ridden == null \
+			or not is_instance_valid(player.ridden):
+		return false
+
+	if int(_horn_ready.get(player.player_id, 0)) > _tick:
+		return false
+
+	var interval := BOT_HORN_SEC if player.is_bot else HORN_SEC
+	_horn_ready[player.player_id] = _tick + int(interval * float(maxi(tick_rate, 1)))
+	noise.emit(BfhSounds.BUS_HORN, player.ridden.global_position)
+	return true
+
+
+## Seconds between a person's horn blasts, and a bot's.
+const HORN_SEC := 0.8
+const BOT_HORN_SEC := 6.0
+
+## How close, and how squarely in front, a runner has to be before a bot sounds its horn.
+const BOT_HORN_RANGE := 22.0
+const BOT_HORN_ALIGNMENT := 0.85
 
 
 ## Flips a player between walking and driving. Called by the ride, never directly.
@@ -629,6 +804,10 @@ func _on_round_started(number: int) -> void:
 	_place_players()
 	_place_buses()
 
+	# A round is everybody's new body, so nobody who was out is watching any more.
+	if spectate != null:
+		spectate.on_round_began()
+
 	round_began.emit(number)
 	DotLog.info(CHANNEL, "round began", {"number": number, "seed": _layout_seed})
 
@@ -664,7 +843,7 @@ func _swap_sides() -> void:
 
 		var player: BfhPlayer = players[id]
 		if now == TEAM_RUNNERS and player.hammer == null:
-			player.give_hammer(config)
+			_arm(player)
 		elif now == TEAM_DRIVERS:
 			player.hammer = null
 
@@ -838,6 +1017,11 @@ func _step(delta: float) -> void:
 	_drive_buses(delta)
 	_check_bus_impacts(delta)
 
+	# After the impacts, so a runner put down this tick has their death camera begin on
+	# this tick rather than the next.
+	if spectate != null:
+		spectate.tick(_tick)
+
 	# [b]A round with one side empty is not a round, and letting the clock run on one
 	# is an infinite loop with a scoreboard.[/b] The elimination rule ends a round the
 	# moment a side has nobody alive, and a side with nobody *at all* satisfies that on
@@ -1000,6 +1184,16 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		else quarry.global_position
 	)
 
+	# The horn, when somebody is lined up in front of it. Not every tick — see
+	# [method sound_horn] — and not at somebody behind it or off to one side, because a
+	# horn is a bus saying "you", and a bot that honked at everybody would be saying
+	# nothing.
+	var forward := -bus.body().global_basis.z
+	forward.y = 0.0
+	if line.length() < BOT_HORN_RANGE and line.length() > 0.5 and forward.length() > 0.01 \
+			and line.normalized().dot(forward.normalized()) > BOT_HORN_ALIGNMENT:
+		sound_horn(player)
+
 	# And round the stacks, because the driver has no idea they are there. A bus aimed
 	# through a pillar wedges nose-on and the stuck rule then teleports it back to its
 	# start line, which from the runner's side reads as hiding behind a pillar deleting
@@ -1120,6 +1314,13 @@ func _bus_hit(player: BfhPlayer, by: StringName, closing: float, offset: Vector3
 	damage.direction = offset.normalized()
 	combat.apply_damage(damage)
 
+	# Whether it put them down, from the health rather than from `lethal`: a runner in an
+	# admin's god mode is hit at a killing speed and is not out, and a sound or a statistic
+	# that said otherwise would be describing a different game from the one on screen.
+	var down := player.health != null and not player.health.alive
+	run_over.emit(player.player_id, by, down)
+	noise.emit(BfhSounds.RUNNER_DOWN if down else BfhSounds.RUNNER_HIT, player.global_position)
+
 	# Knocked away whether or not it killed them, because a bus that passes through
 	# somebody standing still and leaves them standing still is the one thing in this
 	# game that would look broken from every angle.
@@ -1162,6 +1363,9 @@ func _break_props_under(bus: DotVehicleInstance, speed: float, by: StringName) -
 		if absf(local.y) > 2.5:
 			continue
 
+		# Before the impact, which may break it: whoever put this crate here is credited
+		# with the bus finding it, whether or not it survives the finding.
+		bus_struck.emit(prop.instance_id, by)
 		prop_damage.impact(prop.instance_id, speed, by)
 
 
@@ -1213,6 +1417,7 @@ func _unstick(bus: DotVehicleInstance, by: StringName, delta: float) -> void:
 				continue
 			if absf(local.y) > 2.5:
 				continue
+			bus_struck.emit(prop.instance_id, by)
 			prop_damage.break_now(prop.instance_id, by)
 
 	if held < STUCK_RESET_SEC:
@@ -1377,6 +1582,16 @@ func _on_player_died(player: BfhPlayer, damage: DotDamage) -> void:
 	player_died.emit(player.player_id, by)
 	DotLog.debug(CHANNEL, "player died", {"id": String(player.player_id), "by": String(by)})
 
+	if spectate != null:
+		spectate.on_death(player.player_id, player.global_position, by, _tick)
+
+
+## Something dot-props broke. A crate is a sound; a barrel's sound is its blast, which
+## [signal barrel_exploded] already carries, and a block cannot break.
+func _on_prop_broken(prop: DotPropInstance, at: Vector3, _by: StringName) -> void:
+	if prop != null and prop.def != null and prop.def.id == BfhContent.CRATE:
+		noise.emit(BfhSounds.CRATE_BREAK, at)
+
 
 # --- Reporting -------------------------------------------------------------
 
@@ -1422,6 +1637,8 @@ func describe() -> Dictionary:
 		"buses": _bus_ids.size(),
 		"gravity": "%.1f m/s2" % config.gravity,
 		"bus_at": _bus_report(),
+		"watching": spectate.manager.viewers().size() if spectate != null else 0,
+		"counted": progress.describe()["players"] if progress != null else 0,
 	}
 
 

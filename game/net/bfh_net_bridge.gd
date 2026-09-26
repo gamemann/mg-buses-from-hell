@@ -12,6 +12,7 @@ const BfhRequest := preload("bfh_request.gd")
 const BfhContent := preload("../bfh_content.gd")
 const BfhGame := preload("../bfh_game.gd")
 const BfhPlayer := preload("../bfh_player.gd")
+const BfhSounds := preload("../bfh_sounds.gd")
 
 ## Joins a [BfhGame] to a [DotNetManager]. The netcode seam, and the only file in this
 ## project that names both.
@@ -219,6 +220,8 @@ func attach(p_game: Object, p_net: DotNetManager) -> DotResult:
 		game.sides_swapped.connect(_on_sides_swapped)
 		game.player_died.connect(_on_player_died)
 		game.barrel_exploded.connect(_on_barrel_exploded)
+		game.noise.connect(_on_noise)
+		game.earned.connect(_on_earned)
 
 	return DotResult.success(true)
 
@@ -309,12 +312,13 @@ func add_bot(display_name: String, team: int = 0) -> BfhPlayer:
 	var session_id := _next_bot_session
 	_next_bot_session += 1
 
-	var player := game.add_player(player_key(session_id), display_name, team)
+	# A bot from its first line: `player_added` is answered by things that must not count
+	# one, so the flag cannot wait for this call to return. See [method BfhGame.add_player].
+	var player := game.add_player(player_key(session_id), display_name, team, false, true)
 
 	if player == null:
 		return null
 
-	player.is_bot = true
 	return player
 
 
@@ -621,6 +625,71 @@ func _on_barrel_exploded(at: Vector3, radius: float) -> void:
 	_broadcast(BfhEvents.Kind.BLAST, BfhEvents.write_blast(at, radius))
 
 
+## A noise the world decided, to everybody. Only the ones in `BfhSounds.WORLD`: the engine
+## is played by each client from the bus it is drawing, and a blast is already a BLAST.
+func _on_noise(id: StringName, at: Vector3) -> void:
+	var index := BfhSounds.world_index(id)
+
+	if index < 0:
+		return
+
+	_broadcast(BfhEvents.Kind.SOUND, BfhEvents.write_sound(index, at))
+
+
+## An achievement, told to the one person who earned it. A notice rather than a message
+## kind of its own: it is a line of text for one player, which is exactly what a notice is,
+## and a client that draws notices draws this with nothing added.
+func _on_earned(player_id: StringName, title: String, points: int) -> void:
+	notice(peer_for_player(session_of(player_id)), "Achievement unlocked: %s (+%d)" % [title, points])
+
+
+# --- Where a runner who is out looks ---------------------------------------
+
+## The view [param player_id] is in, as `(mode, target session)`, for their own snapshot.
+## Server side; `BfhPlayerNet.pull` reads it. Zeroes when they are playing.
+func watch_state(player_id: StringName) -> Vector2i:
+	if game == null or game.spectate == null or net == null or not net.is_server:
+		return Vector2i.ZERO
+
+	var mode := game.spectate.mode_of(player_id)
+
+	if mode == 0:
+		return Vector2i.ZERO
+
+	var target := game.spectate.target_of(player_id)
+	return Vector2i(mode, session_of(target) if target != &"" else 0)
+
+
+## The other end of [method watch_state]: a client is told its own view. Client side.
+##
+## [b]Only for the player this client is, by session id — not by
+## `DotNetIdentity.is_owner`.[/b] Every other entity's pair is the zero it was declared
+## with, and adopting that would build a spectator view per remote player that says
+## nothing.
+##
+## This was written as a workaround, when `is_owner` was false for this client's own
+## player (every mirror was built with owner 0; see [method _apply_join]). Since that was
+## fixed the two keys agree, and the session id is kept because it is the better one: it is
+## what the server keys the view by, it is what `local_player_id` IS, and it is right from
+## the moment HELLO lands — where `is_owner` is right only once the entity has been claimed,
+## and would be true of EVERY owner-0 mirror on a registry whose local peer was 0.
+func adopt_watch(player_id: StringName, mode: int, target_session: int) -> void:
+	if game == null or game.spectate == null or net == null or net.is_server:
+		return
+
+	if local_player_id == 0 or session_of(player_id) != local_player_id:
+		return
+
+	game.spectate.adopt(
+		player_id, mode, player_key(target_session) if target_session > 0 else &""
+	)
+
+
+## A spectator's click, sent to the server. See `BfhSpectate.ASK_*`.
+func ask_watch(ask: int) -> void:
+	_ask(BfhEvents.Ask.WATCH, BfhEvents.write_watch(ask))
+
+
 # --- Server: the tick ------------------------------------------------------
 
 func server_tick(tick: int) -> void:
@@ -699,6 +768,13 @@ func _drive_hammer(session_id: int, behaviour: BfhPlayerNet) -> void:
 
 	var player := behaviour.player
 	var buttons := behaviour.last_move.buttons
+
+	# A driver's swing button is the horn: somebody whose weapon is the bus has no hammer,
+	# and one button that means "use what you have" is one less control to learn for the
+	# half of the game a player drives every third round. Rate-limited by the world.
+	if player.riding and (buttons & BfhNetCommand.BUTTON_SWING) != 0:
+		game.sound_horn(player)
+		return
 
 	if player.hammer == null or player.riding:
 		return
@@ -878,6 +954,8 @@ func _on_request(message: DotNetMessage) -> void:
 	match ask.kind:
 		BfhEvents.Ask.READY:
 			_admit(peer_id)
+		BfhEvents.Ask.WATCH:
+			_answer_watch(peer_id, BfhEvents.read_watch(ask.reader()))
 		BfhEvents.Ask.SAY:
 			var said := BfhEvents.read_say(ask.reader())
 
@@ -887,6 +965,24 @@ func _on_request(message: DotNetMessage) -> void:
 				say_requested.emit(
 					peer_id, StringName(str(said["channel"])), str(said["text"])
 				)
+
+
+## A spectator's click, answered by the world's own rules. A refusal goes back to the one
+## person who asked, as a notice: "a living player is playing, not watching" is theirs to
+## read and nobody else's.
+func _answer_watch(peer_id: int, asked: Dictionary) -> void:
+	if not bool(asked["ok"]) or game == null or game.spectate == null:
+		return
+
+	var session_id := player_for_peer(peer_id)
+
+	if session_id == 0:
+		return
+
+	var answered: DotResult = game.spectate.request(player_key(session_id), int(asked["ask"]))
+
+	if not answered.ok:
+		notice(peer_id, answered.error.message)
 
 
 ## Everything in the bowl, to one peer, once its world exists.
@@ -1046,6 +1142,7 @@ func _on_event(message: DotNetMessage) -> void:
 			if bool(side["ok"]):
 				game.sides[player_key(int(side["player_id"]))] = int(side["team"])
 				roster_changed.emit(int(side["player_id"]))
+				_heard_a_swap()
 		BfhEvents.Kind.PROP:
 			_apply_prop(reader)
 		BfhEvents.Kind.PROP_GONE:
@@ -1065,14 +1162,31 @@ func _on_event(message: DotNetMessage) -> void:
 					bool(round_info["began"]),
 					int(round_info["winner"])
 				)
+				# And as the world's own signal. See [method _heard_a_swap] for why a client
+				# world says what the server's said.
+				if bool(round_info["began"]):
+					game.round_began.emit(int(round_info["round"]))
+				else:
+					game.round_over.emit(int(round_info["round"]), int(round_info["winner"]))
 		BfhEvents.Kind.DEATH:
 			var death := BfhEvents.read_death(reader)
 			if bool(death["ok"]):
 				death_received.emit(int(death["player_id"]), int(death["by"]))
+				game.player_died.emit(
+					player_key(int(death["player_id"])),
+					player_key(int(death["by"])) if int(death["by"]) > 0 else &""
+				)
 		BfhEvents.Kind.BLAST:
 			var blast := BfhEvents.read_blast(reader)
 			if bool(blast["ok"]):
 				blast_received.emit(blast["position"], float(blast["radius"]))
+				game.barrel_exploded.emit(blast["position"], float(blast["radius"]))
+		BfhEvents.Kind.SOUND:
+			var sound := BfhEvents.read_sound(reader)
+			var id := BfhSounds.world_id(int(sound["index"]))
+			# An index this build does not know is a newer server: silence, not an error.
+			if bool(sound["ok"]) and id != &"":
+				game.noise.emit(id, sound["position"])
 		BfhEvents.Kind.CHAT:
 			var wire := BfhEvents.read_chat(reader)
 
@@ -1082,6 +1196,29 @@ func _on_event(message: DotNetMessage) -> void:
 			var notice := BfhEvents.read_notice(reader)
 			if bool(notice["ok"]):
 				notice_received.emit(str(notice["text"]))
+
+
+## The round a side swap was last announced for, on a client. See [method _heard_a_swap].
+var _swap_heard_for: int = -1
+
+
+## A TEAM arrived: on a client, the world says its sides swapped, once per swap.
+##
+## [b]A client world emits the same signals a server's does, from the events it is sent[/b]
+## — `round_began`, `round_over`, `sides_swapped`, `player_died`, `barrel_exploded`, `noise`
+## — so what draws and plays the game listens to ONE world in both halves and never learns
+## which it is in. Without this an offline game made a noise at the end of a round and a
+## connected one did not, and nothing could have said so: every check reads one half.
+##
+## A swap arrives as one TEAM per player, because that is also what corrects a client that
+## missed one, so the world's signal is emitted for the first of them and not the rest.
+## TEAM is sent on a swap and on nothing else.
+func _heard_a_swap() -> void:
+	if game == null or _swap_heard_for == game.round_number:
+		return
+
+	_swap_heard_for = game.round_number
+	game.sides_swapped.emit(game.round_number)
 
 
 func _apply_hello(reader: DotNetReader) -> void:
@@ -1117,6 +1254,8 @@ func _apply_hello(reader: DotNetReader) -> void:
 		game.arena.build(radius)
 
 	game.config.round_seconds = float(hello["round_seconds"])
+
+	_claim_local_player()
 
 	hello_received.emit(local_player_id)
 
@@ -1173,7 +1312,20 @@ func _apply_join(reader: DotNetReader) -> void:
 		player.sampler = null
 		player.samples_input = false
 
-		var identity := _build_entity(player, 0)
+		# [b]This client's own player is owned by this client, and nobody else's is.[/b]
+		# Until 2026-09-25 every mirror was built with owner 0, this client's own included,
+		# so `is_owner` was false for the local runner, `registry.predicted()` was empty,
+		# and `client_tick` simulated nobody: the runner moved only when a snapshot came
+		# back, a round trip behind the keys. Every check passed anyway, because a client
+		# adopting the server's answer also agrees with the server.
+		#
+		# By session and not by a peer id on the wire: JOIN does not carry one, and what
+		# `is_owner` compares is the owner against THIS registry's local peer — so the
+		# local peer id is the only right value whatever the server calls the connection.
+		# HELLO (which sets `local_player_id`) is sent before every JOIN in `_admit`, on
+		# the same reliable channel; [method _apply_hello] still claims a player that got
+		# here first, because an order is a property of the server, not of this file.
+		var identity := _build_entity(player, _mirror_owner(session_id))
 		var registered := net.registry.register(
 			identity, int(join["net_id"]), net.clock.tick, net.config
 		)
@@ -1186,6 +1338,48 @@ func _apply_join(reader: DotNetReader) -> void:
 
 	game.sides[id] = int(join["team"])
 	roster_changed.emit(session_id)
+
+
+## Who owns a mirrored player on this client: this client, if it is this client's own
+## player, and the server's 0 otherwise.
+##
+## [b]Never the local peer for anybody else[/b], or this client would predict a person
+## whose keys it never had. And a client whose local peer is 0 claims nothing: 0 is the
+## server's owner id, and on such a registry dot-net's `is_owner` (owner == local peer)
+## is already true of every owner-0 mirror — which this function cannot undo, and which no
+## client here runs into, because `BfhClient` takes its id from the multiplayer API and
+## that never answers 0.
+func _mirror_owner(session_id: int) -> int:
+	if net == null or net.local_peer_id <= 0:
+		return 0
+
+	if local_player_id != 0 and session_id == local_player_id:
+		return net.local_peer_id
+
+	return 0
+
+
+## The local player's mirror, claimed if it arrived before HELLO said whose it was.
+##
+## Not the order `_admit` sends in, and that is why it is belt and braces rather than a
+## path this game takes: a JOIN broadcast that reached this peer before its HELLO would
+## otherwise leave the local runner unpredicted for the rest of the session, with every
+## check still passing — which is the bug [method _apply_join] documents.
+func _claim_local_player() -> void:
+	var mine: BfhPlayerNet = _behaviours.get(local_player_id)
+
+	if mine == null or mine.identity == null or not mine.identity.is_registered():
+		return
+
+	var claimed := _mirror_owner(local_player_id)
+
+	if claimed == 0 or mine.identity.owner_peer_id == claimed:
+		return
+
+	DotLog.debug(CHANNEL, "claimed the local player after HELLO", {
+		"session": local_player_id, "net_id": mine.identity.net_id,
+	})
+	var _changed := net.registry.change_owner(mine.identity.net_id, claimed)
 
 
 ## A crate, a barrel, a block or a bus the server has put out.

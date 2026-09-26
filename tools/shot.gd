@@ -21,6 +21,8 @@ func _run() -> void:
 	var show_chat := false
 	var beacon := false
 	var blind := false
+	var settings := false
+	var watch := ""
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
 			seconds = float(arg.substr(10))
@@ -42,6 +44,10 @@ func _run() -> void:
 			beacon = true
 		elif arg == "--blind":
 			blind = true
+		elif arg == "--settings":
+			settings = true
+		elif arg.begins_with("--watch="):
+			watch = arg.substr(8)
 
 	var client: Node = load("res://game/bfh.tscn").instantiate()
 	add_child(client)
@@ -81,6 +87,38 @@ func _run() -> void:
 		while settle < 0.6:
 			settle += get_process_delta_time()
 			await get_tree().process_frame
+
+	# The settings screen, over the bowl, the way Escape opens it.
+	if settings and client.get("settings") != null:
+		client.get("settings").call("open")
+		var shown := 0.0
+		while shown < 0.3:
+			shown += get_process_delta_time()
+			await get_tree().process_frame
+
+	# Run down, and then where the camera goes: `--watch=death` is the death camera,
+	# `cab` the freeze on the bus's cab, `follow` the first person it hands over to and
+	# `chase` the view behind them. A second runner is put in the bowl first, because the
+	# local player going down alone would end the round and the camera with it.
+	if watch != "" and world_for_marks != null and local_player != null \
+			and not world_for_marks.drivers().is_empty():
+		var buddy: Node3D = world_for_marks.add_player(
+			&"buddy", "Bea", BfhGame.TEAM_RUNNERS, false, true
+		)
+		buddy.set("global_position", local_player.global_position + Vector3(3.0, 0.0, 6.0))
+		buddy.get("controller").get("state").set("position", buddy.global_position)
+		var killer: StringName = world_for_marks.drivers()[0].player_id
+		world_for_marks.call("_bus_hit", local_player, killer, 30.0, Vector3(0.0, 0.0, 1.0))
+		var wait := {"death": 0.4, "cab": 1.8, "follow": 3.6, "chase": 3.6}.get(watch, 0.4) as float
+		var waited := 0.0
+		var asked := false
+		while waited < wait + (0.6 if watch == "chase" else 0.0):
+			waited += get_process_delta_time()
+			if watch == "chase" and not asked and waited >= wait:
+				asked = true
+				var _v: Variant = world_for_marks.spectate.request(&"local", 2)
+			await get_tree().process_frame
+		print("watching: ", world_for_marks.spectate.describe_view(&"local"))
 
 	if beacon and not look_at_bus and local_player != null:
 		var cam := Camera3D.new()

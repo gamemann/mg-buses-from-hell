@@ -15,16 +15,18 @@ I intend on reviewing code, testing, and editing documentation regularly. If you
 
 A round of this is two people in buses and everybody else on foot, in a walled sand bowl with crates and exploding barrels in it. The drivers try to run the runners over. The runners have a hammer, and the hammer does not hurt anybody — it breaks crates and shoves them. That is the whole game.
 
-It is a first-person game built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for the crates and barrels, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the buses, [dot-combat](https://github.com/modcommunity/dot-combat) for health and damage, [dot-match](https://github.com/modcommunity/dot-match) for the round and the two sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication and [dot-game](https://github.com/modcommunity/dot-game) for the server wiring.
+It is a first-person game built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for the crates and barrels, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the buses, [dot-combat](https://github.com/modcommunity/dot-combat) for health and damage, [dot-match](https://github.com/modcommunity/dot-match) for the round and the two sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication, [dot-game](https://github.com/modcommunity/dot-game) for the server wiring, [dot-spectate](https://github.com/modcommunity/dot-spectate) for where you look when you are out, [dot-audio](https://github.com/modcommunity/dot-audio) for what you hear, [dot-stats](https://github.com/modcommunity/dot-stats) and [dot-achievements](https://github.com/modcommunity/dot-achievements) for what you earn, and [dot-settings](https://github.com/modcommunity/dot-settings) for your own settings.
 
 ## Running it
 
 ```bash
 godot --path .                                                # play it, alone
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 123 checks over 17 sections
-godot --headless --path . res://examples/headless_net.tscn    # over the wire, 123 checks over 16 sections
-godot --headless --path . res://examples/dedicated.tscn       # as a server, 72 checks over 10 sections
+godot --headless --path . res://examples/headless_run.tscn    # the simulation, 167 checks over 21 sections
+godot --headless --path . res://examples/headless_net.tscn    # over the wire, 148 checks over 18 sections
+godot --headless --path . res://examples/dedicated.tscn       # as a server, 79 checks over 11 sections
 tools/shot.sh                                                 # render a frame and look at it
+tools/shot.sh 5 follow.png --watch=follow                     # run down, and where the camera goes
+tools/shot.sh 5 settings.png --settings                       # the settings screen
 tools/shot.sh 9 blind.png --blind                             # an admin's blind, through the HUD
 tools/shot.sh 9 beacon.png --beacon --bus                     # an admin's beacon, round a driver's bus
 ```
@@ -44,6 +46,30 @@ dot-moderation's live tools, from dot-game's services layer: on the console and 
 | `bring`, `goto`, `send`, `return` | runners only, for the same reason as noclip |
 
 Refused: `respawn` (a runner who is out stays out until the next round), `give` and `strip` (the hammer is the only thing anybody holds), `burn` (there is no fire in the bowl). Blind and beacon last through a new round; noclip and freeze end with it.
+
+## When you are out
+
+A runner who is run down is out until the next round, and does not spend it looking at the sand. For a second the camera looks from where they fell at the bus that did it, then for two from that bus's cab — who got you, and where they are going next — and then through the eyes of somebody still up, a bus included.
+
+| | |
+| --- | --- |
+| **Left click** | watch the next person |
+| **Right click** | the one before |
+| **Space** | their eyes, or behind them |
+
+The server decides all of it: who you may watch, when the camera hands over, and when a new round puts you back on your feet. Anybody may be watched, a bus included — every position is already on every client in this game, so a rule against watching the bus would stop nobody who wanted to cheat and only the people who did not.
+
+## What it sounds like
+
+A bus's engine is a pulse that quickens with its speed, positional, so a runner behind a tank can hear which side it is coming round. A driver's click is the horn. Hammers, crates breaking and being shoved, a runner bumped and a runner flattened, a barrel, and the round's own cues — including whether YOUR side won it — are all sounds now. None of it is an audio file: every sound is a synthesised stand-in from [dot-audio](https://github.com/modcommunity/dot-audio), and dropping a real file at the path the catalogue names replaces one without editing a line.
+
+## What you earn
+
+Five numbers are counted per player — runners flattened, rounds survived, seconds survived, crates broken, and crates you shoved that a bus then drove into — and eight achievements are rules over them, most of them the runners'. They are kept for the session only: this game has no accounts yet, and a number filed under a connection id would be handed to whoever next got that id. `bfh_stats` on the server console prints them.
+
+## Settings
+
+**Escape** opens them: mouse sensitivity (the same number every game on the platform reads), field of view (a server may cap it) and three volumes, saved on your machine.
 
 ## What a round is
 
@@ -125,9 +151,11 @@ All of it is [dot-game](https://github.com/modcommunity/dot-game)'s `DotGameServ
 
 There are no profiles and no avatars: `dot-game` reports the missing identity layer and carries on, which is a server where everybody is a guest. Nothing else is in the way.
 
-Nothing is drawn for a barrel going off. The server decides the blast and tells every client where it was; what a client does with that is a log line.
+Nothing is drawn for a barrel going off. It is heard, positionally, and it throws people; there is no flash or smoke.
 
-There is no scoreboard. Rounds are scored by dot-match and nobody can see the score.
+There is no scoreboard. Rounds are scored by dot-match and nobody can see the score, and each player's numbers are on the server console rather than on their screen.
+
+A connected client does not predict its own runner yet: it moves when the server says so, a round trip behind the keys. It was found while wiring the spectator camera and is written up in CLAUDE.md.
 
 ## Licence
 

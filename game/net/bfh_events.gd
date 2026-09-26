@@ -1,6 +1,7 @@
 extends RefCounted
 
 const BfhGame := preload("../bfh_game.gd")
+const BfhSounds := preload("../bfh_sounds.gd")
 
 ## The wire format for everything that is not a snapshot or an input.
 ##
@@ -44,6 +45,11 @@ enum Kind {
 	NOTICE,
 	## One chat line, already routed, sanitised and addressed by [DotChatRouter].
 	CHAT,
+	## Something in the bowl made a noise: which one of `BfhSounds.WORLD`, and where.
+	##
+	## [b]Appended, never inserted.[/b] A kind is its index on the wire, and the ones above
+	## are what every deployed client already decodes.
+	SOUND,
 }
 
 enum Ask {
@@ -51,6 +57,8 @@ enum Ask {
 	READY,
 	## I typed a line. The server decides what channel it lands on and who hears it.
 	SAY,
+	## I am out and watching: next, previous, or change the view. `BfhSpectate.ASK_*`.
+	WATCH,
 }
 
 ## Every decoder returns an `ok` beside its fields, and every caller checks it.
@@ -426,6 +434,46 @@ static func read_say(r: DotNetReader) -> Dictionary:
 	}
 	out["ok"] = r.ok()
 	return out
+
+
+# --- Sound -----------------------------------------------------------------
+
+## A noise the server decided, by its index in `BfhSounds.WORLD`, and where it was.
+##
+## [b]An index and not the id's string.[/b] A hammer swing is the commonest thing in this
+## game after a snapshot — two a second per runner — and five bits is what it costs to
+## say which sound. The list is append-only for that reason; see `BfhSounds`.
+##
+## [b]Reliable, like every event here, and that is a trade rather than an oversight.[/b] A
+## lost swing is a lost sound, which is harmless, but a lost `runner_down` is a runner who
+## was flattened in silence, and splitting the kinds across two deliveries would be a
+## second message type to keep in step for a handful of bytes a second.
+static func write_sound(index: int, at: Vector3) -> PackedByteArray:
+	var w := _w()
+	w.write_uint(clampi(index, 0, (1 << BfhSounds.WORLD_BITS) - 1), BfhSounds.WORLD_BITS)
+	w.write_vector3_range(at, -WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
+	return w.to_bytes()
+
+
+static func read_sound(r: DotNetReader) -> Dictionary:
+	var index := r.read_uint(BfhSounds.WORLD_BITS)
+	var at := r.read_vector3_range(-WORLD_EXTENT, WORLD_EXTENT, POS_BITS)
+	return {"index": index, "position": at, "ok": r.ok()}
+
+
+## What a spectator asked for: `BfhSpectate.ASK_NEXT`, `ASK_PREVIOUS` or `ASK_VIEW`.
+##
+## [b]Only the ask.[/b] Not who to watch: the server picks the next target from its own
+## list, under its own rules, so a client cannot name somebody the policy would refuse.
+static func write_watch(ask: int) -> PackedByteArray:
+	var w := _w()
+	w.write_uint(clampi(ask, 0, 3), 2)
+	return w.to_bytes()
+
+
+static func read_watch(r: DotNetReader) -> Dictionary:
+	var ask := r.read_uint(2)
+	return {"ask": ask, "ok": r.ok()}
 
 
 static func write_notice(text: String) -> PackedByteArray:

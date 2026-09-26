@@ -9,6 +9,9 @@
 #   tools/shot.sh 9 beacon.png --beacon       # an admin's beacon: the runner's ring, the bus's column
 #   tools/shot.sh 9 beacon_bus.png --beacon --bus   # the beacon round a driver's bus
 #   tools/shot.sh 9 blind.png --blind         # an admin's blind, through the HUD
+#   tools/shot.sh 5 out.png --watch=follow    # run down, then where the camera goes:
+#                                             # death, cab, follow or chase
+#   tools/shot.sh 5 settings.png --settings   # the settings screen Escape opens
 #   tools/shot.sh 6 net.png --net             # a CONNECTED client watching another runner:
 #                                             # four consecutive frames and a jitter probe
 #   tools/shot.sh 6 net.png --net --no-interp # the same with the client's interpolation off
