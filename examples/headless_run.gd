@@ -986,7 +986,7 @@ func _test_driving_the_farm() -> void:
 ## snap ate it. Nothing checked either, because nothing here had ever driven a runner
 ## anywhere; every section placed them by hand.
 ##
-## The arithmetic is [code]bfh_reach.gd[/code], over the tunables a real runner gets.
+## The arithmetic is [code]DotFpsTunables[/code]'s, reached through [code]bfh_reach.gd[/code], over the tunables a real runner gets.
 ## The routes are declared by the map and measured off the colliders. Then three of them
 ## are driven, because arithmetic that agrees with itself is not a runner on a crate.
 func _test_reach() -> void:
