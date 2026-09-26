@@ -16,13 +16,18 @@ extends RefCounted
 ## to fall right. So a climb is held to [constant CLIMB_MARGIN] of the apex, which is the
 ## same margin the family's other two answers use.
 ##
+## [b]The arithmetic is the controller's.[/b] [method climb_limit] and [method jump_reach]
+## delegate to [DotFpsTunables]; this file keeps the names, the declared climbs and the
+## refusals, which are this game's.
+##
 ## [codeblock]
 ## var t := BfhPlayer.tunables_for(config)
 ## BfhReach.climb_limit(t)       # 1.035 m: the highest top face a runner jumps onto
 ## BfhReach.jump_reach(t, 1.0)   # clear air crossed while landing a metre higher
 ## [/codeblock]
 
-const CLIMB_MARGIN := 0.9
+## The family's margin, owned by the controller.
+const CLIMB_MARGIN := DotFpsTunables.CLIMB_MARGIN
 
 ## How a climb is made. Each is held to a different number, which is why it is declared
 ## rather than inferred: a 0.4 m rise is a STEP if you walk into it and a JUMP if there is
@@ -97,26 +102,20 @@ static func launch_speed(gravity: float, height: float) -> float:
 
 
 ## The highest top face a runner standing on flat ground jumps onto, in metres.
+## [method DotFpsTunables.climb_limit] at [constant CLIMB_MARGIN].
 static func climb_limit(t: DotFpsTunables) -> float:
-	return t.jump_height * CLIMB_MARGIN
+	return t.climb_limit(CLIMB_MARGIN)
 
 
 ## The clear air a runner at full ground speed crosses in one jump, landing [param rise]
-## metres higher than they left.
+## metres higher than they left. [method DotFpsTunables.jump_reach] at `max_speed`.
 ##
 ## [b]The landing height is the point.[/b] The airtime people write down is the time to
 ## fall back to where you jumped FROM, and it is the wrong number for anything that
 ## climbs: one sized a jump course in this family 30% long and nobody could finish it.
 ## Returns 0 for a rise no jump reaches.
 static func jump_reach(t: DotFpsTunables, rise: float) -> float:
-	var launch := launch_speed(t.gravity, t.jump_height)
-	var remaining := launch * launch - 2.0 * t.gravity * rise
-
-	if remaining < 0.0:
-		return 0.0
-
-	# The descending root: the ascending one lands on the near lip rather than the far.
-	return t.max_speed * (launch + sqrt(remaining)) / t.gravity
+	return t.jump_reach(rise, t.max_speed)
 
 
 ## Why [param climb] is outside what [param t] can do, or "" when it is inside it.
