@@ -33,11 +33,11 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 183
+const CHECKS := 193
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 23
+const SECTIONS := 24
 
 const TICK := 1.0 / 60.0
 
@@ -84,6 +84,7 @@ func _run() -> void:
 	await _test_the_tank_farm()
 	await _test_reach()
 	await _test_the_scaffold()
+	await _test_the_back_yard()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -857,17 +858,9 @@ func _test_the_tank_farm() -> void:
 	# the map-wide minimum, because the map-wide minimum is currently a pair in the
 	# stacks and would go on passing if the courtyard sealed itself shut.
 	var pillar_count := arena.pillars().size()
-	var lanes: Array[Vector2i] = [Vector2i(0, 1), Vector2i(1, 2), Vector2i(2, 3), Vector2i(3, 0)]
 	var tightest_lane := INF
-	for lane in lanes:
-		var a := farm[lane.x]
-		var b := farm[lane.y]
-		tightest_lane = minf(
-			tightest_lane,
-			Vector2(a.x - b.x, a.z - b.z).length()
-				- arena.obstacle_radius(pillar_count + lane.x)
-				- arena.obstacle_radius(pillar_count + lane.y)
-		)
+	for lane in arena.yard_lanes(0):
+		tightest_lane = minf(tightest_lane, lane)
 	_check(
 		tightest_lane >= BfhArena.BUS_GAP,
 		"and a bus can come into the courtyard by any of its four lanes",
@@ -1345,16 +1338,27 @@ func _test_the_scaffold() -> void:
 
 	# A bus has to be able to get to the bottom step: held to the same clear floor as any
 	# gap between two obstacles, measured from the footprint's edge to each surface.
-	var nearest := INF
-	var obstacles := arena.obstacles()
-	for i in range(obstacles.size()):
-		var at := obstacles[i]
-		var dx := maxf(maxf(footprint.position.x - at.x, at.x - footprint.end.x), 0.0)
-		var dz := maxf(maxf(footprint.position.z - at.z, at.z - footprint.end.z), 0.0)
-		nearest = minf(nearest, Vector2(dx, dz).length() - arena.obstacle_radius(i))
+	var nearest := arena.scaffold_clearance()
 	_check(nearest >= BfhArena.BUS_GAP,
 		"it stands clear of every pillar and tank by a bus's gap",
 		"%.1f m" % nearest)
+
+	# [b]And on the smallest bowl that has it,[/b] which nobody had asked until the back
+	# yard put two drums beside it. Its position and both clusters' scale with the radius
+	# and none of their sizes do, so the floor between them closes as the bowl shrinks:
+	# at the 40 m this minimum used to be, 1.2 m from a hook pillar.
+	var small := BfhArena.new()
+	add_child(small)
+	small.build(BfhArena.SCAFFOLD_MIN_RADIUS)
+	var squeezed := small.scaffold_clearance()
+	var small_has := small.has_scaffold()
+	remove_child(small)
+	small.free()
+	print("  ..    the scaffold's clearance: %.2f m at %.0f m, %.2f m at %.0f m"
+		% [nearest, arena.radius, squeezed, BfhArena.SCAFFOLD_MIN_RADIUS])
+	_check(small_has and squeezed >= BfhArena.BUS_GAP,
+		"and still that far on the smallest bowl that has one",
+		"%.2f m at %.0f m radius" % [squeezed, BfhArena.SCAFFOLD_MIN_RADIUS])
 
 	var strays := 0
 	for prop in game.props.all_props():
@@ -1476,6 +1480,158 @@ func _test_the_scaffold() -> void:
 	_check(vacated >= cells.size() / 4,
 		"by going through the scaffold: a quarter of it is no longer where it stood",
 		"%d of %d cells vacated" % [vacated, cells.size()])
+
+	await _dispose(game)
+	_done()
+
+
+# --- The tank farm's back yard ----------------------------------------------
+
+## The farm's second room, between the courtyard and the scaffold, and the two things it
+## is for: a runner goes through it, and a bus comes into it.
+##
+## [b]Driven both ways, because a room is two claims.[/b] That a runner can get from the
+## middle of the farm through the yard to the top of the scaffold -- the covered way the
+## yard exists to make -- and that a bus, the ordinary autopilot told nothing about the
+## yard, can come into it at a speed that kills and run down somebody standing in its
+## middle. A yard a bus could not get into would be a place to win the round by standing
+## in, and the lane widths alone do not say whether the steering can thread them.
+func _test_the_back_yard() -> void:
+	print("the tank farm's back yard")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	_put(runner, Vector3(-30.0, 0.05, 20.0))
+	game.start()
+	await _step(game, 60)
+
+	# The round's concrete blocks are scattered even with no crates, and a 4-tonne block
+	# on a route is a different test from this one. The scaffold's crates stay.
+	for prop in game.props.all_props():
+		if not prop.instance_id in game.scaffold_ids:
+			game.props.remove(prop.instance_id)
+	await _step(game, 2)
+
+	var arena := game.arena
+	var yard := arena.yard_middle(1)
+	var lanes := arena.yard_lanes(1)
+	var tightest := INF
+	for lane in lanes:
+		tightest = minf(tightest, lane)
+	print("  ..    the yard's middle at (%.1f, %.1f); its lanes %s m, against %.2f"
+		% [yard.x, yard.z, ", ".join(PackedStringArray(Array(lanes).map(func(w: float) -> String: return "%.2f" % w))),
+			BfhArena.BUS_GAP])
+	_check(lanes.size() == 4 and tightest >= BfhArena.BUS_GAP,
+		"a bus can come into the back yard by any of its four lanes",
+		"%.2f m in the tightest" % tightest)
+
+	# A room rather than a pinch: from its middle, a bus's gap of floor to every drum.
+	var farm := arena.tanks()
+	var pillar_count := arena.pillars().size()
+	var room := INF
+	for i in range(farm.size()):
+		room = minf(room, Vector2(yard.x - farm[i].x, yard.z - farm[i].z).length()
+			- arena.obstacle_radius(pillar_count + i))
+	_check(room >= BfhArena.BUS_GAP, "and its middle is open floor, not a pinch between drums",
+		"%.2f m to the nearest drum" % room)
+
+	# --- A runner goes through it: from the middle of the courtyard, through the lane the
+	# two rooms share, across the yard, out of its south lane to the scaffold's east end,
+	# and up it. The flat half is held to a runner's pace and the climb to a climber's.
+	var shared := -1
+	var south := -1
+	var yard_tanks: Array = BfhArena.TANK_YARDS[1]
+	for i in range(yard_tanks.size()):
+		var a: int = yard_tanks[i]
+		var b: int = yard_tanks[(i + 1) % yard_tanks.size()]
+		if BfhArena.TANK_YARDS[0].has(a) and BfhArena.TANK_YARDS[0].has(b):
+			shared = i
+		elif south < 0 or arena.yard_lane_middle(1, i).z > arena.yard_lane_middle(1, south).z:
+			south = i
+	var footprint := arena.scaffold_footprint()
+	var steps := arena.scaffold_steps()
+	var peak := arena.scaffold_peak()
+	var top: AABB = steps[peak]
+	var foot := Vector3(footprint.end.x + 4.0, 0.0, footprint.get_center().z)
+
+	var through: Array = [
+		arena.yard_lane_middle(1, shared), yard, arena.yard_lane_middle(1, south), foot,
+	]
+	_put(runner, arena.yard_middle(0) + Vector3(0.0, 0.05, 0.0))
+	await _step(game, 5)
+	await _run_route(game, runner, through, 900)
+	var flat := _route_report("from the courtyard through the back yard to the scaffold", runner)
+	var arrived: bool = _route.get("finished", false)
+	_check(arrived, "a runner goes from the courtyard through the back yard to the scaffold",
+		"stopped at (%.1f, %.1f)" % [runner.global_position.x, runner.global_position.z])
+	_check(flat >= RUN_PACE, "at a runner's pace: nothing in the way",
+		"%.0f%% of max_speed" % (flat * 100.0))
+
+	var up: Array = []
+	for i in range(steps.size() - 1, peak - 1, -1):
+		up.append(Vector3(steps[i].end.x - 0.6, steps[i].end.y, steps[i].get_center().z))
+	up.append(Vector3(top.position.x + 0.6, top.end.y, top.get_center().z))
+	await _run_route(game, runner, up, 600)
+	var climb := _route_report("and on up the scaffold's east end", runner)
+	var on := game.carry.prop_under(runner.controller.state.ground_id)
+	_check(runner.global_position.y > top.end.y - 0.1 and on != null
+		and on.instance_id in game.scaffold_ids,
+		"and on up to the scaffold's peak, the covered way the yard exists to make",
+		"feet at %.2f, top %.2f" % [runner.global_position.y, top.end.y])
+	_check(climb >= CLIMB_PACE, "at a climber's pace",
+		"%.0f%% of max_speed" % (climb * 100.0))
+
+	# --- And a bus comes into it. The autopilot, from 14 m out beyond the south lane --
+	# the one that faces the scaffold, and the tightest of the four -- pointed at a runner
+	# standing in the middle of the yard.
+	var lane := arena.yard_lane_middle(1, south)
+	var out := (lane - yard).normalized()
+	var start := lane + out * 14.0
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(-out), start + Vector3(0.0, 1.4, 0.0))
+	driver.is_bot = true
+
+	var hide := yard + Vector3(0.0, 0.05, 0.0)
+	_put(runner, hide)
+	var last := bus.position()
+	var covered := 0.0
+	var fastest := 0.0
+	var reset := false
+	var took := 0
+	for _i in range(600):
+		var still := DotFpsCommand.new()
+		still.yaw = runner.controller.state.yaw
+		runner.controller.apply_command(still)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		took += 1
+		var at := bus.position()
+		if _sent_home(last, at):
+			reset = true
+			break
+		covered += Vector2(at.x - last.x, at.z - last.z).length()
+		fastest = maxf(fastest, bus.speed())
+		last = at
+		if not runner.health.alive:
+			break
+
+	_print_drive("into the back yard", covered, start.distance_to(hide), took, fastest,
+		game.config)
+	_check(not reset, "a bus chasing somebody in the back yard is not sent home")
+	_check(fastest >= game.config.bus_lethal_speed,
+		"and gets up to a speed that kills on the way in",
+		"%.1f m/s against %.1f" % [fastest, game.config.bus_lethal_speed])
+	_check(not runner.health.alive, "and runs them down in the middle of it",
+		"%.1f s, the bus at (%.1f, %.1f), %.1f m from them"
+		% [float(took) * TICK, last.x, last.z,
+			Vector2(last.x - hide.x, last.z - hide.z).length()])
 
 	await _dispose(game)
 	_done()

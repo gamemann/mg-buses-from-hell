@@ -173,6 +173,42 @@ const TANK_LAYOUT: Array[Vector3] = [
 	Vector3(6.5, -8.0, 3.0),
 	Vector3(10.5, 3.5, 3.8),
 	Vector3(-5.0, 7.0, 2.6),
+
+	# --- The back yard, south of the courtyard (2026-09-27) ----------------
+	#
+	# [b]The farm was one room, and the scaffold stood alone in the open.[/b] A runner
+	# who lost the bus in the courtyard had nowhere to take the chase except back out
+	# onto sand, and the scaffold -- the only height in the bowl -- stood 23 m from the
+	# nearest drum, so reaching it meant crossing open floor with a bus behind you and
+	# being knocked off it meant landing on open floor again. Two more drums close a
+	# second courtyard between the first and the scaffold: two rooms joined by the
+	# courtyard's widest lane, and a covered way from the middle of the farm to the
+	# foot of the height. It is the hook's argument made in the east: a feature one
+	# move long is a feature whose move is always the same one.
+	#
+	# The yard is the two south tanks above and these two, in that order round it
+	# ([constant TANK_YARDS]). Its lanes are 5.5, 8.4 and 5.9 m of clear floor plus
+	# the 9.5 m it shares with the courtyard -- every one a bus's gap, because a room
+	# a bus cannot enter is a place a runner wins by standing in. [b]And the two that
+	# face each other, north and south, are wide on purpose:[/b] `steer_around` keeps
+	# radius + PILLAR_CLEARANCE off every axis, so only a lane of about 7.2 m or more
+	# gives the autopilot a straight line through its middle. The first layout had
+	# every lane past BUS_GAP and the bus, sent at a runner in the yard, wedged in the
+	# south lane and went home. Sizes 2.6 and 2.2: small, because the yard is where a
+	# runner goes to be moving, not to hide.
+	Vector3(-1.5, 17.5, 2.6),
+	Vector3(11.5, 15.0, 2.2),
+]
+
+## The farm's open floors, each as the tanks round it in order, so that neighbours in the
+## list are the two sides of a lane. Indices into [constant TANK_LAYOUT].
+##
+## [b]Declared, because which drums make a room is the one thing the positions do not
+## say.[/b] Every lane width, the middle a camera or a check looks at, and the drives
+## into each room come out of this and the layout together.
+const TANK_YARDS: Array[Array] = [
+	[0, 1, 2, 3],
+	[3, 2, 5, 4],
 ]
 
 ## Where the farm sits, as a fraction of the bowl radius -- like the stacks, and for the
@@ -726,6 +762,53 @@ func tanks() -> PackedVector3Array:
 	return _obstacles.slice(_stack_count)
 
 
+## The middle of the [param index]th of [constant TANK_YARDS] on the built map: the
+## centroid of the tanks round it, on the floor. [constant Vector3.ZERO] with no farm.
+func yard_middle(index: int) -> Vector3:
+	var farm := tanks()
+	if farm.is_empty() or index < 0 or index >= TANK_YARDS.size():
+		return Vector3.ZERO
+	var sum := Vector3.ZERO
+	for i: int in TANK_YARDS[index]:
+		sum += farm[i]
+	return Vector3(sum.x, 0.0, sum.z) / float(TANK_YARDS[index].size())
+
+
+## The clear floor in each lane round the [param index]th yard, in order: element i is
+## between its tank i and tank i + 1. Face to face, like [method narrowest_gap].
+func yard_lanes(index: int) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	var farm := tanks()
+	if farm.is_empty() or index < 0 or index >= TANK_YARDS.size():
+		return out
+	var yard: Array = TANK_YARDS[index]
+	for i in range(yard.size()):
+		var a: int = yard[i]
+		var b: int = yard[(i + 1) % yard.size()]
+		out.append(
+			Vector2(farm[a].x - farm[b].x, farm[a].z - farm[b].z).length()
+				- obstacle_radius(_stack_count + a) - obstacle_radius(_stack_count + b)
+		)
+	return out
+
+
+## The midpoint of the lane between the [param index]th yard's tank [param i] and the
+## next one round, at the middle of the clear floor rather than between the two axes.
+func yard_lane_middle(index: int, i: int) -> Vector3:
+	var farm := tanks()
+	if farm.is_empty() or index < 0 or index >= TANK_YARDS.size():
+		return Vector3.ZERO
+	var yard: Array = TANK_YARDS[index]
+	var a: int = yard[i % yard.size()]
+	var b: int = yard[(i + 1) % yard.size()]
+	var ra := obstacle_radius(_stack_count + a)
+	var rb := obstacle_radius(_stack_count + b)
+	var along := farm[b] - farm[a]
+	along.y = 0.0
+	var gap := along.length() - ra - rb
+	return Vector3(farm[a].x, 0.0, farm[a].z) + along.normalized() * (ra + gap * 0.5)
+
+
 ## Everything solid standing on the sand: the stacks, then the tank farm.
 ##
 ## [b]The steering, the scatter keep-out and the gap rule all ask for this and none of
@@ -1147,12 +1230,21 @@ const SCAFFOLD_STEPS: Array[int] = [1, 1, 2, 2, 3, 3, 2, 2, 1, 1]
 const SCAFFOLD_ROWS := 2
 
 ## Where it stands, as a fraction of the bowl radius: the south-east, the one quarter of
-## the floor with nothing in it. 12 m from the nearest hook pillar and 23 m from the
-## nearest tank at 46 m.
+## the floor with nothing in it. At 46 m its footprint is 6.2 m of clear floor from the
+## nearest hook pillar and, since the back yard, 8.9 m from the nearest drum
+## ([method scaffold_clearance]).
 const SCAFFOLD_CENTRE := Vector2(0.43, 0.5)
 
 ## Below this it is left out: its position scales with the bowl and its size does not.
-const SCAFFOLD_MIN_RADIUS := 40.0
+##
+## [b]45, and it was 40 -- a number nobody had asked the gap rule of.[/b] The scaffold's
+## clearance from every drum and pillar was checked at the shipped 46 m only (6.2 m, to a
+## hook pillar). Both are placed as a fraction of the radius, so a smaller bowl walks them
+## together: at 40 the scaffold stood 1.2 m from that pillar, at 44 still 4.5, and a gap
+## no bus can take beside the one height in the bowl is a pocket the bus cannot reach.
+## Found building the tank farm's back yard, which stands between the two. See
+## [method scaffold_clearance]; `headless_run` asks it at this radius.
+const SCAFFOLD_MIN_RADIUS := 45.0
 
 ## Air between neighbouring crates, and between a layer and the one it is dropped onto.
 ##
@@ -1265,6 +1357,28 @@ func scaffold_peak() -> int:
 
 func scaffold_footprint() -> AABB:
 	return AABB(_scaffold_origin, scaffold_size()) if _has_scaffold else AABB()
+
+
+## The least clear floor between the scaffold's footprint and any pillar or tank, in
+## metres. INF with no scaffold.
+##
+## [b]Held to [constant BUS_GAP] like any two obstacles, and asked of the built map for
+## the reason [method narrowest_gap] is:[/b] the scaffold and both clusters are placed as
+## fractions of the radius, so the floor between them is a function of the bowl's size
+## and cannot be read off the constants. Crates rather than steel, but at the top of a
+## round a gap the bus cannot take beside it is a pocket it cannot reach, and a bus that
+## tries is wedged on a pillar with a crate under it.
+func scaffold_clearance() -> float:
+	if not _has_scaffold:
+		return INF
+	var footprint := scaffold_footprint()
+	var nearest := INF
+	for i in range(_obstacles.size()):
+		var at := _obstacles[i]
+		var dx := maxf(maxf(footprint.position.x - at.x, at.x - footprint.end.x), 0.0)
+		var dz := maxf(maxf(footprint.position.z - at.z, at.z - footprint.end.z), 0.0)
+		nearest = minf(nearest, Vector2(dx, dz).length() - _obstacle_radii[i])
+	return nearest
 
 
 func _inside_the_scaffold(x: float, z: float) -> bool:
@@ -1380,4 +1494,5 @@ func describe() -> Dictionary:
 		"scaffold": scaffold_cells().size(),
 		"ramp": "%.0f deg, lips %s" % [ramp_slope(), str(ramp_lips())],
 		"tightest gap": "%.1f m" % narrowest_gap(),
+		"scaffold clearance": "%.1f m" % scaffold_clearance(),
 	}

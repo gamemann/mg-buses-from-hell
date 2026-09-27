@@ -17,6 +17,7 @@ func _run() -> void:
 	var look_at_bus := false
 	var look_at_stacks := false
 	var look_at_tanks := false
+	var look_at_yard := ""
 	var look_at_scaffold := false
 	var look_at_ramp := false
 	var show_chat := false
@@ -37,6 +38,10 @@ func _run() -> void:
 			look_at_stacks = true
 		elif arg == "--tanks":
 			look_at_tanks = true
+		elif arg == "--yard":
+			look_at_yard = "peak"
+		elif arg.begins_with("--yard="):
+			look_at_yard = arg.substr(7)
 		elif arg == "--scaffold":
 			look_at_scaffold = true
 		elif arg == "--ramp":
@@ -170,10 +175,9 @@ func _run() -> void:
 	if look_at_tanks and world_for_tanks != null and world_for_tanks.arena != null:
 		var farm := world_for_tanks.arena.tanks()
 		if not farm.is_empty():
-			var middle := Vector3.ZERO
-			for tank in farm:
-				middle += tank
-			middle /= float(farm.size())
+			# The first courtyard's middle, not every tank's: since the back yard the
+			# farm is two rooms, and the centroid of all six is a point in neither.
+			var middle := world_for_tanks.arena.yard_middle(0)
 
 			var cam := Camera3D.new()
 			add_child(cam)
@@ -185,6 +189,34 @@ func _run() -> void:
 			cam.look_at(middle + Vector3(1.0, 2.5, 0.0), Vector3.UP)
 			cam.current = true
 			await get_tree().process_frame
+
+	# Or the tank farm's back yard, from the two places it joins.
+	#
+	# [code]--yard[/code] (or [code]=peak[/code]) is a runner's eyes on the scaffold's peak,
+	# looking north down the covered way into the yard: the question is whether the yard
+	# reads from the height as somewhere to run TO, two drums and a gap, rather than as
+	# more of the farm's wall. [code]--yard=courtyard[/code] stands in the first courtyard
+	# at a runner's height and looks through the lane the two rooms share, which is the
+	# view that has to say "there is a second room" -- and a bus-width of floor into it.
+	var world_for_yard: BfhGame = client.get("game")
+	if look_at_yard != "" and world_for_yard != null and world_for_yard.arena != null \
+			and world_for_yard.arena.tanks().size() > 4:
+		var arena = world_for_yard.arena
+		var yard: Vector3 = arena.yard_middle(1)
+		var cam := Camera3D.new()
+		add_child(cam)
+		if look_at_yard == "courtyard":
+			var court: Vector3 = arena.yard_middle(0)
+			var away := (court - yard).normalized()
+			cam.global_position = court + away * 3.0 + Vector3(0.0, 1.6, 0.0)
+			cam.look_at(yard + Vector3(0.0, 1.2, 0.0), Vector3.UP)
+		elif arena.has_scaffold():
+			var top: AABB = arena.scaffold_steps()[arena.scaffold_peak()]
+			var eye := top.get_center() + Vector3(0.0, top.size.y * 0.5 + 1.6, 0.0)
+			cam.global_position = eye
+			cam.look_at(yard + Vector3(0.0, 1.0, 0.0), Vector3.UP)
+		cam.current = true
+		await get_tree().process_frame
 
 	# Or stand off the scaffold's low end, a little above a runner's eyes, and look up it.
 	#

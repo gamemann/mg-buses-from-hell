@@ -16,7 +16,7 @@ The drivers cannot lose except to the clock. The runners cannot win except on th
 game/
   bfh_config.gd     every cvar, in metres and seconds, layered like every DotConfig
   bfh_paths.gd      where this game's own files are, wherever it is mounted
-  bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks, the farm, the scaffold,
+  bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks, the farm and its back yard, the scaffold,
                     sun and sky. In code, and the climbs it expects a runner to make
   bfh_reach.gd      what a runner can get onto, as arithmetic over the real tunables
   bfh_textures.gd   the generated metre grid. Why a flat colour has no speed in it
@@ -48,7 +48,7 @@ props/              the crate, the barrel and the bus, as scenes — plus the ar
 fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (183), headless_net (166), dedicated (79)
+examples/           headless_run (193), headless_net (166), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -374,6 +374,34 @@ The staircase had one way up and a sheer 3 m back, so every driver knew which en
 - **A tick with no command repeats the last one.** That is what a netcode wants of a lost packet, and the last command of the climb was "run along the top step", so the first version of the bus check watched the runner walk off the far end 0.7 s before the bus arrived and credited the bus.
 - **It shoves more than it breaks.** The first check asserted crates BROKEN, and the bus brought the runner down with all 24 intact: it met the low end under the 5 m/s a crate breaks at, and pushed the steps apart instead. Same outcome for the runner, cheaper for the drivers, and it is what the level is about — the check is cells vacated.
 
+## Decision 12: the back yard, because the farm was one room and the height stood alone (2026-09-27)
+
+**The tank farm was one move long, and the scaffold was an island.** A runner who lost the bus in the courtyard had nowhere to take the chase but back out onto sand, and the scaffold, the only height in the bowl, stood 23 m from the nearest drum: getting to it meant crossing open floor with a bus behind you, and being knocked off it meant landing on open floor again. **Two more drums, 2.6 and 2.2 m, close a second courtyard between the first and the scaffold.** Two rooms joined by the courtyard's widest lane, and a covered way from the middle of the farm to the foot of the height. It is the hook's argument made in the east.
+
+**The lanes are 9.49 (shared with the courtyard), 5.54, 8.44 and 5.87 m** of clear floor at 46 m, and the yard's middle has 6.0 m to the nearest drum. The two wide ones face each other, north and south, so one straight line runs through both rooms and ends at the scaffold. The two narrow ones, west to the hook and east to the rim, are the runner's. The scaffold is 8.9 m from the nearest drum now.
+
+**Why the wide lanes had to be wide, and it was not the gap rule.** The first layout (lanes 5.8 to 9.5, all past `BUS_GAP`) passed every width check. Then the autopilot, pointed at a runner in the yard's middle from beyond the south lane, was sent home: `steer_around` wants `radius + PILLAR_CLEARANCE` from each axis. So a line through the middle of a lane is only clear in a lane of 7.2 m or more, and only if the aim point 8 m PAST the quarry is clear too. A 5.8 m lane is threaded by nudges, and a nudge that needs a turn tighter than the bus's roughly 11 m circle wedges. The layout was searched until the two opposite lanes give the autopilot a straight line in and out. **A room is enterable when the steering can enter it, not when a bus would fit.** By the same arithmetic (computed, not driven), the courtyard's own 8.2 and 9.5 m lanes give a straight line to its middle and its 5.4 and 6.6 m ones do not. `[steer-3]` is the ceiling underneath this.
+
+**`TANK_YARDS` is the declaration**: each room as its drums in order round it, indices into `TANK_LAYOUT`. `yard_middle`, `yard_lanes` and `yard_lane_middle` come from it, and so do the courtyard's own lane check, the checks here, and the `--yard` cameras. The tanks go through `_obstacles` like the other four, so the steering, the scatter keep-out and the map-wide gap rule needed no change.
+
+**What it found: the scaffold was never held to the gap rule below 46 m.** Its clearance from every pillar and drum was measured inline, at the shipped radius only (6.2 m, to a hook pillar). Both are placed as a fraction of the radius, so a smaller bowl walks them together: **1.2 m at the 40 m `SCAFFOLD_MIN_RADIUS` said, 4.5 m at 44.** `BfhArena.scaffold_clearance()` is the measurement now, `headless_run` asks it at `SCAFFOLD_MIN_RADIUS` as well, and the minimum is 45 (5.4 m). The shipped 46 m bowl is unchanged. An operator who sets `arena_radius` from 40 to 44 now gets no scaffold, with the log line saying so.
+
+`headless_run`'s **the tank farm's back yard** (9 checks, and one in the scaffold section):
+
+- the four lanes are each a bus's gap, and the middle is open floor;
+- a runner bot goes from the courtyard's middle, through the shared lane, across the yard and out of its south lane to the scaffold: **31.1 m of a 31.6 m route in 4.83 s, 99% of `max_speed`**, held to `RUN_PACE`;
+- it then climbs on up the east end to the peak (59%, held to `CLIMB_PACE`);
+- the autopilot, 14 m beyond the south lane and pointed at a runner standing in the yard's middle, is not sent home, passes `bus_lethal_speed` (**15.1 m/s fastest**) and runs them down in **2.3 s**.
+
+**Armed, each put back after:**
+
+- The yard's south drum moved in to leave 2.27 m. Six checks fire: the map-wide gap and its small-bowl twin, the yard's lanes, the open middle, "not sent home" and "runs them down" (the bus wedged at 1.25 m/s average).
+- `SCAFFOLD_MIN_RADIUS` back to 40. The new check fires at 1.18 m.
+- The route bot's keys at 30%. Both pace checks and both "arrives" checks fire.
+- The autopilot's `target_speed` at 30%. The lethal-speed check fires at 6.7 m/s. **"Runs them down" still passed**, on repeated bumps below the lethal speed, which is why the speed is asserted separately.
+
+Rendered: `tools/shot.sh 9 yard.png --yard` and `--yard=courtyard`. `--tanks` now frames the first courtyard's middle rather than the centroid of all six drums.
+
 ## What a runner can climb, and two routes that never existed
 
 The family asked every game in it whether the gaps and heights it asks a player to cross are inside what the movement can do. The two games asked first were both wrong. This one was wrong twice, and both were routes the documentation described.
@@ -545,13 +573,15 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 183 checks, 23 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 193 checks, 24 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper
 tools/shot.sh 9 scaffold.png --scaffold                      # the scaffold, from the end a runner climbs
+tools/shot.sh 9 yard.png --yard                              # the farm's back yard, from a runner's eyes on the scaffold's peak
+tools/shot.sh 9 yard_in.png --yard=courtyard                 # the back yard, through the lane it shares with the courtyard
 tools/shot.sh 9 ramp.png --ramp                              # the ramp, from the side
 tools/shot.sh 9 blind.png --blind                            # an admin's blind, through the HUD
 tools/shot.sh 14 beacon_bus.png --beacon --bus               # an admin's beacon round a driver's bus
