@@ -48,7 +48,7 @@ props/              the crate, the barrel and the bus, as scenes — plus the ar
 fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (193), headless_net (166), dedicated (79)
+examples/           headless_run (201), headless_net (166), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -323,7 +323,7 @@ The stacks answered "the map runs out of things to do" for the **western** half.
 
 **A pillar is cover you can see through and a tank is cover you cannot.** Behind a 1.2 m column a runner watches the bus pick a side the whole way in, and the west half is therefore about reaction: you can see everything through the stacks from thirty metres, and the skill is moving at the right moment. A 4.4 m drum hides a nine-metre bus completely. Nobody in the east half knows which side it is coming round, and the driver does not know which way the runner will break, so the same piece of cover is now a guess by both people at once. Two halves of a bowl asking for different things is two things for a round to be about.
 
-**A courtyard, not a cluster.** Four drums in a loose diamond leave open floor about a dozen metres across in the middle with four lanes into it. That floor is the east's version of the middle of the lane: cover on every side, and no way to know which gap the bus is in. The lanes are 5.4, 6.6, 8.2 and 9.5 m of clear floor, every one of them wide enough for a bus, because a courtyard a bus could not enter is a place a runner wins the round by standing still in.
+**A courtyard, not a cluster.** Four drums in a loose diamond leave open floor about a dozen metres across in the middle with four lanes into it. That floor is the east's version of the middle of the lane: cover on every side, and no way to know which gap the bus is in. The lanes are 5.4, 6.6, 8.2 and 9.5 m of clear floor, every one of them wide enough for a bus, because a courtyard a bus could not enter is a place a runner wins the round by standing still in. **Wide enough for a bus is not wide enough for the autopilot**: the bot bus comes through the 8.2 and 9.5 m lanes and not the other two, and since 2026-09-27 that is a deliberate, asserted property — see "The courtyard's narrow lanes are doors a runner shuts behind them" under Decision 12.
 
 **Four sizes, not one.** Four drums of one radius are one obstacle drawn four times. What a runner is choosing between at this end of the bowl is how much floor a piece of cover hides: the 4.4 m tank is somewhere to lose a bus entirely, and the 2.6 m one is somewhere to make it commit.
 
@@ -380,7 +380,7 @@ The staircase had one way up and a sheer 3 m back, so every driver knew which en
 
 **The lanes are 9.49 (shared with the courtyard), 5.54, 8.44 and 5.87 m** of clear floor at 46 m, and the yard's middle has 6.0 m to the nearest drum. The two wide ones face each other, north and south, so one straight line runs through both rooms and ends at the scaffold. The two narrow ones, west to the hook and east to the rim, are the runner's. The scaffold is 8.9 m from the nearest drum now.
 
-**Why the wide lanes had to be wide, and it was not the gap rule.** The first layout (lanes 5.8 to 9.5, all past `BUS_GAP`) passed every width check. Then the autopilot, pointed at a runner in the yard's middle from beyond the south lane, was sent home: `steer_around` wants `radius + PILLAR_CLEARANCE` from each axis. So a line through the middle of a lane is only clear in a lane of 7.2 m or more, and only if the aim point 8 m PAST the quarry is clear too. A 5.8 m lane is threaded by nudges, and a nudge that needs a turn tighter than the bus's roughly 11 m circle wedges. The layout was searched until the two opposite lanes give the autopilot a straight line in and out. **A room is enterable when the steering can enter it, not when a bus would fit.** By the same arithmetic (computed, not driven), the courtyard's own 8.2 and 9.5 m lanes give a straight line to its middle and its 5.4 and 6.6 m ones do not. `[steer-3]` is the ceiling underneath this.
+**Why the wide lanes had to be wide, and it was not the gap rule.** The first layout (lanes 5.8 to 9.5, all past `BUS_GAP`) passed every width check. Then the autopilot, pointed at a runner in the yard's middle from beyond the south lane, was sent home: `steer_around` wants `radius + PILLAR_CLEARANCE` from each axis. So a line through the middle of a lane is only clear in a lane of 7.2 m or more, and only if the aim point 8 m PAST the quarry is clear too. A 5.8 m lane is threaded by nudges, and a nudge that needs a turn tighter than the bus's roughly 11 m circle wedges. The layout was searched until the two opposite lanes give the autopilot a straight line in and out. **A room is enterable when the steering can enter it, not when a bus would fit.** By the same arithmetic the courtyard's own 8.2 and 9.5 m lanes give a straight line to its middle and its 5.4 and 6.6 m ones do not — computed that night, driven the same day (next section). `[steer-3]` is the ceiling underneath this.
 
 **`TANK_YARDS` is the declaration**: each room as its drums in order round it, indices into `TANK_LAYOUT`. `yard_middle`, `yard_lanes` and `yard_lane_middle` come from it, and so do the courtyard's own lane check, the checks here, and the `--yard` cameras. The tanks go through `_obstacles` like the other four, so the steering, the scatter keep-out and the map-wide gap rule needed no change.
 
@@ -401,6 +401,29 @@ The staircase had one way up and a sheer 3 m back, so every driver knew which en
 - The autopilot's `target_speed` at 30%. The lethal-speed check fires at 6.7 m/s. **"Runs them down" still passed**, on repeated bumps below the lethal speed, which is why the speed is asserted separately.
 
 Rendered: `tools/shot.sh 9 yard.png --yard` and `--yard=courtyard`. `--tanks` now frames the first courtyard's middle rather than the centroid of all six drums.
+
+### The courtyard's narrow lanes are doors a runner shuts behind them (`[steer-3]`, 2026-09-27)
+
+**Driven, not computed.** `headless_run`'s **the courtyard's four lanes, driven** puts the bot bus 8 m outside each lane, facing in, and points it at a runner standing still — once in the courtyard's middle, once in the lane itself — and prints the table every run (8 m rather than the back yard's 14, because the east lane's mouth is 31 m from the bowl's centre and 14 m out is inside the wall):
+
+| lane | side | clear floor | runner in the middle | runner in the lane |
+| --- | --- | --- | --- | --- |
+| 0 | north | 8.23 m | reaches, 12.4 m/s peak, 1.87 s | reaches, 7.9 m/s, 1.30 s |
+| 1 | east | 5.38 m | **wedged at 1.2 s, sent home at 6.22 s**, 6.1 m/s peak | reaches, 7.3 m/s, 1.40 s |
+| 2 | south (shared with the back yard) | 9.49 m | reaches, 12.5 m/s peak, 1.88 s | reaches, 7.9 m/s, 1.30 s |
+| 3 | west | 6.60 m | **wedged at 1.4 s, sent home at 6.38 s**, 6.8 m/s peak | reaches, 6.8 m/s, 2.42 s |
+
+The arithmetic was right. `steer_around` treats a drum as in the way when its axis is within its radius plus `PILLAR_CLEARANCE` of the line, and a line down the middle of a lane of floor `g` passes `radius + g/2` from each axis, so below `BfhArena.LANE_THROUGH` (`2 * PILLAR_CLEARANCE`, 7.2 m) both drums are in the way of the straight line; the nudge puts the bus beside one and into the other, it stops against the drum, and the stuck rule sends it home five seconds later.
+
+**The nudge is the ceiling, and it is kept (option (b) of the item's done-when).** A lane-aware exemption was tried: skip an obstacle in the corridor test when the line passes between it and a neighbour on the other side with at least `BUS_HALF_WIDTH` plus a margin to each surface. About twenty lines. It takes the bot bus through both narrow lanes (13.2 and 13.1 m/s, 1.98 s), and **it wedges the bus in the stacks**: "comes round the pillar" fails at a margin of 0.5 m (0.1 m/s at the end) and of 1.0 m (1.3 m/s). The corridor test cannot tell a gap it is lined up on from one it is crossing at an angle with a nine-metre bus; telling them apart needs the bus's heading and turning circle, which is a path, not a nudge. The exemption is not committed.
+
+**And a lane the bot cannot follow a runner through is worth having.** It is a door that shuts behind them: a runner who goes out through the east or west lane leaves a bus on the other side of it with the long way round to a wide lane. It is **not** somewhere to win by standing still, which is what the gap rule exists to forbid, and both halves are asserted: nobody standing IN any lane is safe (the right-hand column, every one run down from outside), and the room behind a narrow lane is open through its wide ones. So the gap rule stays 4.8 m (`BUS_GAP`) for "a bus fits" and `LANE_THROUGH` is the separate, derived number for "the autopilot drives through".
+
+**The refuges, by name:** in the courtyard, **lane 1 (east, 5.38 m, between the 3.0 and 3.8 m drums, towards the rim)** and **lane 3 (west, 6.60 m, between the 2.6 and 4.4 m drums, towards the middle of the bowl)**. By the same rule, and computed rather than driven, the back yard's west (5.54 m, to the hook) and east (5.87 m, to the rim) lanes are refuges too — which is what that section already calls "the runner's". `BfhArena.yard_refuges(index)` is the list, derived from `LANE_THROUGH` and the layout.
+
+`headless_run` holds (8 checks): in each of the four lanes the drive agrees with the rule (the two wide ones come through, the two narrow ones do not); through a wide lane the bus arrives past `bus_lethal_speed`; nobody standing in any lane is safe; every room in the farm keeps a lane of `LANE_THROUGH`; the courtyard has exactly two refuges and two ways in. **Armed, each put back after:** `LANE_THROUGH` set to `BUS_GAP` (3 fired: both narrow lanes "come through", and the refuge count read 0 of 2); the lane-threading exemption above put into `steer_around` (both narrow-lane checks fired, alongside the stacks' own "comes round the pillar").
+
+**What is still the driver's cost, and a decision rather than a bug:** a bot that chases a runner through a narrow lane is still sent home by the stuck rule, which from the runner's side is the bus vanishing — the symptom this file calls a free escape that looks like a bug under Decision 6. It takes 5 s of a bus stood against a drum, so the runner has already got away, but it reads the same. Whether a bot should instead give up on a quarry it has been stopped behind for a second (and pick the next nearest, or back off) is Christian's call; it is not done here. `[steer-3]`'s hook half — whether "the middle of the hook" is a place at all — is not measured by this.
 
 ## What a runner can climb, and two routes that never existed
 
@@ -573,7 +596,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 193 checks, 24 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 201 checks, 25 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8

@@ -33,11 +33,11 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 193
+const CHECKS := 201
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 24
+const SECTIONS := 25
 
 const TICK := 1.0 / 60.0
 
@@ -85,6 +85,7 @@ func _run() -> void:
 	await _test_reach()
 	await _test_the_scaffold()
 	await _test_the_back_yard()
+	await _test_the_courtyard_lanes()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -1635,6 +1636,183 @@ func _test_the_back_yard() -> void:
 
 	await _dispose(game)
 	_done()
+
+
+# --- The courtyard's four lanes, driven (`[steer-3]`) ------------------------
+
+## Which lanes into the courtyard the bot bus can come through, driven rather than
+## computed, and the answer held as a property of the map.
+##
+## [b]`steer_around` is a nudge, and this is its ceiling written down.[/b] It keeps each
+## drum's radius plus PILLAR_CLEARANCE off the line, so only a lane of
+## [constant BfhArena.LANE_THROUGH] (7.2 m) or more lets it drive straight through; the
+## back yard was laid out to that on 2026-09-27 from a failed drive, and the courtyard's
+## own 5.4 and 6.6 m lanes were computed, not driven, to admit no bot bus. Here each lane
+## is driven twice from 8 m outside it -- once at a runner standing in the courtyard's
+## middle, once at one standing in the lane itself -- and the table is printed.
+##
+## 8 m rather than the back yard's 14 because the east lane's mouth is 31 m from the
+## bowl's centre and a runner's floor ends at 40: 14 m out is inside the wall.
+##
+## What it holds: through the middle, the drive agrees with the rule in every lane (the
+## wide ones at a speed that kills); nobody standing IN any lane is safe, so a narrow
+## lane is a door that shuts behind a runner and not a place to win by standing still;
+## every room keeps a lane the bus can come in by; and the courtyard has two of each.
+func _test_the_courtyard_lanes() -> void:
+	print("the courtyard's four lanes, driven")
+
+	var probe := _world()
+	probe.start()
+	await _step(probe, 2)
+	var lanes := probe.arena.yard_lanes(0)
+	var refuges := probe.arena.yard_refuges(0)
+	var ways_in := 0
+	var every_room_has_a_way_in := true
+	for yard in range(BfhArena.TANK_YARDS.size()):
+		var open := 0
+		for w in probe.arena.yard_lanes(yard):
+			if w >= BfhArena.LANE_THROUGH:
+				open += 1
+		every_room_has_a_way_in = every_room_has_a_way_in and open > 0
+		if yard == 0:
+			ways_in = open
+	var mouths: Array[Vector3] = []
+	var middle := probe.arena.yard_middle(0)
+	for i in range(lanes.size()):
+		mouths.append(probe.arena.yard_lane_middle(0, i))
+	await _dispose(probe)
+
+	var through: Array[Dictionary] = []
+	var standing: Array[Dictionary] = []
+	for i in range(lanes.size()):
+		through.append(await _drive_a_lane(i, 8.0))
+		standing.append(await _drive_a_lane(i, 8.0, true))
+
+	print("  ..    lane  side   width   | runner in the middle                         | runner in the lane")
+	for i in range(lanes.size()):
+		var side := mouths[i] - middle
+		var compass := (
+			("east" if side.x > 0.0 else "west") if absf(side.x) > absf(side.z)
+			else ("south" if side.z > 0.0 else "north")
+		)
+		var a: Dictionary = through[i]
+		var b: Dictionary = standing[i]
+		print("  ..    %d     %-5s  %.2f m  | %-9s %4.1f m/s peak %5.2f s %-12s | %-9s %4.1f m/s peak %5.2f s"
+			% [i, compass, lanes[i], a.outcome, a.peak, a.seconds,
+				"(wedged %.1f)" % a.wedged if a.wedged >= 0.0 else "",
+				b.outcome, b.peak, b.seconds])
+
+	var cfg := BfhConfig.new()
+	for i in range(lanes.size()):
+		var a: Dictionary = through[i]
+		var wide := lanes[i] >= BfhArena.LANE_THROUGH
+		var reached: bool = a.outcome == "reaches"
+		_check(reached == wide,
+			"lane %d (%.2f m): the bot bus %s it to a runner in the middle"
+				% [i, lanes[i], "comes through" if wide else "cannot come through"],
+			"%s, %.1f m/s peak, %.2f s, nearest %.1f m" % [a.outcome, a.peak, a.seconds, a.nearest])
+
+	var slow_through := 0
+	for i in range(lanes.size()):
+		var a: Dictionary = through[i]
+		if a.outcome == "reaches" and a.peak < cfg.bus_lethal_speed:
+			slow_through += 1
+	_check(slow_through == 0, "and through a wide lane it arrives at a speed that kills",
+		"%d below %.1f m/s" % [slow_through, cfg.bus_lethal_speed])
+
+	var safe_in_a_lane := PackedStringArray()
+	for i in range(lanes.size()):
+		var b: Dictionary = standing[i]
+		if b.outcome != "reaches":
+			safe_in_a_lane.append("%d (%s)" % [i, b.outcome])
+	_check(safe_in_a_lane.is_empty(),
+		"nobody standing in a lane is safe there, narrow or wide",
+		"safe in lane %s" % ", ".join(safe_in_a_lane))
+
+	_check(every_room_has_a_way_in,
+		"every room in the farm keeps a lane the bot bus can come in by")
+	_check(refuges.size() == 2 and ways_in == 2,
+		"and the courtyard has two lanes a runner can shut behind them, and two ways in",
+		"refuges %s, ways in %d, against LANE_THROUGH %.1f m"
+			% [refuges, ways_in, BfhArena.LANE_THROUGH])
+
+	_done()
+
+
+## One drive of the autopilot into the courtyard through its [param lane]th lane, at a
+## runner standing in the courtyard's middle, from [param out_by] metres outside the lane.
+## Returns what happened: [code]outcome[/code] ("reaches", "wedges" or "sent home"),
+## [code]wedged[/code], the first second it stood still after moving off (-1 if never),
+## [code]peak[/code] m/s, [code]seconds[/code] to the outcome, and [code]nearest[/code],
+## the closest the bus got to the runner in metres.
+##
+## A fresh world each time, so one lane's bus cannot be the next lane's obstacle.
+func _drive_a_lane(lane: int, out_by: float, in_the_lane: bool = false) -> Dictionary:
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	_put(runner, Vector3(-30.0, 0.05, 20.0))
+	game.start()
+	await _step(game, 30)
+	for prop in game.props.all_props():
+		if not prop.instance_id in game.scaffold_ids:
+			game.props.remove(prop.instance_id)
+	await _step(game, 2)
+
+	var arena := game.arena
+	var middle := arena.yard_middle(0)
+	var mouth := arena.yard_lane_middle(0, lane)
+	var out := mouth - middle
+	out.y = 0.0
+	out = out.normalized()
+	var start := mouth + out * out_by
+
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(-out), start + Vector3(0.0, 1.4, 0.0))
+	driver.is_bot = true
+
+	var hide := (mouth if in_the_lane else middle) + Vector3(0.0, 0.05, 0.0)
+	_put(runner, hide)
+	var last := bus.position()
+	var peak := 0.0
+	var nearest := INF
+	var outcome := "wedges"
+	var wedged := -1.0
+	var took := 0
+	# Twelve seconds: past the stuck rule's five, so a bus that wedges and is left there
+	# long enough to be sent home says so rather than being reported as wedged.
+	for _i in range(720):
+		var still := DotFpsCommand.new()
+		still.yaw = runner.controller.state.yaw
+		runner.controller.apply_command(still)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		took += 1
+		var at := bus.position()
+		if _sent_home(last, at):
+			outcome = "sent home"
+			break
+		peak = maxf(peak, bus.speed())
+		# Wedged: stopped against something after the first half second, asking to go.
+		if wedged < 0.0 and took > 30 and bus.speed() < 1.0:
+			wedged = float(took) * TICK
+		nearest = minf(nearest, Vector2(at.x - hide.x, at.z - hide.z).length())
+		last = at
+		if not runner.health.alive:
+			outcome = "reaches"
+			break
+
+	await _dispose(game)
+	return {
+		"outcome": outcome, "peak": peak, "seconds": float(took) * TICK,
+		"nearest": nearest, "start": start, "wedged": wedged,
+	}
 
 
 func _test_sides() -> void:

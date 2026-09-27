@@ -809,6 +809,38 @@ func yard_lane_middle(index: int, i: int) -> Vector3:
 	return Vector3(farm[a].x, 0.0, farm[a].z) + along.normalized() * (ra + gap * 0.5)
 
 
+## The clear floor a lane needs before the bot bus will drive straight through it, in
+## metres: [constant PILLAR_CLEARANCE] each side of the line through its middle.
+##
+## [b]Not [constant BUS_GAP], and the difference is the steering, not the bus.[/b]
+## [method steer_around] treats any obstacle whose axis is within its radius plus
+## PILLAR_CLEARANCE of the line as in the way, and a line down the middle of a lane of
+## floor [code]g[/code] passes [code]radius + g / 2[/code] from each side's axis -- so
+## below this width both drums are "in the way" of the straight line, the nudge sends
+## the bus beside one of them and into the other, and it wedges (driven, `[steer-3]`,
+## 2026-09-27). A bus would fit; the autopilot does not go. See [method yard_refuges].
+const LANE_THROUGH := 2.0 * PILLAR_CLEARANCE
+
+
+## The lanes round the [param index]th yard the bot bus cannot drive through, as lane
+## indices (see [method yard_lanes]): every lane narrower than [constant LANE_THROUGH].
+##
+## [b]Deliberate, and a runner's.[/b] A lane a runner can go through and a bus chasing
+## them cannot follow is a door that shuts behind them -- the bus has to go round to a
+## wide lane, and the bot bus that tries it anyway wedges and is sent home by the stuck
+## rule. It is not somewhere to win by standing still: a runner standing IN one is run
+## down from outside it, and the room behind it is open through its wide lanes, which
+## is why every yard must keep at least one lane of LANE_THROUGH (checked). Measured and
+## held in `headless_run`'s "the courtyard's four lanes, driven".
+func yard_refuges(index: int) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	var lanes := yard_lanes(index)
+	for i in range(lanes.size()):
+		if lanes[i] < LANE_THROUGH:
+			out.append(i)
+	return out
+
+
 ## Everything solid standing on the sand: the stacks, then the tank farm.
 ##
 ## [b]The steering, the scatter keep-out and the gap rule all ask for this and none of
