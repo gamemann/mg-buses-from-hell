@@ -22,13 +22,15 @@ It is a first-person game built on the `dot-*` addon family: [dot-props](https:/
 ```bash
 godot --path .                                                # play it, alone
 godot --headless --path . res://examples/headless_run.tscn    # the simulation, 183 checks over 23 sections
-godot --headless --path . res://examples/headless_net.tscn    # over the wire, 148 checks over 18 sections
+godot --headless --path . res://examples/headless_net.tscn    # over the wire, 166 checks over 20 sections
 godot --headless --path . res://examples/dedicated.tscn       # as a server, 79 checks over 11 sections
 tools/shot.sh                                                 # render a frame and look at it
 tools/shot.sh 5 follow.png --watch=follow                     # run down, and where the camera goes
 tools/shot.sh 5 settings.png --settings                       # the settings screen
 tools/shot.sh 9 blind.png --blind                             # an admin's blind, through the HUD
 tools/shot.sh 9 beacon.png --beacon --bus                     # an admin's beacon, round a driver's bus
+tools/shot.sh 5 blast.png --blast                             # a barrel going off, as the client draws it
+tools/shot.sh 2 board.png --scoreboard                        # the scoreboard, Tab held
 ```
 
 The same client plays alone and plays online: with no server link in the registry it runs the world itself, and with one it predicts its own movement and draws everything else from what the server sends. There is no separate single-player build to keep in step.
@@ -62,6 +64,10 @@ The server decides all of it: who you may watch, when the camera hands over, and
 ## What it sounds like
 
 A bus's engine is a pulse that quickens with its speed, positional, so a runner behind a tank can hear which side it is coming round. A driver's click is the horn. Hammers, crates breaking and being shoved, a runner bumped and a runner flattened, a barrel, and the round's own cues — including whether YOUR side won it — are all sounds now. None of it is an audio file: every sound is a synthesised stand-in from [dot-audio](https://github.com/modcommunity/dot-audio), and dropping a real file at the path the catalogue names replaces one without editing a line.
+
+## The score
+
+Hold **Tab** for the scoreboard; it also comes up on its own between rounds, saying who took the one just played. It is two tables, because the sides are not two teams of the same thing: the drivers, each in a bus or on foot, and the runners, each up or out. Over each is the number of rounds that side has won, which is what dot-match scores here — a side's tally rather than a group of people's, since everybody changes sides every third round.
 
 ## What you earn
 
@@ -151,11 +157,11 @@ All of it is [dot-game](https://github.com/modcommunity/dot-game)'s `DotGameServ
 
 There are no profiles and no avatars: `dot-game` reports the missing identity layer and carries on, which is a server where everybody is a guest. Nothing else is in the way.
 
-Nothing is drawn for a barrel going off. It is heard, positionally, and it throws people; there is no flash or smoke.
+~~Nothing is drawn for a barrel going off.~~ Drawn since 2026-09-27: a fireball, a ring on the sand out to exactly the blast's reach, a flash and smoke, from the event the server sends. See "A barrel, drawn" in CLAUDE.md.
 
-There is no scoreboard. Rounds are scored by dot-match and nobody can see the score, and each player's numbers are on the server console rather than on their screen.
+~~There is no scoreboard.~~ Since 2026-09-27: see "The score" above. Each player's own numbers are still on the server console rather than on their screen.
 
-A connected client does not predict its own runner yet: it moves when the server says so, a round trip behind the keys. It was found while wiring the spectator camera and is written up in CLAUDE.md.
+~~A connected client does not predict its own runner yet.~~ Fixed 2026-09-25; see "A connected client predicted nothing" in CLAUDE.md.
 
 ## Licence
 

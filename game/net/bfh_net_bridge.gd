@@ -600,7 +600,25 @@ func _on_round_began(number: int) -> void:
 
 
 func _on_round_over(number: int, winner: int) -> void:
+	# The CLOCK first, carrying the tally dot-match has just counted this round into, so a
+	# client's world has the new score by the time its `round_over` fires — which is when a
+	# scoreboard shows itself. Behind the ROUND it would show last round's score for up to
+	# half a second, on the one screen whose whole job is saying who won.
+	_broadcast(BfhEvents.Kind.CLOCK, _clock_bytes())
 	_broadcast(BfhEvents.Kind.ROUND, BfhEvents.write_round(number, false, winner))
+
+
+## The CLOCK as the server has it now. One place, because three send it.
+func _clock_bytes() -> PackedByteArray:
+	return BfhEvents.write_clock(
+		game.round_number,
+		game.round_elapsed,
+		game.crates_left(),
+		game.alive_runners(),
+		game.sides_are_playable(),
+		game.rounds_won(BfhGame.TEAM_DRIVERS),
+		game.rounds_won(BfhGame.TEAM_RUNNERS)
+	)
 
 
 ## Every player's side, one message each.
@@ -707,13 +725,7 @@ func server_tick(tick: int) -> void:
 	ensure_game_ticked(tick)
 
 	if tick % CLOCK_EVERY == 0:
-		_broadcast(BfhEvents.Kind.CLOCK, BfhEvents.write_clock(
-			game.round_number,
-			game.round_elapsed,
-			game.crates_left(),
-			game.alive_runners(),
-			game.sides_are_playable()
-		))
+		_broadcast(BfhEvents.Kind.CLOCK, _clock_bytes())
 
 
 func ensure_game_ticked(tick: int) -> void:
@@ -1029,13 +1041,7 @@ func _admit(peer_id: int) -> void:
 			behaviour is BfhBusNet
 		))
 
-	_tell(peer_id, BfhEvents.Kind.CLOCK, BfhEvents.write_clock(
-		game.round_number,
-		game.round_elapsed,
-		game.crates_left(),
-		game.alive_runners(),
-		game.sides_are_playable()
-	))
+	_tell(peer_id, BfhEvents.Kind.CLOCK, _clock_bytes())
 
 
 ## Which catalogue entry a replicated body came from.
@@ -1519,6 +1525,10 @@ func _apply_clock(reader: DotNetReader) -> void:
 	game.round_elapsed = float(clock["elapsed"])
 	game.remote_cover = int(clock["cover"])
 	game.remote_playable = bool(clock["playable"])
+	game.remote_rounds = {
+		BfhGame.TEAM_DRIVERS: int(clock["drivers_won"]),
+		BfhGame.TEAM_RUNNERS: int(clock["runners_won"]),
+	}
 
 
 # --- Reporting -------------------------------------------------------------

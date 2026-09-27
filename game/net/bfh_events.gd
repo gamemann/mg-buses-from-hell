@@ -33,7 +33,7 @@ enum Kind {
 	PROP_GONE,
 	## Somebody got into or out of a bus.
 	SEAT,
-	## The round clock, and the two numbers a client cannot count for itself.
+	## The round clock, the numbers a client cannot count for itself, and the score.
 	CLOCK,
 	## A round began or ended.
 	ROUND,
@@ -271,7 +271,8 @@ static func read_seat(r: DotNetReader) -> Dictionary:
 ## whether standing still is still an option. Health and the clock a client can see for
 ## itself; this it has to be told.
 static func write_clock(
-	round_number: int, elapsed: float, cover: int, alive: int, playable: bool
+	round_number: int, elapsed: float, cover: int, alive: int, playable: bool,
+	drivers_won: int, runners_won: int
 ) -> PackedByteArray:
 	var w := _w()
 	w.write_varint(round_number)
@@ -279,6 +280,10 @@ static func write_clock(
 	w.write_uint(clampi(cover, 0, 1023), 10)
 	w.write_uint(clampi(alive, 0, 255), 8)
 	w.write_bool(playable)
+	# The score, which is dot-match's rounds won per side. Here rather than in ROUND because
+	# a player who joins mid-match is sent a CLOCK and never the ROUNDs before them.
+	w.write_varint(maxi(drivers_won, 0))
+	w.write_varint(maxi(runners_won, 0))
 	return w.to_bytes()
 
 
@@ -288,12 +293,16 @@ static func read_clock(r: DotNetReader) -> Dictionary:
 	var cover := r.read_uint(10)
 	var alive := r.read_uint(8)
 	var playable := r.read_bool()
+	var drivers_won := r.read_varint()
+	var runners_won := r.read_varint()
 	return {
 		"round": round_number,
 		"elapsed": elapsed,
 		"cover": cover,
 		"alive": alive,
 		"playable": playable,
+		"drivers_won": drivers_won,
+		"runners_won": runners_won,
 		"ok": r.ok(),
 	}
 

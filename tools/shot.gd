@@ -1,5 +1,6 @@
 extends Node
 
+const BfhContent := preload("../game/bfh_content.gd")
 const BfhGame := preload("../game/bfh_game.gd")
 
 ## Renders the game from the local player's eyes and exits. The check no assertion makes.
@@ -23,6 +24,8 @@ func _run() -> void:
 	var blind := false
 	var settings := false
 	var watch := ""
+	var blast := false
+	var scoreboard := false
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--seconds="):
 			seconds = float(arg.substr(10))
@@ -46,6 +49,10 @@ func _run() -> void:
 			blind = true
 		elif arg == "--settings":
 			settings = true
+		elif arg == "--blast":
+			blast = true
+		elif arg == "--scoreboard":
+			scoreboard = true
 		elif arg.begins_with("--watch="):
 			watch = arg.substr(8)
 
@@ -221,6 +228,68 @@ func _run() -> void:
 			cam.look_at(bus.position(), Vector3.UP)
 			cam.current = true
 			await get_tree().process_frame
+
+	# A barrel going off twelve metres in front of the local runner, drawn by the client's
+	# own effects from the world's `barrel_exploded` — the path a connected client takes from
+	# a BLAST. Rendered a fifth of a second in, when the ring has reached the blast's edge
+	# and the fireball has not burned out.
+	var world_for_blast: BfhGame = client.get("game")
+	var eye_for_blast: Camera3D = client.get("camera")
+	if blast and world_for_blast != null and eye_for_blast != null:
+		var ahead := -eye_for_blast.global_basis.z
+		ahead.y = 0.0
+		ahead = ahead.normalized() if ahead.length() > 0.01 else Vector3.FORWARD
+		var at := eye_for_blast.global_position + ahead * 12.0
+		at.y = 0.0
+		var barrel := world_for_blast.props.spawn(BfhContent.BARREL, &"world",
+			at + Vector3(0.0, BfhContent.BARREL_HEIGHT * 0.5 + 0.05, 0.0))
+		await get_tree().process_frame
+		world_for_blast.prop_damage.break_now(barrel.instance_id, &"local")
+		var burning := 0.0
+		while burning < 0.2:
+			burning += get_process_delta_time()
+			await get_tree().process_frame
+		var fx: Node = client.get("fx")
+		print("fx: ", fx.call("describe") if fx != null else "none")
+		var drawn: Node3D = fx.get("last_blast") if fx != null else null
+		if drawn != null:
+			print("blast at %s, radius %.2f, ring drawn to %.2f m" % [
+				str(drawn.global_position), float(drawn.get("radius")), float(drawn.call("drawn_reach"))])
+
+	# The scoreboard from real match state: three more runners, a round the buses win
+	# (which puts it up on its own), then the next round with one runner out and Tab held.
+	var world_for_board: BfhGame = client.get("game")
+	if scoreboard and world_for_board != null:
+		for name in ["Ada", "Bea", "Cy"]:
+			var _r := world_for_board.add_player(StringName(name.to_lower()), name,
+				BfhGame.TEAM_RUNNERS, false, true)
+		var waited_live := 0.0
+		while not world_for_board.match_node.is_live() and waited_live < 20.0:
+			waited_live += get_process_delta_time()
+			await get_tree().process_frame
+		var killer: StringName = world_for_board.drivers()[0].player_id
+		for runner in world_for_board.runners():
+			world_for_board.call("_bus_hit", runner, killer, 30.0, Vector3(0.0, 0.0, 1.0))
+		await get_tree().process_frame
+		print("after the round: ", client.get("scoreboard").call("describe"))
+		var round_one := world_for_board.round_number
+		var waited_next := 0.0
+		while world_for_board.round_number == round_one and waited_next < 20.0:
+			waited_next += get_process_delta_time()
+			await get_tree().process_frame
+		await get_tree().process_frame
+		var cy: Node = world_for_board.players.get(&"cy")
+		if cy != null:
+			world_for_board.call("_bus_hit", cy, killer, 30.0, Vector3(0.0, 0.0, 1.0))
+		var tab := InputEventKey.new()
+		tab.physical_keycode = KEY_TAB
+		tab.pressed = true
+		client.get("scoreboard").call("handle_key", tab)
+		var settle_board := 0.0
+		while settle_board < 0.3:
+			settle_board += get_process_delta_time()
+			await get_tree().process_frame
+		print("held: ", client.get("scoreboard").call("describe"))
 
 	await RenderingServer.frame_post_draw
 	var image := get_viewport().get_texture().get_image()

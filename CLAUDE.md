@@ -30,6 +30,8 @@ game/
   bfh_spectate.gd   where a runner who is out looks: the server decides, a client mirrors
   bfh_sounds.gd     every sound as a document, and the synthesised voice standing in for it
   bfh_audio.gd      what a client hears: the world's noises, the round's cues, every engine
+  bfh_fx.gd         what a client draws that nothing simulates: a barrel going off, via dot-fx
+  bfh_scoreboard.gd the score and the sides: Tab, and up on its own between rounds
   bfh_stats.gd      the five per-player numbers, declared once
   bfh_awards.gd     what they earn, as rules over them
   bfh_progress.gd   dot-stats and dot-achievements, fed by the world's own signals
@@ -43,9 +45,10 @@ game/
   net/              the wire: the codec, the messages, the link, three behaviours,
                     and the bridge that is the only file naming both halves
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
+fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (183), headless_net (148), dedicated (79)
+examples/           headless_run (183), headless_net (166), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -183,7 +186,7 @@ The `.gitignore` is the dependency manifest, and on 2026-09-25 five linked addon
 - **dot-spawn is unlinked.** There is no respawn — out stays out until the round — and where a runner stands at the top of a round is a seeded scatter over the bowl whose keep-outs come from `BfhArena`'s one description of its obstacles. A catalogue of spawn sites would be a second description of the bowl to drift from the first. The one place it might pay is a late joiner placed in front of a moving bus; that is unmeasured.
 - **dot-team is unlinked.** `sides` is two entries, asymmetric and capped by seats rather than balanced, and dot-match's teams already carry what the round rule reads. dot-team's balance and policy are about symmetric sides — the case `_side_for_new_player` exists to not be — and its spectate bridge would have restricted the camera to one's own side, which this game decided against (above).
 - **dot-physics is unlinked.** Nothing names a layer or a surface: the hammer's ray is all layers and the bowl has one kind of floor. Only comments in dot-props and dot-spawn mention it.
-- **dot-fx is unlinked, and it is the right tool for the one thing still missing** — a barrel going off is heard now and still not drawn. It was linked for two weeks without a single effect; a manifest line that fetches and parses an addon nobody uses is a dependency that lies. Re-link it with the first effect.
+- **dot-fx was unlinked, and it was the right tool for the one thing still missing** — a barrel going off was heard and not drawn. It had been linked for two weeks without a single effect; a manifest line that fetches and parses an addon nobody uses is a dependency that lies. **Re-linked 2026-09-27 with the first effect**; see "A barrel, drawn, and the score".
 
 And four were linked for this work: **dot-spectate, dot-stats, dot-achievements, dot-settings** (dot-audio was already linked, for the beacon). dot-server-deploy already vendors all five, so a delivered pack finds them.
 
@@ -521,6 +524,20 @@ The family found that every bot in it was driven with forward and jump held, and
 
 `headless_net` got the same treatment: "the server moves them from the commands the client sent" was "more than a metre in 40 ticks" (a sixth of what 40 ticks covers); it prints **3.71 m of 4.33, at 6.50 m/s** (the shortfall is the input lead) and asserts the speed. "The server runs them across the bowl" was "more than 3 m in a second"; it prints **6.18 of 6.39 m** and asserts 95%. Armed with the client's key at 30%: both fail.
 
+## A barrel, drawn, and the score (`[buses-next]`, 2026-09-27)
+
+**A barrel was decided, replicated, logged and heard, and nothing drew it.** `bfh_fx.gd` is the client's effects, built beside `BfhAudio` and shaped like it: it listens to the ONE world's `barrel_exploded` — emitted by the offline world itself, and on a connected client by the bridge from the BLAST — and hands dot-fx an id and a place. Only `BfhClient` builds one, so a server draws nothing; the blast is still decided there and only there. `fx/bfh_blast.tscn` is the scene dot-fx spawns: a fireball, a translucent disc and a ring on the sand out to **exactly the blast's reach** (the part a runner reads: "was I inside it"), a flash and smoke, built in code because this game ships no particle art. `configure(radius)` sizes it; until then it is one metre, so a blast nobody sized is visibly wrong. The sound was already there (`BfhAudio._on_blast`).
+
+**The first render was white.** Additive blending over a bright sand bowl under a pale sky saturated: the fireball read as a white ball and the ring as a white line. Alpha-blended orange reads over both. The ring also floated at knee height, because the server reports a barrel's blast at the barrel's middle; it sits `GROUND_BELOW` (half a barrel) under the centre now.
+
+**No other game in this family ships the scenes its dot-fx catalogue names.** game-arena, game-g2gfast, game-playground, game-hungario and game-simple-lobby each declare effects under `res://scenes/fx/…` and none of those directories exists, so every spawned effect in all five is refused as `missing` — which dot-fx logs at DEBUG, correctly for a pack still arriving and invisibly for an effect nobody shipped. `BfhFx.setup` WARNs on `missing_scenes()`, and `headless_net` asserts there are none. Found by reading, not by running those games.
+
+**The scoreboard is two tables, because the sides are not two teams of the same thing.** `bfh_scoreboard.gd`, a CanvasLayer at 50 (over the HUD, under the chat box), with dot-ui's `DotTableView` per side: the drivers ("driving" / "on foot") and the runners ("up" / "out", the living first). Held on Tab (`BfhClient._unhandled_input`, before the spectator's branch, since somebody who is out has most time to read it), and up on its own from `round_over` to the next `round_began`, with the round just played named at the bottom. **What dot-match scores here is rounds, per side** — `DotMatch.rounds_won` by team id, so "rounds the buses have won" whoever was in them; its per-player records are never reported to, for the reason under "What a player's numbers are", so there is no per-player number column. A client does not tick dot-match, so the tally rides the CLOCK (two varints appended; a pack's server and client are always the same build) into `BfhGame.remote_rounds`, and `BfhGame.rounds_won(team)` answers from dot-match on the authority and from that on a client. **On a round's end the server sends a CLOCK before the ROUND**, so a client's world has the new tally by the time its `round_over` puts the board up; the other order shows last round's score on the one screen whose job is saying who won. Each table has an explicit `custom_minimum_size`, because a `DotTableView` is a plain Control and inside a container it is otherwise laid out zero pixels tall.
+
+**Two bugs the scoreboard found, both in `bfh_game.gd`.** dot-match's side setup (the game's two teams, `force_balance` off, `max_difference` 0) had sat since 2026-09-26 at the END of `_build_progress`, below its two early returns — `_build_spectate` and `_build_progress` were inserted into the middle of `_build_match` — so a client's world, and any server with `track_progress` off, kept dot-match's default pair and its balancing. It is back in `_build_match`. And **assigning `teams.teams` does not re-index `DotTeamManager`**: dot-match fills in its standard pair when it enters the tree and indexes it on first lookup, so `team(1)` went on answering "Red" and `team(2)` "Blue" on every world, the server's included. The ids matched, so every rule worked; the first render of the scoreboard said Red and Blue. `_build_match` calls `teams.reindex()`. That one is dot-match's to fix (a setter on `teams`), and is not fixed there.
+
+**Checked in `headless_net`, over its loopback link** (the real encoders, bridge and events; no OS socket — nothing here opens one to a client). **A barrel the server sets off is drawn on the client** (7): nothing drawn before the server decides; one blast is one effect; drawn where the server's own `barrel_exploded` said (under 5 cm); in the client's World3D and not the server's; `radius` and the ring measured off its mesh both the server's 6.5 m; retired by dot-fx after its lifetime. **The scoreboard** (10): the client's dot-match knows the sides as Drivers and Runners; every server player in the client's rows on the server's side; the bot "driving" and this client the one highlighted runner, "up"; the client's tally equals the server's `rounds_won`; hidden mid-round; up on Tab and down on release; every cell and both tables laid out with a size; up by itself at the round's end **with that round already counted**; gone when the next begins. Plus a wire check that the CLOCK round-trips both tallies. **Armed, each put back after:** `BfhFx.setup` not connecting `barrel_exploded` (5 fired), `configure` not called (the radius check fired at 1.00 against 6.50), the CLOCK sent after the ROUND (fired: "Drivers 1" against the server's 2), the tables' `custom_minimum_size` removed (fired: both tables 0 px tall for 44 px of rows), `teams.reindex()` removed (fired: Red, Blue), and the teams assigned on the authority only (fired). Rendered: `tools/shot.sh 5 blast.png --blast` and `tools/shot.sh 2 board.png --scoreboard`.
+
 ## Validating
 
 ```bash
@@ -529,7 +546,7 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 183 checks, 23 sections, the simulation
-godot --headless --path . res://examples/headless_net.tscn   # 148 checks, 18 sections, over a loopback
+godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
@@ -543,6 +560,8 @@ tools/shot.sh 6 net.png --net                                # a connected clien
 tools/shot.sh 8 walk.png --net --walk                        # the client running its OWN runner: prediction latency, corrections, eye smoothness
 tools/shot.sh 5 watch_follow.png --watch=follow              # run down, then the camera: death, cab, follow or chase
 tools/shot.sh 5 settings.png --settings                      # the settings screen Escape opens, over the bowl
+tools/shot.sh 5 blast.png --blast                            # a barrel going off 12 m ahead, as the client draws it
+tools/shot.sh 2 board.png --scoreboard                       # the scoreboard, Tab held, after a round the buses won
 ```
 
 **And none of those three reaches the deployment, which is where five of the bugs above came from.** The loopback suite runs both ends in one process: it proves the encoders, the prediction, the reconciliation and the ordering, and it cannot see Godot's RPC routing, a pack being mounted, or a project setting that did not travel. That needs the real thing:

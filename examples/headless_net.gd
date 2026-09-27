@@ -4,6 +4,8 @@ const BfhAudio := preload("../game/bfh_audio.gd")
 const BfhBusNet := preload("../game/net/bfh_bus_net.gd")
 const BfhClient := preload("../game/bfh_client.gd")
 const BfhEvents := preload("../game/net/bfh_events.gd")
+const BfhFx := preload("../game/bfh_fx.gd")
+const BfhScoreboard := preload("../game/bfh_scoreboard.gd")
 const BfhNetBridge := preload("../game/net/bfh_net_bridge.gd")
 const BfhNetCommand := preload("../game/net/bfh_net_command.gd")
 const BfhPropNet := preload("../game/net/bfh_prop_net.gd")
@@ -43,11 +45,11 @@ const BfhSpectate := preload("../game/bfh_spectate.gd")
 ## the wrong reason. A real client is a separate program with its own export and its own
 ## `user://` config. Make them disagree, and let HELLO correct it.
 
-const CHECKS := 148
+const CHECKS := 166
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 18
+const SECTIONS := 20
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -116,6 +118,8 @@ func _run() -> void:
 		await _test_blind_and_beacon()
 		await _test_somebody_else_is_drawn()
 		await _test_a_runner_who_is_out()
+		await _test_a_barrel_is_drawn()
+		await _test_the_scoreboard()
 		await _test_leaving()
 
 	print("")
@@ -247,7 +251,7 @@ func _test_the_wire() -> void:
 	)
 
 	var clock := BfhEvents.read_clock(DotNetReader.new(
-		BfhEvents.write_clock(3, 42.5, 27, 4, true)
+		BfhEvents.write_clock(3, 42.5, 27, 4, true, 5, 2)
 	))
 	_check(bool(clock["ok"]) and int(clock["round"]) == 3, "the clock round-trips")
 	_check(
@@ -257,6 +261,10 @@ func _test_the_wire() -> void:
 	_check(
 		int(clock["cover"]) == 27 and int(clock["alive"]) == 4,
 		"clock: and the two numbers a client cannot count for itself"
+	)
+	_check(
+		int(clock["drivers_won"]) == 5 and int(clock["runners_won"]) == 2,
+		"clock: and the rounds each side has won, which is what dot-match scores here"
 	)
 
 	var round_over := BfhEvents.read_round(DotNetReader.new(
@@ -287,7 +295,7 @@ func _test_the_wire() -> void:
 	_check(not bool(short["ok"]), "a truncated join is reported as exhausted, not as zeros")
 
 	var short_clock := BfhEvents.read_clock(DotNetReader.new(
-		BfhEvents.write_clock(3, 42.5, 27, 4, true).slice(0, 2)
+		BfhEvents.write_clock(3, 42.5, 27, 4, true, 5, 2).slice(0, 2)
 	))
 	_check(not bool(short_clock["ok"]), "and so is a truncated clock")
 
@@ -2004,4 +2012,225 @@ func _test_a_runner_who_is_out() -> void:
 	_server_bridge.remove_player(BfhNetBridge.session_of(other.player_id))
 	_exchange()
 	await _steps(2)
+	_done()
+
+
+# --- What a client draws: a barrel ------------------------------------------
+
+## The server sets a barrel off; the client draws it, where it went off and as far as it
+## reached, from the BLAST alone.
+##
+## Through [BfhFx] listening to the client's world, which the bridge makes emit
+## `barrel_exploded` from the BLAST — the path [BfhClient] builds. Armed by not connecting
+## that signal in `BfhFx.setup` (the drawing checks fail) and by not calling `configure`
+## on the spawned node (the radius and the drawn reach fail).
+func _test_a_barrel_is_drawn() -> void:
+	_section("a barrel the server sets off is drawn on the client, where and as far as it went off")
+
+	var client_side := _client_game.get_parent()
+	var fx := BfhFx.new()
+	client_side.add_child(fx)
+	var built := fx.setup(_client_game)
+	_check(
+		built.ok and fx.fx.catalogue.missing_scenes().is_empty(),
+		"the client's effects are built, and the blast's scene is in this build",
+		str(built.error) if not built.ok else ", ".join(fx.fx.catalogue.missing_scenes())
+	)
+
+	# The truth is the server's: what its own world says went off, and where.
+	var decided: Array = []
+	_server_game.barrel_exploded.connect(func(at: Vector3, radius: float) -> void:
+		decided.append([at, radius]))
+
+	var spot := Vector3(-11.0, 0.0, 17.0)
+	var barrel := _server_game.props.spawn(BfhContent.BARREL, &"world",
+		spot + Vector3(0.0, BfhContent.BARREL_HEIGHT * 0.5 + 0.05, 0.0))
+	await _steps(4)
+	_check(fx.heard == 0 and fx.drawn == 0, "nothing is drawn before the server decides")
+
+	_server_game.prop_damage.break_now(barrel.instance_id, &"")
+	_exchange()
+	await _steps(3)
+
+	var truth_at: Vector3 = decided[0][0] if not decided.is_empty() else Vector3.INF
+	var truth_radius: float = float(decided[0][1]) if not decided.is_empty() else -1.0
+	var blast := fx.last_blast
+	_check(
+		decided.size() == 1 and fx.heard == 1 and fx.drawn == 1 and blast != null,
+		"one blast on the server is one effect on the client",
+		"server %d, client heard %d, drew %d" % [decided.size(), fx.heard, fx.drawn]
+	)
+
+	if blast == null:
+		for _i in range(4):
+			_check(false, "(no blast drawn)")
+		client_side.remove_child(fx)
+		fx.free()
+		_done()
+		return
+
+	_check(
+		blast.global_position.distance_to(truth_at) < 0.05,
+		"drawn where the server says it went off",
+		"%s against %s" % [str(blast.global_position), str(truth_at)]
+	)
+	_check(
+		blast.get_world_3d() == _client_game.get_world_3d()
+		and blast.get_world_3d() != _server_game.get_world_3d(),
+		"in the client's world, and not the server's"
+	)
+
+	# Past the moment the ring reaches the edge, stepped rather than waited for.
+	blast.call("advance", 0.35)
+	var reach := float(blast.call("drawn_reach"))
+	_check(
+		absf(float(blast.get("radius")) - truth_radius) < 0.05
+		and absf(reach - truth_radius) < truth_radius * 0.03,
+		"sized from the radius the server sent: the ring is drawn to the blast's reach",
+		"radius %.2f, ring %.2f m, server %.2f" % [float(blast.get("radius")), reach, truth_radius]
+	)
+
+	# dot-fx retires it on its own lifetime, which is wall-clock milliseconds.
+	await get_tree().create_timer(float(BfhFx.BLAST_MS) / 1000.0 + 0.2).timeout
+	fx.present(0.016, Vector3.ZERO)
+	await get_tree().process_frame
+	_check(
+		fx.fx.live_count() == 0 and not is_instance_valid(blast),
+		"and gone once its lifetime is up, rather than kept for the round",
+		"live %d" % fx.fx.live_count()
+	)
+
+	client_side.remove_child(fx)
+	fx.free()
+	_done()
+
+
+# --- The scoreboard ----------------------------------------------------------
+
+## The client's scoreboard over the real match: both sides from the roster the server sent,
+## the tallies dot-match kept on the server, up on its own at a round's end with that
+## round already counted, and on Tab.
+##
+## Armed: with the CLOCK sent after the ROUND in `_on_round_over`, "already counted" fails;
+## with the tables' `custom_minimum_size` removed, the size check fails; with the teams put
+## back at the end of `_build_progress`, or without `teams.reindex()`, the sides check fails.
+func _test_the_scoreboard() -> void:
+	_section("the scoreboard: both sides, and the score dot-match kept on the server")
+
+	var client_names := {}
+	var mine := _client_player()
+	var board := BfhScoreboard.new()
+	add_child(board)
+	board.bind(_client_game, func() -> BfhPlayer: return _client_player())
+
+	var client_match := _client_game.match_node
+	var drivers_side: DotTeam = client_match.teams.team(BfhGame.TEAM_DRIVERS)
+	var runners_side: DotTeam = client_match.teams.team(BfhGame.TEAM_RUNNERS)
+	_check(
+		drivers_side != null and drivers_side.display_name == "Drivers"
+		and runners_side != null and runners_side.display_name == "Runners",
+		"the client's dot-match knows the two sides by this game's names",
+		"%s, %s" % [str(drivers_side), str(runners_side)]
+	)
+
+	# Every player the server has, on the side the server has them, in the client's rows.
+	var drivers := BfhScoreboard.rows_for(_client_game, BfhGame.TEAM_DRIVERS, mine.player_id)
+	var runners := BfhScoreboard.rows_for(_client_game, BfhGame.TEAM_RUNNERS, mine.player_id)
+	for row in drivers + runners:
+		client_names[String(row[&"id"])] = row
+	var misplaced := PackedStringArray()
+	for id: StringName in _server_game.players:
+		var row: Dictionary = client_names.get(String(id), {})
+		var want_rows := drivers if _server_game.team_of(id) == BfhGame.TEAM_DRIVERS else runners
+		if row.is_empty() or not want_rows.has(row):
+			misplaced.append(String(id))
+	_check(
+		misplaced.is_empty() and drivers.size() + runners.size() == _server_game.players.size()
+		and not drivers.is_empty() and not runners.is_empty(),
+		"every player the server has is on the side the server has them",
+		"%d drivers, %d runners, misplaced %s" % [drivers.size(), runners.size(), str(misplaced)]
+	)
+	var own_rows := runners.filter(func(r: Dictionary) -> bool: return bool(r["highlight"]))
+	_check(
+		drivers.all(func(r: Dictionary) -> bool: return r[&"status"] == "driving")
+		and own_rows.size() == 1 and String(own_rows[0][&"id"]) == String(mine.player_id)
+		and own_rows[0][&"status"] == "up",
+		"the bot driver reads as driving, and this client is the one highlighted runner, up",
+		str(drivers) + " " + str(own_rows)
+	)
+
+	await _steps(int(BfhNetBridge.CLOCK_EVERY) + 2)
+	var server_drivers := int(_server_game.match_node.rounds_won.get(BfhGame.TEAM_DRIVERS, 0))
+	var server_runners := int(_server_game.match_node.rounds_won.get(BfhGame.TEAM_RUNNERS, 0))
+	_check(
+		server_drivers > 0
+		and _client_game.rounds_won(BfhGame.TEAM_DRIVERS) == server_drivers
+		and _client_game.rounds_won(BfhGame.TEAM_RUNNERS) == server_runners,
+		"the client's tally is the rounds dot-match counted on the server",
+		"server %d-%d, client %d-%d" % [server_drivers, server_runners,
+			_client_game.rounds_won(BfhGame.TEAM_DRIVERS), _client_game.rounds_won(BfhGame.TEAM_RUNNERS)]
+	)
+	_check(not board.shown(), "not on screen mid-round unless asked for")
+
+	var tab := InputEventKey.new()
+	tab.physical_keycode = KEY_TAB
+	tab.pressed = true
+	var took := board.handle_key(tab)
+	await get_tree().process_frame
+	await get_tree().process_frame
+	_check(took and board.shown() and board.root.visible, "Tab held puts it up")
+
+	# Laid out with a size. See the class notes on the zero-size trap.
+	var sized := true
+	var detail := PackedStringArray()
+	for table: DotTableView in [board.drivers_table, board.runners_table]:
+		var grid := table.get_node("Grid") as Control
+		var need := 0.0
+		for line: Control in grid.get_children():
+			need += line.size.y
+			for cell: Control in line.get_children():
+				if cell.size.x < 2.0 or cell.size.y < 2.0:
+					sized = false
+					detail.append("a %s cell %s" % [table.name, str(cell.size)])
+		if table.size.y + 0.5 < need or table.size.x < 100.0:
+			sized = false
+			detail.append("table %s for rows needing %.0f" % [str(table.size), need])
+	_check(sized, "every cell is laid out with a size, inside a table as big as its rows", ", ".join(detail))
+
+	tab.pressed = false
+	var _took_release := board.handle_key(tab)
+	_check(not board.shown(), "and letting go takes it down")
+
+	# The last runner goes: the round ends on the server, and the client's scoreboard comes
+	# up on its own at that moment with the round just played already in the tally.
+	var at_end: Array = []
+	_client_game.round_over.connect(func(_n: int, winner: int) -> void:
+		at_end.append({
+			"shown": board.shown(),
+			"drivers": _client_game.rounds_won(BfhGame.TEAM_DRIVERS),
+			"header": board.drivers_header.text,
+			"footer": board.footer.text,
+			"winner": winner,
+		}), CONNECT_ONE_SHOT)
+	var bot_key := BfhNetBridge.player_key(BfhNetBridge.FIRST_BOT_SESSION)
+	_server_game._bus_hit(_server_player(), bot_key, 30.0, Vector3(0.0, 0.0, 1.0))
+	await _steps(3)
+	var want := server_drivers + 1
+	_check(
+		at_end.size() == 1 and bool(at_end[0]["shown"]) and int(at_end[0]["drivers"]) == want
+		and str(at_end[0]["header"]).contains("%d round" % want)
+		and str(at_end[0]["footer"]).contains("buses"),
+		"at the round's end it comes up by itself, with that round already counted",
+		"%s, server says %d" % [str(at_end), int(_server_game.match_node.rounds_won.get(BfhGame.TEAM_DRIVERS, 0))]
+	)
+
+	await _steps(4)
+	_check(
+		not board.after_round and not board.shown(),
+		"and goes when the next round begins",
+		str(board.describe())
+	)
+
+	remove_child(board)
+	board.free()
 	_done()

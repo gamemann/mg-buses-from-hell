@@ -2,12 +2,14 @@ extends Node
 
 const BfhAudio := preload("bfh_audio.gd")
 const BfhClientChat := preload("bfh_client_chat.gd")
+const BfhFx := preload("bfh_fx.gd")
 const BfhNetBridge := preload("net/bfh_net_bridge.gd")
 const BfhNetCommand := preload("net/bfh_net_command.gd")
 
 const BfhConfig := preload("bfh_config.gd")
 const BfhGame := preload("bfh_game.gd")
 const BfhHud := preload("bfh_hud.gd")
+const BfhScoreboard := preload("bfh_scoreboard.gd")
 const BfhPlayer := preload("bfh_player.gd")
 const BfhSettings := preload("bfh_settings.gd")
 const BfhSpectate := preload("bfh_spectate.gd")
@@ -44,11 +46,18 @@ var player: BfhPlayer = null
 var camera: Camera3D = null
 var hud: BfhHud = null
 
+## The score and the sides: held on Tab, and up on its own between rounds. See [BfhScoreboard].
+var scoreboard: BfhScoreboard = null
+
 ## The chat box and the microphone. Built in both halves: offline it echoes what you type.
 var chat: BfhClientChat = null
 
 ## What this client hears. See [BfhAudio]. Null only if dot-audio refused its catalogue.
 var audio: BfhAudio = null
+
+## What this client draws that nothing simulates: a barrel going off. See [BfhFx]. Null
+## only if dot-fx refused its catalogue.
+var fx: BfhFx = null
 
 ## The player's own settings and the screen that changes them. See [BfhSettings].
 var settings: BfhSettings = null
@@ -108,8 +117,10 @@ func _ready() -> void:
 	DotFpsSampler.register_default_actions(_sampler)
 
 	_build_hud()
+	_build_scoreboard()
 	_build_chat()
 	_build_audio()
+	_build_fx()
 	_build_settings()
 
 	if _offline:
@@ -299,9 +310,10 @@ func _on_seat_changed(session_id: int, seated: bool) -> void:
 
 
 func _on_blast(at: Vector3, radius: float) -> void:
-	# Nothing is drawn for it yet — this game ships no effects — but the log line is what
-	# tells somebody reading a client's records that the barrel they heard was a barrel
-	# the server decided about, rather than one their own copy imagined.
+	# The picture is [BfhFx]'s, from the world's `barrel_exploded` that the bridge re-emits,
+	# so the same path draws it offline. The log line is what tells somebody reading a
+	# client's records that the barrel they saw was one the server decided about, rather
+	# than one their own copy imagined.
 	DotLog.debug(CHANNEL, "a barrel went off", {"at": str(at), "radius": radius})
 
 
@@ -323,6 +335,15 @@ func _build_hud() -> void:
 	hud = BfhHud.new()
 	hud.name = "Hud"
 	add_child(hud)
+
+
+## After the world, because it listens to the world's round signals from the start: a
+## round that ends before anybody has pressed Tab still puts the score up.
+func _build_scoreboard() -> void:
+	scoreboard = BfhScoreboard.new()
+	scoreboard.name = "Scoreboard"
+	add_child(scoreboard)
+	scoreboard.bind(game, func() -> BfhPlayer: return player)
 
 
 ## The player's settings, applied to everything that reads them. See [BfhSettings].
@@ -387,6 +408,24 @@ func _build_audio() -> void:
 		audio = null
 
 
+## What this client draws, listening to its own world. See [BfhFx].
+##
+## Not fatal, for the reason the audio is not: a client that draws no blast still hears it
+## and is still thrown by it, and a WARN says why the picture is missing.
+func _build_fx() -> void:
+	fx = BfhFx.new()
+	fx.name = "Fx"
+	add_child(fx)
+
+	var built: DotResult = fx.setup(game)
+
+	if not built.ok:
+		DotLog.warn(CHANNEL, "no effects", {"why": built.error.message})
+		remove_child(fx)
+		fx.free()
+		fx = null
+
+
 ## The chat box, before the netcode and before any player exists.
 ##
 ## [b]Built in both halves and attached to the bridge afterwards.[/b] A box that only
@@ -446,6 +485,14 @@ func _physics_process(delta: float) -> void:
 
 func _process(delta: float) -> void:
 	var _shown := present_frame(net, game, player, delta)
+
+	# Before the early return, so an effect is retired on time even before there is a
+	# camera; culled from where the camera was last frame, which is one frame's error.
+	if fx != null:
+		if camera != null:
+			fx.present(delta, camera.global_position, -camera.global_basis.z)
+		else:
+			fx.present(delta, Vector3.ZERO)
 
 	if camera == null or player == null:
 		return
@@ -591,6 +638,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			settings.open()
 		return
 
+	# Tab shows the score while it is held, to anybody — before the spectator's branch,
+	# because somebody who is out is the person with most time to read it.
+	if scoreboard != null and scoreboard.handle_key(event):
+		return
+
 	# A runner who is out: the mouse and the jump key are the spectator's, and nothing
 	# below — a swing, a turn — means anything for somebody who is not in the round.
 	if player != null and game.spectate != null and game.spectate.is_spectating(player.player_id):
@@ -695,6 +747,9 @@ func describe() -> Dictionary:
 
 	if audio != null:
 		out["audio"] = audio.describe()
+
+	if fx != null:
+		out["fx"] = fx.describe()
 
 	if settings != null:
 		out["settings"] = settings.describe()

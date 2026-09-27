@@ -172,6 +172,10 @@ var remote_cover: int = -1
 ## And whether the server says there is somebody on each side.
 var remote_playable: bool = false
 
+## And the rounds each side has won, `TEAM_*` -> count, as the server's dot-match has them.
+## Empty on the authority, which reads its own. See [method rounds_won].
+var remote_rounds: Dictionary = {}
+
 var _tick: int = 0
 
 ## Whether [method start] has laid the bowl out, after which somebody arriving is placed on
@@ -410,6 +414,40 @@ func _build_match() -> void:
 	match_node.round_started.connect(_on_round_started)
 	match_node.round_ended.connect(_on_round_ended)
 
+	# [b]Here, in both halves, and it was not.[/b] From 2026-09-26 these lines sat at the end
+	# of [method _build_progress], below its two early returns, because that function and
+	# [method _build_spectate] were inserted into the middle of this one. So a client's
+	# world kept dot-match's default pair, "Red" and "Blue" — nothing read them until the
+	# scoreboard asked for a side's name — and so would a server with `track_progress` off
+	# or whose tracker failed to attach, with dot-match's balancing and its one-ahead cap
+	# back on, which is the bug the lines below exist to prevent. Nothing ships with the
+	# tracker off, which is why no round said so.
+	var teams: Array[DotTeam] = [
+		DotTeam.make(TEAM_DRIVERS, "Drivers", Color(0.92, 0.74, 0.17)),
+		DotTeam.make(TEAM_RUNNERS, "Runners", Color(0.35, 0.62, 0.88)),
+	]
+	match_node.teams.teams = teams
+	# [b]And re-indexed, because assigning the list does not.[/b] dot-match fills in its
+	# standard pair when it is added to the tree and indexes it on first lookup, and
+	# `teams.team(id)` goes on answering from that index: the ids agree (1 and 2), so every
+	# rule worked, and the first thing to ask for a side's NAME — the scoreboard — was told
+	# "Red" and "Blue". Found in its first render.
+	match_node.teams.reindex()
+	# Off: this game balances itself, because the sides are not interchangeable. Two
+	# drivers against six runners is the design rather than an imbalance, and a
+	# balancer that did not know that would move four people into the buses every
+	# round and there are two seats.
+	match_node.teams.force_balance = false
+	match_node.teams.allow_choice = true
+	# [b]And off in the second place dot-match balances, which `force_balance` does not
+	# reach.[/b] `max_difference` defaults to 1 and REFUSES any join that puts a side more
+	# than one ahead — so on a shipped server the second driver and every runner past the
+	# drivers' count plus one were on no team at all in dot-match, while `sides` had them
+	# placed correctly. The elimination rule counts survivors off dot-match's teams, so a
+	# round was handed to the drivers the moment the runners it knew about were down, with
+	# the others still standing. `sides` decides who is on which side; dot-match is told.
+	match_node.teams.max_difference = 0
+
 
 ## Where a runner who is out looks. See [BfhSpectate]. Not fatal: a world with no
 ## spectator camera is the world this game had until it existed.
@@ -452,26 +490,6 @@ func _build_progress() -> void:
 	progress.unlocked.connect(func(player_id: StringName, achievement: DotAchievement) -> void:
 		earned.emit(player_id, achievement.display_name, achievement.points)
 	)
-
-	var teams: Array[DotTeam] = [
-		DotTeam.make(TEAM_DRIVERS, "Drivers", Color(0.92, 0.74, 0.17)),
-		DotTeam.make(TEAM_RUNNERS, "Runners", Color(0.35, 0.62, 0.88)),
-	]
-	match_node.teams.teams = teams
-	# Off: this game balances itself, because the sides are not interchangeable. Two
-	# drivers against six runners is the design rather than an imbalance, and a
-	# balancer that did not know that would move four people into the buses every
-	# round and there are two seats.
-	match_node.teams.force_balance = false
-	match_node.teams.allow_choice = true
-	# [b]And off in the second place dot-match balances, which `force_balance` does not
-	# reach.[/b] `max_difference` defaults to 1 and REFUSES any join that puts a side more
-	# than one ahead — so on a shipped server the second driver and every runner past the
-	# drivers' count plus one were on no team at all in dot-match, while `sides` had them
-	# placed correctly. The elimination rule counts survivors off dot-match's teams, so a
-	# round was handed to the drivers the moment the runners it knew about were down, with
-	# the others still standing. `sides` decides who is on which side; dot-match is told.
-	match_node.teams.max_difference = 0
 
 
 # --- Players ---------------------------------------------------------------
@@ -1601,6 +1619,20 @@ func alive_runners() -> int:
 		if player.health != null and player.health.alive:
 			count += 1
 	return count
+
+
+## Rounds [param team] has won this match, which is what dot-match scores here.
+##
+## [b]A SIDE's tally, not a group of people's.[/b] Everybody changes sides every
+## `rounds_before_swap` rounds, and dot-match's `rounds_won` is keyed by team id, so this is
+## "rounds the buses have won" and "rounds the runners have won" whoever was in them. On a
+## client it is what the last CLOCK said; dot-match is not ticked there.
+func rounds_won(team: int) -> int:
+	if not authoritative:
+		return int(remote_rounds.get(team, 0))
+	if match_node == null:
+		return 0
+	return int(match_node.rounds_won.get(team, 0))
 
 
 func crates_left() -> int:
