@@ -45,7 +45,7 @@ game/
 props/              the crate, the barrel and the bus, as scenes — plus the art repair
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (171), headless_net (148), dedicated (79)
+examples/           headless_run (183), headless_net (148), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -502,6 +502,25 @@ const BfhEvent := preload("bfh_event.gd")   # for a typed `static func of() -> B
 
 **Every other game in this family has the same line**, in its event and its request: `game-arena`, `game-g2gfast`, `game-hungario`, `game-playground`, `game-simple-lobby` and `mg-smash-copter`, twelve files. It is the first thing to try on game-hungario's own leak at exit, which is the same shape.
 
+## What a bot actually travels at (`[bot-drive-1]`, 2026-09-27)
+
+The family found that every bot in it was driven with forward and jump held, and that in the auto-hop games that is a player who never gets a ground tick to accelerate in and bleeds to the air cap — 1 m/s of a 7 in one of them, behind checks that had passed for as long as they existed. **This game has auto-hop off (Decision 4), so its bots were never slowed that way, and that is now measured rather than assumed.** `headless_run`'s **what a bot actually travels at** prints, every run:
+
+- a runner bot holding forward: **6.50 m/s, 6.50 m in the last second**, of a `runner_speed` of 6.50;
+- holding forward AND jump: **one jump, then 6.50 m/s** — a held key here jumps once and has to come up before it jumps again, which is why `_run_route` pressing jump near a face is safe in this game and would not be in an auto-hop one;
+- pressing jump afresh on every landing: **5.23 m/s**, on the ground 3% of the time. Slower than running, which is Decision 4 holding: nobody outruns a bus by hopping;
+- a person holding a bus's throttle down a 40 m straight across the south of the bowl: **3.18 s, 22.3 m/s at the end**, of a `bus_top_speed` of 22.0; the autopilot chasing a runner down the same straight: **3.28 s, 20.2 m/s**. The bot is asserted to be within 5% of the person — the autopilot aims eight metres past its quarry so that it never eases off for arriving, and a bot that held back would show here first.
+
+**The straight is along z = 32, not the centreline, and the first version found out why.** The centreline looks open and has the hook's pillars on it at z = 15 and 22: the bus wedged on one at 11.5 m and the drive read 1.7 m/s average. And the ramp's slab reaches down to z = -7.6, so anything that starts a bus on the centreline north of that starts it under the ramp.
+
+**Every route a bot drives now prints its distance next to the route's length and its average speed next to the configured one, and asserts on it.** The runner routes (`_run_route`, reported by `_route_report`): up the ramp 37.0 m of 37.4 at **96%** of `max_speed` (the 18-degree slope costs its cosine), onto a crate from a run at **73%**, each end of the scaffold at **65%**. A walk is held to `RUN_PACE` (0.9); a route with jumps in it to `CLIMB_PACE` (0.55), because the route bot stops pressing forward inside 0.2 m of each waypoint, turns to the next and lands every jump with a tick of friction — a person climbs that way too, and the floor is there to catch a crawl, not to grade a climb. The bot bus's drives round the pillar, the hook and the drum print ground covered, time, average and fastest (16.7, 15.8 and 18.6 m/s fastest) and are asserted to pass `bus_lethal_speed` on the way — **the old bar was "4 m/s, it gets moving at all", under half the speed that kills**, so a bus crawling round cover at a speed that could not hurt the runner behind it passed.
+
+**Armed, twice, and both show the old checks passing a slow bot.** Every key a bot presses in `headless_run` at 30% (the stick half-pushed): all the new pace checks fail, and the **west scaffold climb still reached the top** — "a runner climbs to the top of it in three jumps" passed at 23% of the speed, and only the pace check said so. The throttle check's old bar (1 m/s, 1 m along) passed at 5.05 m/s and 3.7 m. The autopilot's `target_speed` at 30% of `bus_top_speed`: the new lethal-speed checks fail in all three drives and "as fast as a person" fails at 6.48 s against 3.18 — while the old **"comes round the drum"** and **"is not sent home"** passed, and "gets moving at all" would have passed everywhere at 6.5 m/s.
+
+**Found and not fixed: a concrete block stands in a bus's lane at the start.** The throttle check (`_test_bus_propulsion`) drives from the east bus start, and on this suite's seed one of the round's three concrete blocks is scattered at (3.0, -12.9), 13 m in front of it: the bus peaks at 10.6 m/s and ends the 1.5 s against the block at 5.5. The scatter keeps blocks out of the pillars, the tanks and the scaffold, and not out of the buses' lanes. Whether it should is a design question — a block in front of a bus is cover a runner might want, and a 4-tonne one a bus cannot shove is a start that costs a driver seconds. The check now asserts the peak (past `bus_lethal_speed` inside 1.5 s) and says in a comment what the end speed is.
+
+`headless_net` got the same treatment: "the server moves them from the commands the client sent" was "more than a metre in 40 ticks" (a sixth of what 40 ticks covers); it prints **3.71 m of 4.33, at 6.50 m/s** (the shortfall is the input lead) and asserts the speed. "The server runs them across the bowl" was "more than 3 m in a second"; it prints **6.18 of 6.39 m** and asserts 95%. Armed with the client's key at 30%: both fail.
+
 ## Validating
 
 ```bash
@@ -509,7 +528,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 171 checks, 22 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 183 checks, 23 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 148 checks, 18 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8

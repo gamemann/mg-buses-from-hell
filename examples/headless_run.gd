@@ -33,13 +33,26 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 171
+const CHECKS := 183
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 22
+const SECTIONS := 23
 
 const TICK := 1.0 / 60.0
+
+## The fraction of `max_speed` a runner bot's route has to average on flat ground or a
+## walkable slope. Run-up is five ticks at these tunables, so a straight run of any length
+## is within a few percent of it; the ramp reads 96%.
+const RUN_PACE := 0.9
+
+## The same for a route with jumps in it, and it is lower for a reason rather than for
+## slack: the route bot stops pressing forward inside 0.2 m of each waypoint, turns to
+## the next, and lands every jump with a tick of friction, so a crate from a run reads
+## 73% and the scaffold's climbs 65%. A floor under those rather than at them, so it
+## catches a bot that crawls (the failure `[bot-drive-1]` found: a seventh of the speed)
+## without failing on a bot that climbs the way a person does.
+const CLIMB_PACE := 0.55
 
 var _passed := 0
 var _failed := 0
@@ -48,6 +61,11 @@ var _failures := PackedStringArray()
 
 ## Every world this run has built and not yet taken down. See [method _dispose].
 var _worlds: Array[BfhGame] = []
+
+## How the last [method _run_route] went: ticks taken, metres of ground covered, the
+## length of the route as straight legs between its waypoints, and whether it finished.
+## Read by [method _route_report], which prints it.
+var _route := {}
 
 
 func _ready() -> void:
@@ -74,6 +92,7 @@ func _run() -> void:
 	await _test_round_ends()
 	await _test_a_driver_arrives_mid_round()
 	await _test_bus_propulsion()
+	await _test_what_a_bot_travels_at()
 	await _test_a_rolled_bus()
 	await _test_blind_and_beacon_drawn()
 	await _test_spectating()
@@ -355,6 +374,17 @@ func _dispose(game: BfhGame) -> void:
 ## drum perfectly was reported as sent home. At its top speed a bus covers 0.4 m a tick.
 func _sent_home(before: Vector3, after: Vector3) -> bool:
 	return Vector2(after.x - before.x, after.z - before.z).length() > 3.0
+
+
+## Prints how a bot bus's drive went: the ground it covered next to the straight line
+## from its start to the finish ([param line]), the time, and its average and fastest
+## speeds next to the configured top and lethal speeds.
+func _print_drive(what: String, covered: float, line: float, ticks: int, fastest: float,
+		config: BfhConfig) -> void:
+	var seconds := float(ticks) * TICK
+	print("  ..    the bot bus %s: %.1f m covered for a %.0f m straight line in %.2f s, %.2f m/s average, %.2f m/s fastest; bus_top_speed %.1f, lethal at %.1f"
+		% [what, covered, line, seconds, covered / seconds if seconds > 0.0 else 0.0, fastest,
+			config.bus_top_speed, config.bus_lethal_speed])
 
 
 func _step(game: BfhGame, ticks: int) -> void:
@@ -665,16 +695,21 @@ func _test_driving_the_stacks() -> void:
 	var reset := false
 	var past := false
 	var top_speed := 0.0
+	var covered := 0.0
+	var took := 0
 
 	for _i in range(300):
 		game.simulate(TICK)
 		await get_tree().physics_frame
+		took += 1
 
 		if not bus.is_alive():
 			break
 
 		var at := bus.position()
 		top_speed = maxf(top_speed, bus.speed())
+		if not _sent_home(last, at):
+			covered += Vector2(at.x - last.x, at.z - last.z).length()
 
 		# Held in place, because the quarry is being pushed around by the round and the
 		# bus's own start line is a long way from here: a bus back on it has been reset.
@@ -690,8 +725,13 @@ func _test_driving_the_stacks() -> void:
 			past = true
 			break
 
+	_print_drive("round the pillar", covered, 27.0, took, top_speed, game.config)
 	_check(not reset, "a bus chasing somebody behind a pillar is not sent home")
-	_check(top_speed > 4.0, "it gets moving at all", "%.1f m/s" % top_speed)
+	# [b]Past the speed that kills, not "moving at all".[/b] This asked for 4 m/s, which
+	# is under half of `bus_lethal_speed`: a bus crawling round a pillar at a speed that
+	# cannot hurt the runner behind it passed. Measured, 16.7 m/s.
+	_check(top_speed > game.config.bus_lethal_speed, "it gets up to a speed that kills on the way",
+		"%.1f m/s against %.1f" % [top_speed, game.config.bus_lethal_speed])
 	_check(past, "and it comes round the pillar rather than wedging on it",
 		"%.1f m/s at the end" % bus.speed() if bus.is_alive() else "the bus was lost")
 
@@ -718,16 +758,23 @@ func _test_driving_the_stacks() -> void:
 	var through := false
 	var hook_reset := false
 	var hook_last := bus.position()
+	var hook_fastest := 0.0
+	var hook_covered := 0.0
+	var hook_took := 0
 
 	for _i in range(360):
 		game.simulate(TICK)
 		await get_tree().physics_frame
+		hook_took += 1
 
 		if not bus.is_alive():
 			break
 
 		quarry.global_position = hook + Vector3(0.0, 1.2, 14.0)
 		var here := bus.position()
+		hook_fastest = maxf(hook_fastest, bus.speed())
+		if not _sent_home(hook_last, here):
+			hook_covered += Vector2(here.x - hook_last.x, here.z - hook_last.z).length()
 
 		if _sent_home(hook_last, here):
 			hook_reset = true
@@ -739,7 +786,10 @@ func _test_driving_the_stacks() -> void:
 			through = true
 			break
 
+	_print_drive("round the hook", hook_covered, 27.0, hook_took, hook_fastest, game.config)
 	_check(not hook_reset, "a bus in the hook is not sent home either")
+	_check(hook_fastest > game.config.bus_lethal_speed, "and gets up to a speed that kills there too",
+		"%.1f m/s against %.1f" % [hook_fastest, game.config.bus_lethal_speed])
 	_check(
 		through,
 		"and it comes round the hook's pillars rather than wedging between two of them",
@@ -941,9 +991,13 @@ func _test_driving_the_farm() -> void:
 	var past := false
 	var top_speed := 0.0
 
+	var covered := 0.0
+	var took := 0
+
 	for _i in range(420):
 		game.simulate(TICK)
 		await get_tree().physics_frame
+		took += 1
 
 		if not bus.is_alive():
 			break
@@ -951,6 +1005,8 @@ func _test_driving_the_farm() -> void:
 		quarry.global_position = hide
 		var at := bus.position()
 		top_speed = maxf(top_speed, bus.speed())
+		if not _sent_home(last, at):
+			covered += Vector2(at.x - last.x, at.z - last.z).length()
 
 		if _sent_home(last, at):
 			reset = true
@@ -962,7 +1018,10 @@ func _test_driving_the_farm() -> void:
 			past = true
 			break
 
+	_print_drive("round the drum", covered, 31.0, took, top_speed, game.config)
 	_check(not reset, "a bus chasing somebody behind a tank is not sent home")
+	_check(top_speed > game.config.bus_lethal_speed, "and gets up to a speed that kills on the way",
+		"%.1f m/s against %.1f" % [top_speed, game.config.bus_lethal_speed])
 	_check(
 		past,
 		"and it comes round the drum rather than wedging on it",
@@ -1042,9 +1101,13 @@ func _test_reach() -> void:
 	_put(runner, Vector3(0.0, 0.05, 18.0))
 	await _step(game, 5)
 	await _run_route(game, runner, [Vector3(0.0, 1.0, 12.0)], 150)
+	var onto_crate := _route_report("onto a crate from a run", runner)
 	_check(game.carry.prop_under(runner.controller.state.ground_id) == crate,
 		"a runner jumps onto a crate from a run",
 		"feet at %.2f" % runner.global_position.y)
+	# A climb, not a sprint: see CLIMB_PACE. Measured, 73%.
+	_check(onto_crate >= CLIMB_PACE, "at running pace rather than a crawl",
+		"%.0f%% of max_speed" % (onto_crate * 100.0))
 	game.props.remove(crate.instance_id)
 
 	# --- Up the ramp, on the stock motor. Until 2026-09-24 dot-player-controller read any
@@ -1058,9 +1121,14 @@ func _test_reach() -> void:
 	_put(runner, start)
 	await _step(game, 5)
 	var walked := await _run_route(game, runner, [Vector3(0.0, arena.deck_top(), deck.z)], 480)
+	var up_ramp := _route_report("up the ramp onto the ledge", runner)
 	_check(runner.global_position.y > arena.deck_top() - 0.1,
 		"a runner walks up the ramp onto the ledge",
 		"best %.2f, feet at %.2f, deck %.2f" % [walked, runner.global_position.y, arena.deck_top()])
+	# A walk, so held to the walking floor. Measured, 96%: the 18-degree slope costs the
+	# horizontal speed its cosine and nothing else.
+	_check(up_ramp >= RUN_PACE, "at running pace, the whole way up",
+		"%.0f%% of max_speed" % (up_ramp * 100.0))
 
 	await _dispose(game)
 
@@ -1157,6 +1225,14 @@ func _run_route(game: BfhGame, player: BfhPlayer, waypoints: Array, ticks: int) 
 	var index := 0
 	var best := player.global_position.y
 
+	var planned := 0.0
+	var from := player.controller.state.position
+	for wp in waypoints:
+		planned += Vector2(wp.x - from.x, wp.z - from.z).length()
+		from = wp
+	_route = {"ticks": 0, "covered": 0.0, "planned": planned, "finished": false}
+	var last := player.controller.state.position
+
 	for _i in range(ticks):
 		var wp: Vector3 = waypoints[index]
 		var state := player.controller.state
@@ -1168,6 +1244,7 @@ func _run_route(game: BfhGame, player: BfhPlayer, waypoints: Array, ticks: int) 
 			and flat.length() < 0.5
 		):
 			if index == waypoints.size() - 1:
+				_route["finished"] = true
 				break
 			index += 1
 			continue
@@ -1189,7 +1266,32 @@ func _run_route(game: BfhGame, player: BfhPlayer, waypoints: Array, ticks: int) 
 		await get_tree().physics_frame
 		best = maxf(best, player.global_position.y)
 
+		var now := player.controller.state.position
+		_route["covered"] += Vector2(now.x - last.x, now.z - last.z).length()
+		_route["ticks"] += 1
+		last = now
+
 	return best
+
+
+## Prints how the last [method _run_route] went — the ground it covered next to the
+## route's length, the time, and the average speed next to the runner's
+## [code]max_speed[/code] — and returns that average as a fraction of it.
+##
+## [b]Printed whether or not anything is asserted on it.[/b] A detail line shows only on
+## failure, so a speed that is only asserted is a speed nobody reads again once it
+## passes; `[bot-drive-1]` found game-playground's bots crossing its maps at a seventh of
+## their speed behind checks that had passed for as long as they existed.
+func _route_report(what: String, runner: BfhPlayer) -> float:
+	var top := runner.controller.tunables.max_speed
+	var seconds := float(_route.get("ticks", 0)) * TICK
+	var covered: float = _route.get("covered", 0.0)
+	var speed := covered / seconds if seconds > 0.0 else 0.0
+	print("  ..    %s: %.1f m covered of a %.1f m route in %.2f s%s, %.2f m/s of a max_speed of %.2f (%.0f%%)"
+		% [what, covered, _route.get("planned", 0.0), seconds,
+			"" if _route.get("finished", false) else " WITHOUT FINISHING", speed, top,
+			speed / top * 100.0])
+	return speed / top
 
 
 # --- The scaffold ------------------------------------------------------------
@@ -1281,6 +1383,7 @@ func _test_the_scaffold() -> void:
 	_put(runner, Vector3(footprint.end.x + 5.0, 0.05, footprint.get_center().z))
 	await _step(game, 5)
 	var best_east := await _run_route(game, runner, east, 600)
+	var climb_east := _route_report("the scaffold from the east end", runner)
 	var on_east := game.carry.prop_under(runner.controller.state.ground_id)
 	# [b]With the scaffold where it was[/b], so a way up made by shoving crates is not a
 	# climb. [b]And this check alone does not tell the saddle from the old sheer end:[/b]
@@ -1295,6 +1398,8 @@ func _test_the_scaffold() -> void:
 		"a runner climbs to the top of it from the east end too, moving no crate",
 		"best %.2f, feet at %.2f, top %.2f, a crate moved %.2f m"
 		% [best_east, runner.global_position.y, top.end.y, shoved_east])
+	_check(climb_east >= CLIMB_PACE, "at a climber's pace rather than a crawl",
+		"%.0f%% of max_speed" % (climb_east * 100.0))
 
 	var route: Array = []
 	for i in range(peak + 1):
@@ -1304,6 +1409,7 @@ func _test_the_scaffold() -> void:
 	_put(runner, Vector3(footprint.position.x - 5.0, 0.05, footprint.get_center().z))
 	await _step(game, 5)
 	var best := await _run_route(game, runner, route, 600)
+	var climb_west := _route_report("the scaffold from the west end", runner)
 	var standing_on := game.carry.prop_under(runner.controller.state.ground_id)
 	var shoved := _scaffold_drift(game, cells)
 	_check(
@@ -1313,6 +1419,8 @@ func _test_the_scaffold() -> void:
 		"a runner climbs to the top of it in three jumps, moving no crate",
 		"best %.2f, feet at %.2f, top %.2f, a crate moved %.2f m"
 		% [best, runner.global_position.y, top.end.y, shoved])
+	_check(climb_west >= CLIMB_PACE, "and from the west, at a climber's pace",
+		"%.0f%% of max_speed" % (climb_west * 100.0))
 
 	# --- And a bus brings them down. The bot, pointed at them from 24 m off the low end.
 	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
@@ -1889,6 +1997,7 @@ func _test_bus_propulsion() -> void:
 	# bus had no check at all.
 	var driver: BfhPlayer = game.players[&"d"]
 	var start := bus.position()
+	var fastest := 0.0
 
 	for _i in range(90):
 		var keys := DotFpsCommand.new()
@@ -1896,13 +2005,227 @@ func _test_bus_propulsion() -> void:
 		driver.controller.apply_command(keys)
 		game.simulate(TICK)
 		await get_tree().physics_frame
+		fastest = maxf(fastest, bus.speed())
 
 	var forward := -body.global_transform.basis.z
 	var along := (bus.position() - start).dot(Vector3(forward.x, 0.0, forward.z).normalized())
+	# [b]Printed, because it is not the number it looks like.[/b] This start lane has one
+	# of the round's concrete blocks 13 m in front of it (the scatter keeps blocks out of
+	# the pillars, the tanks and the scaffold, and not out of a bus's lane), so the bus
+	# peaks at 10.6 m/s and ends the second and a half against it at about 5.5. "Faster
+	# than 1 m/s and more than a metre along" passed on that, and would pass on a throttle
+	# delivering a tenth of its force. What the throttle reaches on open floor is
+	# measured in "what a bot actually travels at".
+	print("  ..    1.5 s of throttle from a standstill: %.2f m/s at the end, %.2f fastest, of a bus_top_speed of %.1f; %.2f m along its nose"
+		% [bus.speed(), fastest, game.config.bus_top_speed, along])
 	_check(
-		bus.speed() > 1.0 and along > 1.0,
-		"and a driver pressing forward moves it forward",
-		"%.2f m/s, %.2f m along its nose" % [bus.speed(), along]
+		fastest > game.config.bus_lethal_speed and along > 1.0,
+		"and a driver pressing forward moves it forward, past the speed that kills, inside 1.5 s",
+		"%.2f m/s fastest against %.1f, %.2f m along its nose"
+			% [fastest, game.config.bus_lethal_speed, along]
+	)
+
+	await _dispose(game)
+	_done()
+
+
+# --- What a bot actually travels at -----------------------------------------
+
+## A runner holding one key across open sand, [param ticks] long, facing +Z.
+## [param jump] is 0 for no jump, 1 for jump held the whole way, 2 for jump pressed
+## afresh on every tick the runner is on the ground, which is what a person mashing the
+## key does. Returns the ground covered in the last second, the speed at the end, the
+## time on the ground, and how many jumps were taken.
+func _run_straight(game: BfhGame, runner: BfhPlayer, jump: int, ticks: int) -> Dictionary:
+	_put(runner, Vector3(0.0, 0.05, -8.0))
+	await _step(game, 5)
+
+	var track: Array[Vector3] = []
+	var grounded := 0
+	var jumps := 0
+	var was_ground := true
+	var pressed := false
+
+	for i in range(ticks):
+		var state := runner.controller.state
+		var keys := DotFpsCommand.new()
+		keys.yaw = 180.0
+		keys.move = Vector2(0.0, 1.0)
+		if jump == 1:
+			keys.set_button(DotFpsCommand.BUTTON_JUMP, true)
+		elif jump == 2:
+			pressed = state.mode == DotFpsState.Mode.GROUND and not pressed
+			keys.set_button(DotFpsCommand.BUTTON_JUMP, pressed)
+		runner.controller.apply_command(keys)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+
+		var now := runner.controller.state
+		track.append(now.position)
+		if now.mode == DotFpsState.Mode.GROUND:
+			grounded += 1
+		elif was_ground:
+			jumps += 1
+		was_ground = now.mode == DotFpsState.Mode.GROUND
+
+	var a := track[track.size() - 61]
+	var b := track[track.size() - 1]
+	var v := runner.controller.state.velocity
+	return {
+		"last_second": Vector2(b.x - a.x, b.z - a.z).length(),
+		"speed": Vector2(v.x, v.z).length(),
+		"ground": float(grounded) / float(ticks),
+		"jumps": jumps,
+	}
+
+
+## The straight [method _drive_straight] measures: west to east along z = 32, south of
+## the stacks and the scaffold and nowhere near the farm. [b]Not the centreline[/b], which
+## looks open and is not: the hook's pillars stand on it at z = 15 and 22, and the first
+## version of this wedged a bus on one at 11.5 m and read it as a speed.
+const BUS_STRAIGHT := 40.0
+
+
+## A bus across the south of the bowl from a standstill, [constant BUS_STRAIGHT] metres,
+## by the bot ([param bot]) or by [param driver] holding forward. [param runner] is held
+## at the far end, which is what the bot chases.
+func _drive_straight(game: BfhGame, driver: BfhPlayer, runner: BfhPlayer, bot: bool) -> Dictionary:
+	driver.is_bot = bot
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+	var from := Vector3(-26.0, 1.4, 32.0)
+	var quarry_at := Vector3(28.0, 1.2, 32.0)
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(Vector3(1.0, 0.0, 0.0)), from)
+	runner.global_position = quarry_at
+	_put(runner, quarry_at)
+	await _step(game, 20)
+
+	var start := bus.position()
+	var last := start
+	var r := {"covered": 0.0, "fastest": 0.0, "seconds": 0.0, "arrived": false, "reset": false}
+	var took := 0
+
+	for _i in range(600):
+		_put(runner, quarry_at)
+		if not bot:
+			var keys := DotFpsCommand.new()
+			keys.move = Vector2(0.0, 1.0)
+			driver.controller.apply_command(keys)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		took += 1
+
+		if not bus.is_alive():
+			break
+		var at := bus.position()
+		if _sent_home(last, at):
+			r.reset = true
+			break
+		r.covered += Vector2(at.x - last.x, at.z - last.z).length()
+		r.fastest = maxf(r.fastest, bus.speed())
+		last = at
+		if at.x - start.x >= BUS_STRAIGHT:
+			r.arrived = true
+			break
+
+	r.seconds = float(took) * TICK
+	driver.is_bot = false
+	return r
+
+
+## What a bot on foot and a bot in a bus actually travel at, beside the numbers the
+## configuration says they should.
+##
+## [b]The family's `[bot-drive-1]`, asked of this game.[/b] Every bot in the family was
+## driven with forward and jump held, and in the games with auto-hop that is a player who
+## leaves the ground on the tick they land, never gets a ground tick to accelerate in, and
+## bleeds to the air cap: 1 m/s of a 7 in one of them, behind checks that passed for as
+## long as they existed. This game has auto-hop OFF (CLAUDE.md, Decision 4), so the
+## question is different and the answer has to be measured rather than assumed: a held
+## jump here is ONE jump, and the route bot only presses it at a face. What is asserted is
+## what the design says — a runner holding a key runs at `runner_speed`, and jumping does
+## not make them faster — and every number is printed, because a detail line shows only on
+## failure and a number only asserted is a number nobody reads once it passes.
+func _test_what_a_bot_travels_at() -> void:
+	print("what a bot actually travels at")
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	game.start()
+	await _step(game, 8)
+
+	# The runner's own tunables, which are what `BfhPlayer.tunables_for` built from the
+	# config: `runner_speed` read through the thing that moves them, not the cvar.
+	var top := runner.controller.tunables.max_speed
+	var air := runner.controller.tunables.max_air_wish_speed
+
+	var run := await _run_straight(game, runner, 0, 180)
+	var held := await _run_straight(game, runner, 1, 180)
+	var mashed := await _run_straight(game, runner, 2, 180)
+
+	for row in [["holding forward", run], ["holding forward and jump", held],
+			["holding forward and pressing jump on every landing", mashed]]:
+		var r: Dictionary = row[1]
+		print("  ..    %s: %.2f m/s at the end, %.2f m in the last second, of a max_speed of %.2f (air cap %.2f); %d jumps, %.0f%% of ticks on the ground"
+			% [row[0], r.speed, r.last_second, top, air, r.jumps, r.ground * 100.0])
+
+	_check(
+		absf(run.speed - top) < 0.05 and run.last_second > top * 0.98,
+		"a runner bot holding forward travels at runner_speed",
+		"%.2f m/s, %.2f m in a second, of %.2f" % [run.speed, run.last_second, top]
+	)
+	# [b]A held jump is one jump here.[/b] Auto-hop is off, so the key has to come up
+	# before it jumps again, and a bot that held it would run the rest of the way at speed
+	# — which is what makes `_run_route`'s "hold it near a face" safe in this game when it
+	# is not in the auto-hop ones.
+	_check(
+		held.jumps == 1 and held.last_second > top * 0.98,
+		"holding jump as well jumps once and then runs at it",
+		"%d jumps, %.2f m in the last second" % [held.jumps, held.last_second]
+	)
+	# [b]And jumping every landing is not faster, which is Decision 4.[/b] Friction on the
+	# landing tick and a %.1f m/s air cap: a runner who chains hops covers no more ground
+	# than one who runs, so there is no outrunning a bus by hopping.
+	_check(
+		mashed.jumps >= 3 and mashed.last_second <= top * 1.02,
+		"and a bot jumping on every landing is no faster than one running",
+		"%d jumps, %.2f m in the last second, of %.2f" % [mashed.jumps, mashed.last_second, top]
+	)
+
+	# --- A bus, across the bowl, by the bot and by a person --------------------
+	#
+	# The same straight both times, along the south of the bowl: a person
+	# holding the throttle, then the autopilot chasing a runner held at the far end. The
+	# autopilot's `target_speed` is `bus_top_speed` and it aims eight metres past the
+	# runner so that it never eases off for arriving — so the two runs should be the
+	# same run, and if the bot's is slower the bot is holding back.
+	var bus_top := game.config.bus_top_speed
+	var by_hand := await _drive_straight(game, driver, runner, false)
+	var by_bot := await _drive_straight(game, driver, runner, true)
+
+	for row in [["a person holding the throttle", by_hand], ["the bot, chasing", by_bot]]:
+		var r: Dictionary = row[1]
+		print("  ..    %s: %.1f m covered of a %.0f m straight in %.2f s%s, %.2f m/s average, %.2f m/s fastest, of a bus_top_speed of %.1f"
+			% [row[0], r.covered, BUS_STRAIGHT, r.seconds,
+				"" if r.arrived else " WITHOUT ARRIVING", r.covered / r.seconds, r.fastest,
+				bus_top])
+
+	_check(by_hand.arrived and by_hand.fastest > bus_top * 0.95,
+		"a person holding the throttle reaches bus_top_speed on open floor",
+		"%.2f of %.1f m/s" % [by_hand.fastest, bus_top])
+	_check(by_bot.arrived and not by_bot.reset, "a bot bus covers a straight of open floor",
+		"%.1f m in %.2f s%s" % [by_bot.covered, by_bot.seconds,
+			", sent home" if by_bot.reset else ""])
+	_check(
+		by_hand.arrived and by_bot.seconds <= by_hand.seconds * 1.05,
+		"as fast as a person holding the throttle down the same straight",
+		"%.2f s against %.2f s" % [by_bot.seconds, by_hand.seconds]
 	)
 
 	await _dispose(game)

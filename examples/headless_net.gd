@@ -823,10 +823,20 @@ func _test_moving() -> void:
 	await _steps(40, _forward())
 	var after := server_player.controller.state.position
 
+	# [b]At what speed, not only whether.[/b] "More than a metre in 40 ticks" is a sixth
+	# of what 40 ticks at `runner_speed` covers, so a runner the server moved at a fifth
+	# of their speed passed it. The distance is short of the full 4.3 m by the input lead
+	# (the first commands are still in flight when the window opens), so the speed on the
+	# last tick is the number that says the commands arrived whole. Printed, always.
+	var top := server_player.controller.tunables.max_speed
+	var v := server_player.controller.state.velocity
+	var speed := Vector2(v.x, v.z).length()
+	print("  ..    40 ticks of forward from the client: the server moved them %.2f m of %.2f at max_speed, at %.2f m/s of %.2f"
+		% [after.distance_to(before), top * 40.0 / float(SERVER_TICK_RATE), speed, top])
 	_check(
-		after.distance_to(before) > 1.0,
-		"the server moves them from the commands the client sent",
-		"%.2f m" % after.distance_to(before)
+		after.distance_to(before) > 1.0 and absf(speed - top) < 0.05,
+		"the server moves them from the commands the client sent, at runner_speed",
+		"%.2f m, %.2f of %.2f m/s" % [after.distance_to(before), speed, top]
 	)
 
 	# [b]The client predicted the same move rather than waiting for the answer.[/b] This
@@ -1709,8 +1719,14 @@ func _test_somebody_else_is_drawn() -> void:
 			if theirs != null and theirs.figure != null and i >= 20:
 				drawn.append(theirs.figure.global_position)
 
+	# Held to what 59 ticks at `runner_speed` covers rather than to "more than 3 m", which
+	# a runner at half their speed passes. Printed, always.
 	var moved := server_track[server_track.size() - 1].distance_to(server_track[0])
-	_check(moved > 3.0, "the server runs them across the bowl", "%.2f m" % moved)
+	var owed := other.controller.tunables.max_speed * 59.0 / float(SERVER_TICK_RATE)
+	print("  ..    the other runner, 60 ticks of forward on the server: %.2f m of %.2f at max_speed"
+		% [moved, owed])
+	_check(moved > owed * 0.95, "the server runs them across the bowl, at runner_speed",
+		"%.2f of %.2f m" % [moved, owed])
 
 	# Tracking: every frame's body is within a hand of SOME position the server really had
 	# them at. Not the latest one, because a remote player is drawn an interpolation delay
