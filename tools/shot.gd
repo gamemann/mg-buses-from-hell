@@ -16,6 +16,7 @@ func _run() -> void:
 	var out := "res://screenshots/bfh.png"
 	var look_at_bus := false
 	var look_at_stacks := false
+	var look_at_lane := false
 	var look_at_tanks := false
 	var look_at_yard := ""
 	var look_at_scaffold := false
@@ -36,6 +37,8 @@ func _run() -> void:
 			look_at_bus = true
 		elif arg == "--stacks":
 			look_at_stacks = true
+		elif arg == "--lane":
+			look_at_lane = true
 		elif arg == "--tanks":
 			look_at_tanks = true
 		elif arg == "--yard":
@@ -163,6 +166,22 @@ func _run() -> void:
 			cam.look_at(middle + Vector3(0.0, 2.0, 0.0), Vector3.UP)
 			cam.current = true
 			await get_tree().process_frame
+
+	# Or stand in the stacks' second lane's west mouth, at a runner's eyes, and look down
+	# it: the question is whether it reads as a second way through, with the hook's south
+	# pillar across its far end and the scaffold past that, rather than as more columns.
+	var world_for_lane: BfhGame = client.get("game")
+	if look_at_lane and world_for_lane != null and world_for_lane.arena != null \
+			and not world_for_lane.arena.pillars().is_empty():
+		var arena = world_for_lane.arena
+		var lane_z: float = arena.STACK_LANES[1]
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.global_position = arena.stack_point(Vector2(-14.0, lane_z)) + Vector3(0.0, 1.7, 0.0)
+		cam.look_at(arena.stack_point(Vector2(arena.STACK_LANE_END, lane_z)) + Vector3(0.0, 1.4, 0.0),
+			Vector3.UP)
+		cam.current = true
+		await get_tree().process_frame
 
 	# Or stand in the mouth of one of the tank farm's lanes and look through it.
 	#

@@ -16,7 +16,7 @@ The drivers cannot lose except to the clock. The runners cannot win except on th
 game/
   bfh_config.gd     every cvar, in metres and seconds, layered like every DotConfig
   bfh_paths.gd      where this game's own files are, wherever it is mounted
-  bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks, the farm and its back yard, the scaffold,
+  bfh_arena.gd      the bowl: floor, wall, ledge, ramp, the stacks and their two lanes, the farm and its back yard, the scaffold,
                     sun and sky. In code, and the climbs it expects a runner to make
   bfh_reach.gd      what a runner can get onto, as arithmetic over the real tunables
   bfh_textures.gd   the generated metre grid. Why a flat colour has no speed in it
@@ -48,7 +48,7 @@ props/              the crate, the barrel and the bus, as scenes — plus the ar
 fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (201), headless_net (166), dedicated (79)
+examples/           headless_run (211), headless_net (166), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -289,7 +289,7 @@ A pillar is also the only obstacle shape a raycast vehicle handles honestly. A c
 
 **Two staggered rows with a 6.8 m lane between them, not a scatter.** Scattered pillars are more cover and less map: every gap is the same gap, so a driver has no reason to prefer one line through them to another. A lane a bus can take at full speed makes the middle of the stacks the most dangerous floor in the bowl and the edges of it the safest, which is a decision a runner makes every few seconds. And the lane **does not run clean through** — a ninth position across the far end, offset rather than centred, means a driver who commits to the fast line has to get out of it at the other end.
 
-The cluster is placed as a fraction of `arena_radius` so a smaller bowl gets it in proportion, but **the spacing does not scale**: it is sized to a bus, and a bus is the same size in every bowl. Below 34 m the lane does not fit and the stacks are left out, with a log line saying so rather than silently.
+The cluster is placed as a fraction of `arena_radius` so a smaller bowl gets it in proportion, but **the spacing does not scale**: it is sized to a bus, and a bus is the same size in every bowl. Below 36 m (34 until the second lane, Decision 13) the lanes do not fit and the stacks are left out, with a log line saying so rather than silently.
 
 ### The hook, and the rule that no gap here may be one a bus cannot take
 
@@ -439,6 +439,29 @@ Driven with the courtyard drive (fresh world, no crates or barrels, bot bus faci
 | middle-north | 14 m out | | **sent home 6.73 s, nearest 6.7 m** (9.5 m/s peak) |
 
 This is the courtyard's rule broken: there, a runner standing IN a narrow lane is run down; here they are not, because the runner is inside both pillars' rings and each deflection sends the bus beside one pillar and into the other. A human driver fits (the gap rule holds). Widening both gaps to 7.2 m means the middle pillar at about local x 30.3, which walks it toward the scaffold (its nearest hook pillar) and loosens the one tight cluster on the map; that is a layout call, left to Christian (nightly item `runner-standing-1`).
+
+## Decision 13: the stacks' second lane, because the fast line through them was always the same one (2026-09-29)
+
+**The stacks were one lane.** A driver coming at the west end knew where the runner had to be, and the lane ended at the dog-leg and the hook whichever way anybody came in. **Two more pillars, a third row at stack-local z = 14.6 (x = -4.5 and 4.0), make the floor between it and the old south row a second lane**, and the west end a fork: the first lane ends at the dog-leg and the hook, the second at the hook's south pillar, which stands across it 3.0 m off its centre line (its own dog-leg, offset the way the first one is), and past that is open floor to the scaffold's low west end. **A covered way from the stacks to the height**, as the back yard made one from the farm: both features now lead to the one height in the bowl, and a runner on it can see which one the bus is coming out of. Staggered against the row it faces, two long and starting 4 m east of it, so the west end is a funnel of two mouths; a third pillar at x = 12.5 was tried on paper and dropped, because it stood where the scaffold section parks a bus's tail 24 m off the low end.
+
+**7.6 m of clear floor, where the first lane has 6.8, on purpose.** `steer_around` keeps `radius + PILLAR_CLEARANCE` (4.8 m) off every axis, so the first lane's rows at 4.6 m either side of its centre are threaded by nudges, and only a lane of `LANE_THROUGH` (7.2 m) or more gives the autopilot a straight line down it. This lane leads to the scaffold, and one a bot bus could not chase a runner down would make the height a refuge. **Armed with the row at 13.8 (6.0 m clear): the bot bus wedged and was sent home**, 1.3 m/s average, 13.4 m short of the runner.
+
+**The declaration** is `PILLAR_LAYOUT` (the row is appended after the hook, so indices 0-10 are unchanged; `HOOK_FIRST` names the hook, which the suite had found as "the last three"), `STACK_LANES` (each lane's centre line, stack-local z: 0 and 9.6) and `STACK_LANE_END` (14: west of it a pillar is a side of a lane, east of it one across the centre line is the plug). `stack_point`, `stack_lane_width` and `stack_lane_plugged` come from them, and the pillars' own placement goes through `stack_point` too. The pillars go through `_obstacles`, so the steering, scatter keep-out and map-wide gap rule needed no change.
+
+**What it found: `STACK_MIN_RADIUS` is 36, and was 34.** The new row's west pillar is the furthest the stacks reach from the bowl's middle, and at 34 it stood 0.9 m outside `runner_area_radius`. The suite asks every pillar at `STACK_MIN_RADIUS` now as well as at 46; armed with 34, it fired.
+
+`headless_run`'s **the stacks' second lane** (10 checks):
+
+- the lane is `LANE_THROUGH` wide (7.60 m) and does not run clean through;
+- every pillar is on reachable floor on the smallest bowl with the stacks;
+- a runner bot goes in at the west mouth, down the lane, round the hook's south pillar on the open side and across to the scaffold's west end: **49.0 m of a 49.5 m route in 7.57 s, 100% of `max_speed`**, held to `RUN_PACE`; then up the west end to the peak (**65%**, held to `CLIMB_PACE`);
+- the autopilot, 8 m outside the west mouth facing along the lane, pointed at a runner standing in the lane's middle: not sent home, **15.4 m/s fastest** (past `bus_lethal_speed`), runs them down in **2.3 s**.
+
+**Armed, each put back after:** the row moved in to z = 13.8 and `STACK_MIN_RADIUS` back to 34 in one run: four fired (the width at 6.00 m, the small bowl at 0.16 m outside, "not sent home" and "runs them down"). The pace checks are the same `_route_report` / `RUN_PACE` / `CLIMB_PACE` path armed under `[bot-drive-1]`.
+
+**Found, not fixed: the courtyard's "cannot come through" drive is order-dependent.** With this section run before the courtyard's four lanes, lane 1 (east) read **wedged at 1.2 s, then worked free and reached the runner at 3.73 s** instead of being sent home at 6.22 s, and lane 3's sent-home time moved from 6.38 to 6.53 s; deterministic run to run, and back to the committed numbers with this section run after it. Nothing in the east of the bowl changed, so some state outlives a disposed world (the physics server, a static, a stream) and a wedge against a drum is sensitive enough to show it. The section runs after the courtyard; the leak of state between worlds is unfound.
+
+Rendered: `tools/shot.sh 9 lane.png --lane`, a runner's eyes at the west mouth looking down the lane — a row either side, a lane a bus is plainly meant to use, and pillars standing across its far end.
 
 ## What a runner can climb, and two routes that never existed
 
@@ -611,7 +634,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 201 checks, 25 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 211 checks, 26 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
@@ -620,6 +643,7 @@ tools/shot.sh 9 tanks.png --tanks                            # the same, through
 tools/shot.sh 9 scaffold.png --scaffold                      # the scaffold, from the end a runner climbs
 tools/shot.sh 9 yard.png --yard                              # the farm's back yard, from a runner's eyes on the scaffold's peak
 tools/shot.sh 9 yard_in.png --yard=courtyard                 # the back yard, through the lane it shares with the courtyard
+tools/shot.sh 9 lane.png --lane                              # the stacks' second lane, from its west mouth at a runner's eyes
 tools/shot.sh 9 ramp.png --ramp                              # the ramp, from the side
 tools/shot.sh 9 blind.png --blind                            # an admin's blind, through the HUD
 tools/shot.sh 14 beacon_bus.png --beacon --bus               # an admin's beacon round a driver's bus

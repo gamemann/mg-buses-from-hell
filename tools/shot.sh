@@ -7,6 +7,7 @@
 #   tools/shot.sh 9 scaffold.png --scaffold   # the scaffold, from the end a runner climbs
 #   tools/shot.sh 9 yard.png --yard           # the tank farm's back yard, from the scaffold's peak
 #   tools/shot.sh 9 yard_in.png --yard=courtyard   # the same yard, through the lane from the courtyard
+#   tools/shot.sh 9 lane.png --lane           # the stacks' second lane, from its west mouth
 #   tools/shot.sh 9 ramp.png --ramp           # the ramp, from the side
 #   tools/shot.sh 9 beacon.png --beacon       # an admin's beacon: the runner's ring, the bus's column
 #   tools/shot.sh 9 beacon_bus.png --beacon --bus   # the beacon round a driver's bus

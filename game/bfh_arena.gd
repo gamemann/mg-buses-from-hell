@@ -118,7 +118,47 @@ const PILLAR_LAYOUT: Array[Vector2] = [
 	Vector2(22.5, -6.2),
 	Vector2(27.5, 0.0),
 	Vector2(23.0, 6.6),
+
+	# --- The second lane, south of the first (2026-09-29) ------------------
+	#
+	# [b]The stacks were one lane, so the fast line through them was always the same
+	# line.[/b] A driver coming at the west end knew where the runner had to be, and a
+	# runner who was in the lane had two moves: out through a row, onto open floor, or
+	# on to the dog-leg. A third row makes the rows between it and the old south row a
+	# second lane, and turns the west end into a fork: the old lane ends at the dog-leg
+	# and the hook; this one ends at the hook's south pillar, offset in it the way the
+	# dog-leg is offset in the first, and past it is the open floor to the scaffold's
+	# west end. [b]A covered way from the stacks to the height, which the back yard
+	# made from the farm.[/b] Two features with a way to the one height in the bowl,
+	# and a runner on it can see which one the bus is coming out of.
+	#
+	# [b]Wider than the first lane, on purpose: 7.6 m of clear floor against 6.8.[/b]
+	# `steer_around` keeps radius + PILLAR_CLEARANCE (4.8 m) off every axis, so a lane
+	# whose rows stand 4.6 m either side of its centre line is threaded by nudges, and
+	# only one of 7.2 m or more (LANE_THROUGH) gives the autopilot a straight line down
+	# it. The first lane is the bus's hard line; this one leads to the scaffold, and a
+	# lane a bus cannot chase down on the way to the height would make the height a
+	# refuge. Staggered against the row it faces and two long, starting 4 m further
+	# east than it, so the west end is a funnel of two mouths rather than a wall, and
+	# the east end opens south onto the floor to the scaffold rather than a third
+	# pillar standing on it (one at x = 12.5 stood where a bus coming at the scaffold's
+	# low end from the west has its tail).
+	Vector2(-4.5, 14.6),
+	Vector2(4.0, 14.6),
 ]
+
+## The first of the hook's three pillars in [constant PILLAR_LAYOUT].
+const HOOK_FIRST := 8
+
+## The stacks' lanes, as the stack-local [code]z[/code] of each centre line: the first
+## lane between the two original rows, and the second between the old south row and the
+## third ([constant PILLAR_LAYOUT]).
+const STACK_LANES: Array[float] = [0.0, 9.6]
+
+## Stack-local [code]x[/code] where the lanes' rows end and the dog-legs begin. A pillar
+## west of this is a side of a lane; one east of it that stands across a lane's centre
+## line is what stops the lane running clean through.
+const STACK_LANE_END := 14.0
 
 ## Which way the lane points. Deliberately not aligned with anything: the ramp arrives
 ## on the bowl's north-south axis, and a lane square to it would be a corridor a driver
@@ -130,8 +170,13 @@ const STACK_YAW := 25.0
 ## bus, and a bus is the same size in every bowl.
 const STACK_CENTRE := Vector2(-0.36, 0.14)
 
-## Below this the lane would not fit inside the floor and the stacks are left out.
-const STACK_MIN_RADIUS := 34.0
+## Below this the lanes would not fit inside the floor and the stacks are left out.
+##
+## [b]36, and it was 34.[/b] The second lane's west pillar is the stacks' furthest from
+## the bowl's middle, and at 34 it stood 0.9 m outside the floor a runner may be on
+## (`runner_area_radius`): cover nobody can use, and 5.1 m of floor between it and the
+## wall. `headless_run` asks every pillar of it at this radius as well as at 46.
+const STACK_MIN_RADIUS := 36.0
 
 ## THE TANK FARM: the east half, and a different question from the stacks.
 ##
@@ -601,21 +646,44 @@ func _build_stacks() -> void:
 	stacks.name = "Stacks"
 	add_child(stacks)
 
-	var centre := Vector2(STACK_CENTRE.x * radius, STACK_CENTRE.y * radius)
-	var yaw := deg_to_rad(STACK_YAW)
-	var cosine := cos(yaw)
-	var sine := sin(yaw)
-
 	for i in range(PILLAR_LAYOUT.size()):
-		var local := PILLAR_LAYOUT[i]
-		var at := Vector3(
-			centre.x + local.x * cosine - local.y * sine,
-			0.0,
-			centre.y + local.x * sine + local.y * cosine,
-		)
-
+		var at := stack_point(PILLAR_LAYOUT[i])
 		_add_obstacle(at, PILLAR_RADIUS)
 		_build_pillar(stacks, "Pillar%d" % i, at)
+
+
+## A stack-local point ([code]x[/code] along the lanes, [code]z[/code] across them) on
+## the floor of this bowl. The one transform the pillars, the lanes' checks and the
+## cameras all go through.
+func stack_point(local: Vector2) -> Vector3:
+	var centre := Vector2(STACK_CENTRE.x * radius, STACK_CENTRE.y * radius)
+	var yaw := deg_to_rad(STACK_YAW)
+	return Vector3(
+		centre.x + local.x * cos(yaw) - local.y * sin(yaw),
+		0.0,
+		centre.y + local.x * sin(yaw) + local.y * cos(yaw),
+	)
+
+
+## The clear floor across the [param lane]th of [constant STACK_LANES], in metres: twice
+## the distance from its centre line to the nearest pillar face along it. Off the layout,
+## because the spacing does not scale with the bowl.
+static func stack_lane_width(lane: int) -> float:
+	var half := INF
+	for local in PILLAR_LAYOUT:
+		if local.x < STACK_LANE_END:
+			half = minf(half, absf(local.y - STACK_LANES[lane]) - PILLAR_RADIUS)
+	return half * 2.0
+
+
+## Whether a pillar past [constant STACK_LANE_END] stands across the [param lane]th
+## lane, so that a driver on its fast line has to get out of it at the far end.
+static func stack_lane_plugged(lane: int) -> bool:
+	var half := stack_lane_width(lane) * 0.5 + PILLAR_RADIUS
+	for local in PILLAR_LAYOUT:
+		if local.x >= STACK_LANE_END and absf(local.y - STACK_LANES[lane]) < half:
+			return true
+	return false
 
 
 ## The tank farm, out of the one list its meshes, colliders and steering all come from.

@@ -33,11 +33,11 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 201
+const CHECKS := 211
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 25
+const SECTIONS := 26
 
 const TICK := 1.0 / 60.0
 
@@ -86,6 +86,12 @@ func _run() -> void:
 	await _test_the_scaffold()
 	await _test_the_back_yard()
 	await _test_the_courtyard_lanes()
+	# After the courtyard, not beside the back yard, and that is a finding rather than
+	# taste: run before it, one more world built and freed turns the courtyard's east
+	# lane from "wedged at 1.2 s, sent home" into "wedged at 1.2 s, works free, reaches
+	# at 3.7 s". Deterministic run to run and dependent on what ran first; see
+	# CLAUDE.md, Decision 13.
+	await _test_the_second_lane()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -748,7 +754,9 @@ func _test_driving_the_stacks() -> void:
 	# the throttle against a pillar, which `_unstick` reads as a crate and answers by
 	# teleporting the bus to its start line. A steering bug whose symptom is a bus
 	# vanishing.
-	var hook := arena.pillars()[BfhArena.PILLAR_LAYOUT.size() - 3]
+	# By name: the hook was the last three of the layout until the second lane's row was
+	# appended after it.
+	var hook := arena.pillars()[BfhArena.HOOK_FIRST]
 
 	body.linear_velocity = Vector3.ZERO
 	body.angular_velocity = Vector3.ZERO
@@ -1630,6 +1638,149 @@ func _test_the_back_yard() -> void:
 		"and gets up to a speed that kills on the way in",
 		"%.1f m/s against %.1f" % [fastest, game.config.bus_lethal_speed])
 	_check(not runner.health.alive, "and runs them down in the middle of it",
+		"%.1f s, the bus at (%.1f, %.1f), %.1f m from them"
+		% [float(took) * TICK, last.x, last.z,
+			Vector2(last.x - hide.x, last.z - hide.z).length()])
+
+	await _dispose(game)
+	_done()
+
+
+# --- The stacks' second lane (2026-09-29) --------------------------------------
+
+## The third row and the lane it makes, and the three claims a lane is: it is a bus's
+## width and a straight line for the autopilot, a runner can take it to the scaffold,
+## and a runner who stands in it is run down.
+##
+## [b]Driven both ways, like the back yard,[/b] because a lane that leads to the one
+## height in the bowl is a covered way only if a bus can still come down it: one the
+## steering could not follow a runner along would make the height somewhere to win the
+## round by getting to.
+func _test_the_second_lane() -> void:
+	print("the stacks' second lane")
+
+	var width := BfhArena.stack_lane_width(1)
+	print("  ..    the lanes' clear floor: %.2f m and %.2f m, against LANE_THROUGH %.2f"
+		% [BfhArena.stack_lane_width(0), width, BfhArena.LANE_THROUGH])
+	_check(width >= BfhArena.LANE_THROUGH,
+		"the second lane is wide enough for the autopilot to drive straight down",
+		"%.2f m of clear floor" % width)
+	_check(BfhArena.stack_lane_plugged(1),
+		"and it does not run clean through either: the hook's south pillar stands across its end")
+
+	# [b]And on the smallest bowl that has the stacks.[/b] The third row is the furthest
+	# the stacks reach from the bowl's middle, and the lanes do not scale with it.
+	var small := BfhArena.new()
+	add_child(small)
+	small.build(BfhArena.STACK_MIN_RADIUS)
+	var small_pillars := small.pillars()
+	var small_reach := small.runner_area_radius()
+	var worst := -INF
+	for pillar in small_pillars:
+		worst = maxf(worst, Vector2(pillar.x, pillar.z).length() + BfhArena.PILLAR_RADIUS - small_reach)
+	remove_child(small)
+	small.free()
+	_check(small_pillars.size() == BfhArena.PILLAR_LAYOUT.size() and worst <= 0.0,
+		"every pillar is on floor a runner can reach on the smallest bowl with the stacks",
+		"%d pillars at %.0f m, the worst %.2f m outside" % [small_pillars.size(),
+			BfhArena.STACK_MIN_RADIUS, worst])
+
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	_put(runner, Vector3(-20.0, 0.05, -20.0))
+	game.start()
+	await _step(game, 60)
+	for prop in game.props.all_props():
+		if not prop.instance_id in game.scaffold_ids:
+			game.props.remove(prop.instance_id)
+	await _step(game, 2)
+
+	var arena := game.arena
+	var lane_z: float = BfhArena.STACK_LANES[1]
+	var hook_south := BfhArena.PILLAR_LAYOUT[BfhArena.HOOK_FIRST + 2]
+	var footprint := arena.scaffold_footprint()
+	var steps := arena.scaffold_steps()
+	var peak := arena.scaffold_peak()
+	var top: AABB = steps[peak]
+
+	# --- A runner takes it: in at the west mouth, down the lane, round the hook's south
+	# pillar on the open side, across to the scaffold's low west end, and up it.
+	var mouth := arena.stack_point(Vector2(-12.0, lane_z))
+	var through: Array = [
+		arena.stack_point(Vector2(BfhArena.STACK_LANE_END, lane_z)),
+		arena.stack_point(Vector2(hook_south.x, lane_z + 5.0)),
+		Vector3(footprint.position.x - 5.0, 0.0, footprint.get_center().z),
+	]
+	_put(runner, mouth + Vector3(0.0, 0.05, 0.0))
+	await _step(game, 5)
+	await _run_route(game, runner, through, 900)
+	var flat := _route_report("down the second lane and across to the scaffold", runner)
+	_check(_route.get("finished", false),
+		"a runner goes down the second lane, round the hook and across to the scaffold",
+		"stopped at (%.1f, %.1f)" % [runner.global_position.x, runner.global_position.z])
+	_check(flat >= RUN_PACE, "at a runner's pace: nothing in the way",
+		"%.0f%% of max_speed" % (flat * 100.0))
+
+	var up: Array = []
+	for i in range(peak + 1):
+		up.append(Vector3(steps[i].position.x + 0.6, steps[i].end.y, steps[i].get_center().z))
+	up.append(Vector3(top.end.x - 0.6, top.end.y, top.get_center().z))
+	await _run_route(game, runner, up, 600)
+	var climb := _route_report("and on up the scaffold's west end", runner)
+	var on := game.carry.prop_under(runner.controller.state.ground_id)
+	_check(runner.global_position.y > top.end.y - 0.1 and on != null
+		and on.instance_id in game.scaffold_ids,
+		"and on up to the peak: the covered way from the stacks to the height",
+		"feet at %.2f, top %.2f" % [runner.global_position.y, top.end.y])
+	_check(climb >= CLIMB_PACE, "at a climber's pace",
+		"%.0f%% of max_speed" % (climb * 100.0))
+
+	# --- And a bus comes down it. The autopilot, 8 m outside the lane's west mouth and
+	# facing along it, pointed at a runner standing still in the middle of the lane.
+	var along := arena.stack_point(Vector2(1.0, 0.0)) - arena.stack_point(Vector2.ZERO)
+	var start := arena.stack_point(Vector2(BfhArena.PILLAR_LAYOUT[4].x - 8.0, lane_z))
+	var hide := arena.stack_point(Vector2(4.0, lane_z)) + Vector3(0.0, 0.05, 0.0)
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(along), start + Vector3(0.0, 1.4, 0.0))
+	driver.is_bot = true
+	_put(runner, hide)
+
+	var last := bus.position()
+	var covered := 0.0
+	var fastest := 0.0
+	var reset := false
+	var took := 0
+	for _i in range(600):
+		var still := DotFpsCommand.new()
+		still.yaw = runner.controller.state.yaw
+		runner.controller.apply_command(still)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		took += 1
+		var at := bus.position()
+		if _sent_home(last, at):
+			reset = true
+			break
+		covered += Vector2(at.x - last.x, at.z - last.z).length()
+		fastest = maxf(fastest, bus.speed())
+		last = at
+		if not runner.health.alive:
+			break
+
+	_print_drive("down the second lane", covered, start.distance_to(hide), took, fastest,
+		game.config)
+	_check(not reset, "a bus chasing somebody down the second lane is not sent home")
+	_check(fastest >= game.config.bus_lethal_speed,
+		"and gets up to a speed that kills in it",
+		"%.1f m/s against %.1f" % [fastest, game.config.bus_lethal_speed])
+	_check(not runner.health.alive, "and runs down a runner standing in the middle of it",
 		"%.1f s, the bus at (%.1f, %.1f), %.1f m from them"
 		% [float(took) * TICK, last.x, last.z,
 			Vector2(last.x - hide.x, last.z - hide.z).length()])
