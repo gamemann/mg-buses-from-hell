@@ -425,6 +425,21 @@ The arithmetic was right. `steer_around` treats a drum as in the way when its ax
 
 **What is still the driver's cost, and a decision rather than a bug:** a bot that chases a runner through a narrow lane is still sent home by the stuck rule, which from the runner's side is the bus vanishing — the symptom this file calls a free escape that looks like a bug under Decision 6. It takes 5 s of a bus stood against a drum, so the runner has already got away, but it reads the same. Whether a bot should instead give up on a quarry it has been stopped behind for a second (and pick the next nearest, or back off) is Christian's call; it is not done here. `[steer-3]`'s hook half — whether "the middle of the hook" is a place at all — is not measured by this.
 
+### The hook's two narrow gaps are somewhere a runner wins by standing still, against a bot (`[steer-3]`, 2026-09-29)
+
+**Measured, not fixed.** The hook's gaps are 5.56 m (south pillar to middle) and 5.59 m (middle to north) of clear floor, both under `LANE_THROUGH`; the base between the outer two is 10.4 m but opens onto the dog-leg pillar 2.6 m away, so there is no straight run at it. **"The middle of the hook" is barely a place:** the point in the triangle farthest from every pillar axis is 4.97 m from the nearest, against the 4.8 m (`PILLAR_RADIUS + PILLAR_CLEARANCE`) `steer_around` keeps off, so the whole interior but a 0.17 m sliver is inside some pillar's ring.
+
+Driven with the courtyard drive (fresh world, no crates or barrels, bot bus facing in from outside the gap's middle, twelve seconds), runner standing still:
+
+| gap | start | runner at the hook's centroid | runner in the gap's middle |
+| --- | --- | --- | --- |
+| south-middle | 8 m out | sent home 6.50 s, wedged 1.2 s, nearest 8.7 m | **sent home 6.53 s, nearest 5.4 m** |
+| middle-north | 8 m out | sent home 8.23 s, wedged 1.4 s, nearest 8.9 m | **sent home 8.15 s, nearest 5.6 m** |
+| south-middle | 14 m out | | **sent home 6.62 s, nearest 5.7 m** (8.2 m/s peak) |
+| middle-north | 14 m out | | **sent home 6.73 s, nearest 6.7 m** (9.5 m/s peak) |
+
+This is the courtyard's rule broken: there, a runner standing IN a narrow lane is run down; here they are not, because the runner is inside both pillars' rings and each deflection sends the bus beside one pillar and into the other. A human driver fits (the gap rule holds). Widening both gaps to 7.2 m means the middle pillar at about local x 30.3, which walks it toward the scaffold (its nearest hook pillar) and loosens the one tight cluster on the map; that is a layout call, left to Christian (nightly item `hook-gaps-1`).
+
 ## What a runner can climb, and two routes that never existed
 
 The family asked every game in it whether the gaps and heights it asks a player to cross are inside what the movement can do. The two games asked first were both wrong. This one was wrong twice, and both were routes the documentation described.
