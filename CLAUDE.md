@@ -438,7 +438,7 @@ Driven with the courtyard drive (fresh world, no crates or barrels, bot bus faci
 | south-middle | 14 m out | | **sent home 6.62 s, nearest 5.7 m** (8.2 m/s peak) |
 | middle-north | 14 m out | | **sent home 6.73 s, nearest 6.7 m** (9.5 m/s peak) |
 
-This is the courtyard's rule broken: there, a runner standing IN a narrow lane is run down; here they are not, because the runner is inside both pillars' rings and each deflection sends the bus beside one pillar and into the other. A human driver fits (the gap rule holds). Widening both gaps to 7.2 m means the middle pillar at about local x 30.3, which walks it toward the scaffold (its nearest hook pillar) and loosens the one tight cluster on the map; that is a layout call, left to Christian (nightly item `hook-gaps-1`).
+This is the courtyard's rule broken: there, a runner standing IN a narrow lane is run down; here they are not, because the runner is inside both pillars' rings and each deflection sends the bus beside one pillar and into the other. A human driver fits (the gap rule holds). Widening both gaps to 7.2 m means the middle pillar at about local x 30.3, which walks it toward the scaffold (its nearest hook pillar) and loosens the one tight cluster on the map; that is a layout call, left to Christian (nightly item `runner-standing-1`).
 
 ## What a runner can climb, and two routes that never existed
 
