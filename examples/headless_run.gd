@@ -33,13 +33,20 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 211
+const CHECKS := 212
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
 const SECTIONS := 27
 
 const TICK := 1.0 / 60.0
+
+## Half the bus hull's length (props/bfh_bus.tscn: 2.5 x 1.8 x 5.4 m).
+const BUS_HALF_LENGTH := 2.7
+
+## The floor a drive's bus must have round it at the start, in metres, past the strip it
+## sweeps. Covers the hull's corners, which a strip with round ends cuts off by 0.52 m.
+const START_ROOM := 0.6
 
 ## The fraction of `max_speed` a runner bot's route has to average on flat ground or a
 ## walkable slope. Run-up is five ticks at these tunables, so a straight run of any length
@@ -1968,7 +1975,8 @@ func _drive_into(where: Callable, out_by: float, in_the_lane: bool = false) -> D
 	var at_gap: Array = where.call(game.arena)
 	var mouth: Vector3 = at_gap[0]
 	var middle: Vector3 = at_gap[1]
-	var out: Vector3 = at_gap[2]
+	var out: Vector3 = _clear_line(game.arena, mouth, at_gap[2], out_by)
+	var turned := rad_to_deg((at_gap[2] as Vector3).signed_angle_to(out, Vector3.UP))
 	var start := mouth + out * out_by
 
 	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
@@ -2009,11 +2017,54 @@ func _drive_into(where: Callable, out_by: float, in_the_lane: bool = false) -> D
 			outcome = "reaches"
 			break
 
+	var clear := _line_room(game.arena, mouth, out, out_by)
 	await _dispose(game)
 	return {
 		"outcome": outcome, "peak": peak, "seconds": float(took) * TICK,
-		"nearest": nearest, "start": start, "wedged": wedged,
+		"nearest": nearest, "start": start, "wedged": wedged, "turned": turned,
+		"clear": clear,
 	}
+
+
+## The direction to put a drive's bus out along: [param out] itself if a bus started
+## [param out_by] metres along it from [param mouth] stands on clear floor with a clear
+## line to the gap, otherwise the nearest direction either side of it, in 2.5 degree
+## steps up to 45, that does. [param out] unchanged if none does, which
+## [method _line_room] then reports.
+##
+## [b]A start is not a place until it is asked whether it is floor.[/b] The hook's
+## middle-north gap faces the back yard's west drum (2.6 m), whose axis stands 13.1 m
+## out on the line square to the gap: the 14 m start put the bus's middle 1.07 m from
+## that axis, inside the drum, and the physics threw it out at 121 m/s on the first
+## step (a bus tops out at 22). The 8 m start was inside it too, by 0.2 m at the tail.
+## Both rows were reported as drives at the gap; they were ejections and a drive round
+## a drum. The line is turned rather than shortened so the run-up stays what the row
+## says it is.
+func _clear_line(arena: BfhArena, mouth: Vector3, out: Vector3, out_by: float) -> Vector3:
+	for step in range(19):
+		for side: float in ([1.0] if step == 0 else [1.0, -1.0]):
+			var turned := out.rotated(Vector3.UP, deg_to_rad(2.5 * step * side))
+			if _line_room(arena, mouth, turned, out_by) >= START_ROOM:
+				return turned
+	return out
+
+
+## How far the bus is from touching anything on a drive started [param out_by] metres
+## along [param out] from [param mouth]: the least, over every pillar and drum, of the
+## distance from its surface to the strip a bus sweeps from the mouth to the tail of a
+## bus parked at the start, less half a bus's width. Negative is inside something.
+## Every pillar and drum, and the wall; the scaffold's crates are in none of the gaps'
+## lines and the ramp and ledge are across the bowl.
+func _line_room(arena: BfhArena, mouth: Vector3, out: Vector3, out_by: float) -> float:
+	var a := Vector2(mouth.x, mouth.z)
+	var b := a + Vector2(out.x, out.z) * (out_by + BUS_HALF_LENGTH)
+	var room := INF
+	var obstacles := arena.obstacles()
+	for i in range(obstacles.size()):
+		var axis := Vector2(obstacles[i].x, obstacles[i].z)
+		var on := Geometry2D.get_closest_point_to_segment(axis, a, b)
+		room = minf(room, axis.distance_to(on) - arena.obstacle_radius(i) - BfhArena.BUS_HALF_WIDTH)
+	return minf(room, arena.radius - b.length() - BfhArena.BUS_HALF_WIDTH)
 
 
 ## [b]The hook's two narrow gaps, driven.[/b] `[steer-3]` measured these on 2026-09-29
@@ -2034,7 +2085,18 @@ func _test_the_hook_gaps() -> void:
 				rows.append(r)
 				print("  ..    %-12s %4.1f m out  runner %-8s | %-9s %4.1f m/s peak %5.2f s wedged %4.1f nearest %4.1f"
 					% [g[2], out_by, "in gap" if in_gap else "centroid", r.outcome, r.peak,
-						r.seconds, r.wedged, r.nearest] + "  start %s" % r.start)
+						r.seconds, r.wedged, r.nearest]
+					+ "  start (%.1f, %.1f), %.1f deg off square, %.2f m room" % [
+						r.start.x, r.start.z, r.turned, r.clear])
+
+	# Measuring-only, but not measuring the inside of a drum: see `_clear_line`.
+	var cramped := PackedStringArray()
+	for r: Dictionary in rows:
+		if r.clear < START_ROOM:
+			cramped.append("%s %.0f m (%.2f m)" % [r.gap, r.out_by, r.clear])
+	_check(cramped.is_empty(),
+		"every drive at the hook's gaps starts on clear floor with a clear line in",
+		"cramped: %s" % ", ".join(cramped))
 	_done()
 
 

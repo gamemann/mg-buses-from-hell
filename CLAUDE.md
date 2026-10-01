@@ -48,7 +48,7 @@ props/              the crate, the barrel and the bus, as scenes — plus the ar
 fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (211), headless_net (166), dedicated (79)
+examples/           headless_run (212), headless_net (166), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -440,6 +440,8 @@ Driven with the courtyard drive (fresh world, no crates or barrels, bot bus faci
 
 This is the courtyard's rule broken: there, a runner standing IN a narrow lane is run down; here they are not, because the runner is inside both pillars' rings and each deflection sends the bus beside one pillar and into the other. A human driver fits (the gap rule holds). Widening both gaps to 7.2 m means the middle pillar at about local x 30.3, which walks it toward the scaffold (its nearest hook pillar) and loosens the one tight cluster on the map; that is a layout call, left to Christian (nightly item `runner-standing-1`).
 
+**Kept as `headless_run`'s "the hook's gaps, driven" (2026-10-01), and its first run had driven out of a drum.** Square to the middle-north gap, the back yard's west drum (2.6 m) stands 13.1 m out on the line: the 14 m start put the bus's middle 1.07 m from its axis, and the physics threw the bus out at 121 m/s (top speed 22), which the table read as "wedges". The 8 m start was inside it too, by 0.2 m at the tail. `_clear_line` now turns a drive's line about the gap's middle, 2.5 degrees at a time, until the strip a bus sweeps from the gap to its tail has 0.6 m of floor (`START_ROOM`), and the section checks every start (armed: with the line never turned it fires on all four middle-north drives and the 121 m/s comes back). Middle-north is driven 17.5 degrees off square; the courtyard's lanes and south-middle need no turn and are unchanged. In fresh spaces all eight hook drives are sent home (6.6-8.5 s, 10.6-13.7 m/s peak from 14 m), so the table above still holds.
+
 ## Decision 13: the stacks' second lane, because the fast line through them was always the same one (2026-09-29)
 
 **The stacks were one lane.** A driver coming at the west end knew where the runner had to be, and the lane ended at the dog-leg and the hook whichever way anybody came in. **Two more pillars, a third row at stack-local z = 14.6 (x = -4.5 and 4.0), make the floor between it and the old south row a second lane**, and the west end a fork: the first lane ends at the dog-leg and the hook, the second at the hook's south pillar, which stands across it 3.0 m off its centre line (its own dog-leg, offset the way the first one is), and past that is open floor to the scaffold's low west end. **A covered way from the stacks to the height**, as the back yard made one from the farm: both features now lead to the one height in the bowl, and a runner on it can see which one the bus is coming out of. Staggered against the row it faces, two long and starting 4 m east of it, so the west end is a funnel of two mouths; a third pillar at x = 12.5 was tried on paper and dropped, because it stood where the scaffold section parks a bus's tail 24 m off the low end.
@@ -636,7 +638,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 211 checks, 26 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 212 checks, 27 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
