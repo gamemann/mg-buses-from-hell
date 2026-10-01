@@ -48,7 +48,7 @@ props/              the crate, the barrel and the bus, as scenes — plus the ar
 fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (212), headless_net (166), dedicated (79)
+examples/           headless_run (213), headless_net (166), dedicated (79)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -442,6 +442,24 @@ This is the courtyard's rule broken: there, a runner standing IN a narrow lane i
 
 **Kept as `headless_run`'s "the hook's gaps, driven" (2026-10-01), and its first run had driven out of a drum.** Square to the middle-north gap, the back yard's west drum (2.6 m) stands 13.1 m out on the line: the 14 m start put the bus's middle 1.07 m from its axis, and the physics threw the bus out at 121 m/s (top speed 22), which the table read as "wedges". The 8 m start was inside it too, by 0.2 m at the tail. `_clear_line` now turns a drive's line about the gap's middle, 2.5 degrees at a time, until the strip a bus sweeps from the gap to its tail has 0.6 m of floor (`START_ROOM`), and the section checks every start (armed: with the line never turned it fires on all four middle-north drives and the 121 m/s comes back). Middle-north is driven 17.5 degrees off square; the courtyard's lanes and south-middle need no turn and are unchanged. In fresh spaces all eight hook drives are sent home (6.6-8.5 s, 10.6-13.7 m/s peak from 14 m), so the table above still holds.
 
+## Up the ramp: a bot bus can reach the deck now, from five starts of seven (2026-10-01)
+
+**Until 2026-10-01 no bot bus could reach a runner standing on the deck.** Measured on main before this change, from seven starts with the runner still on the deck's middle for twenty seconds: none. The ramp is 5 m of slab for 2.5 m of bus, and a bus that came round the foot at speed went over the side or wedged on the slab, and one that had to face the other way first circled the foot until the stuck rule sent it home. The 2026-09-26 attempt (branch `task/bus-ramp-autopilot`, not merged) says the same in its own commit: "still not reaching the deck". A runner on the deck was safe from bots for as long as they stood there.
+
+What is in now, started by the 2026-10-01 nightly run and finished in a session the same day:
+
+- **A line-up and a climb on the centreline** (`BfhArena._up_the_ramp`, `lining_up`, `ramp_bound`). A bus bound up the ramp goes to `RAMP_LINE_UP` (11 m) in front of the foot, rounding the foot's corner first if its line would cross the slab. Once on the line-up strip or the ramp it aims `RAMP_LOOKAHEAD` (6 m) up the centreline rather than at the quarry, which pulls it onto the middle within a bus length or two; only the deck releases it to the quarry. At `RAMP_SPEED` (9 m/s), because at full speed the line-up overshoots the middle.
+- **A three-point turn** (`BfhGame._turn_for_the_ramp`). A ramp-bound bus whose target is more than `RAMP_BACK_FROM` (110) degrees off its nose, or `RAMP_LINED_UP` (35) on the line-up, reverses with the wheel one way and then drives forward with it the other, legs of at most 2.5 s and 1.5 s, until it is within 15 degrees. The nightly run's version only reversed: its forward leg lasted one tick, and the bus dithered in front of the foot for the rest of the round.
+- **The line-up strip reaches `RAMP_STRIP_PAST` (3 m) past the line-up point.** With the strip ending exactly there, a bus that arrived at the point was 0.08 m outside it, so its target stayed the point it was parked on and it sat at 0 m/s for good (the nightly's version, from the north-east). The two-leg turn happens not to arrive there, so the suite passes without this; it stays because the boundary is wrong whichever turn reaches it.
+
+`headless_run`'s **up the ramp onto the deck, driven by a bot** drives all seven starts and asserts five, printing the time to the kill: in front of the foot 8 m out (6.6 s) and 20 m out (8.1 s), east (10.1 s), north-east (10.7 s) and west (11.8 s). Armed: with the turn disabled, north-east fails.
+
+**Still open, and the one that matters most is open.** `spawn`, where a bus actually begins (beside the slab, under the deck, facing the bowl), and `sw` both fail, and they are printed every run:
+
+- **`spawn` ends parked at (8, 6) with throttle and brake at rest, and that is a bug in `_round_the_obstacles`, not in the ramp code.** When a pillar stands across a bus's line, the waypoint is the point beside the pillar. A bus that reaches that point with the pillar still across its line is handed the same point, which is where it is standing: `DotVehicleDriver` calls that arrived and brakes with the throttle at zero, and `_unstick` only fires for a bus asking for throttle, so it is parked for the rest of the round. Carrying the waypoint on past the pillar along the line once the bus is within 2.5 m of it fixes the park. **It was measured and not committed**, because with it the west start stops reaching the deck (4 of 7 against 5). It affects every chase, not only the ramp, so it is worth fixing and the trade is the next session's to work out.
+- **`sw` climbs off the centreline and wedges on the ramp's edge** 2.4 m up, coming into the line-up diagonally at 7.6 m/s, and is sent home by the stuck rule.
+- **Tried and dropped, each measured worse:** stopping the bus before the first leg, choosing the turn's side once instead of each tick, and steering by the way the bus is moving rather than the way it is asked to (4 of 7, losing west or north-east). Sending a bus with its back to the ramp out to an open-floor turn point 16 m in front of the foot (it got there and turned, but slowly, and drifted to the side of the slab). Ending the turn when the bus faces straight up the ramp, or measuring the whole turn against the foot's middle (2 of 7: the start and end tests disagreed and a new turn began every tick). The turning itself works in all of them (the nose swings from south to north in four legs); the problem is the hand-off back to the ordinary drive.
+
 ## Decision 13: the stacks' second lane, because the fast line through them was always the same one (2026-09-29)
 
 **The stacks were one lane.** A driver coming at the west end knew where the runner had to be, and the lane ended at the dog-leg and the hook whichever way anybody came in. **Two more pillars, a third row at stack-local z = 14.6 (x = -4.5 and 4.0), make the floor between it and the old south row a second lane**, and the west end a fork: the first lane ends at the dog-leg and the hook, the second at the hook's south pillar, which stands across it 3.0 m off its centre line (its own dog-leg, offset the way the first one is), and past that is open floor to the scaffold's low west end. **A covered way from the stacks to the height**, as the back yard made one from the farm: both features now lead to the one height in the bowl, and a runner on it can see which one the bus is coming out of. Staggered against the row it faces, two long and starting 4 m east of it, so the west end is a funnel of two mouths; a third pillar at x = 12.5 was tried on paper and dropped, because it stood where the scaffold section parks a bus's tail 24 m off the low end.
@@ -638,7 +656,7 @@ godot --headless --path . --import
 find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read f; do
     godot --headless --path . --check-only --script "res://${f#./}"
 done
-godot --headless --path . res://examples/headless_run.tscn   # 212 checks, 27 sections, the simulation
+godot --headless --path . res://examples/headless_run.tscn   # 213 checks, 28 sections, the simulation
 godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
 godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8

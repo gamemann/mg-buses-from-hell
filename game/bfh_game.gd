@@ -203,6 +203,10 @@ var scaffold_ids: Array[int] = []
 ## Instance id -> seconds this bus has been asking to move and not moving.
 var _bus_stuck: Dictionary = {}
 
+## Bus instance id -> seconds a bot has been backing round to face the ramp. See
+## [method _turn_for_the_ramp].
+var _bus_backing: Dictionary = {}
+
 
 func _ready() -> void:
 	if config == null:
@@ -901,6 +905,7 @@ func _clear_bowl() -> void:
 	# entries a round for the life of the server rather than a behaviour, but a leak.
 	_bus_stuck.clear()
 	_bus_inverted.clear()
+	_bus_backing.clear()
 
 
 func _lay_out_bowl() -> void:
@@ -1216,8 +1221,105 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 	# through a pillar wedges nose-on and the stuck rule then teleports it back to its
 	# start line, which from the runner's side reads as hiding behind a pillar deleting
 	# the bus. See [method BfhArena.steer_around].
-	player.autopilot.set_target(arena.steer_around(bus.position(), beyond))
+	# Slower while bound up the ramp: 5 m of slab for 2.5 m of bus leaves 1.25 m either
+	# side, and at full speed the line-up overshoots the middle. See
+	# [method BfhArena._up_the_ramp].
+	var bound := arena.ramp_bound(bus.position(), beyond)
+	player.autopilot.target_speed = (
+		minf(config.bus_top_speed, RAMP_SPEED) if bound else config.bus_top_speed
+	)
+	var aim := arena.steer_around(bus.position(), beyond)
+	if bound:
+		var backing := _turn_for_the_ramp(bus, aim, delta)
+		if backing != null:
+			return backing
+	else:
+		_bus_backing.erase(bus.instance_id)
+	player.autopilot.set_target(aim)
 	return player.autopilot.drive(bus, delta)
+
+
+## A bot bus that has to face the other way to get up the ramp turns round in legs, or
+## null to drive on as usual.
+##
+## [b]Because the bowl has no room for a bus to turn round in.[/b] Buses start beside the
+## ramp, under the deck, facing the bowl, so a bot chasing somebody on the deck has to
+## come back past the foot the other way. Forward-only, that is a circle about 22 m
+## across, and the floor in front of the foot is boxed by the stacks to the west, the
+## hook to the south and the farm to the east: measured 2026-10-01, the bus came round
+## the foot and wedged on a stacks pillar or against the slab, was sent home by the stuck
+## rule, and did it again for as long as the runner stood up there.
+##
+## So when the point it is steering for is more than [constant RAMP_BACK_FROM] degrees
+## behind it (or [constant RAMP_LINED_UP] once it is on the line-up, where there is no
+## room to straighten before the slab), it turns round the way a driver does: reverse with
+## the wheel one way, which swings the nose towards the point, then forward with the wheel
+## the other, each leg for at most [constant RAMP_BACK_LONGEST] and
+## [constant RAMP_FORWARD_LONGEST] seconds, until the nose is within
+## [constant RAMP_BACK_TO] degrees. [b]Both legs, and the forward one is the half that was
+## missing:[/b] the first version only reversed, and a bus whose reverse leg ran out went
+## forward for one tick, found itself still facing the wrong way and reversed again, so it
+## dithered in front of the foot for the rest of the round. Done here rather than in
+## `DotVehicleDriver`, which reverses only when stuck, and only for the ramp, so every
+## other drive in the bowl is the one it was.
+func _turn_for_the_ramp(bus: DotVehicleInstance, aim: Vector3, delta: float) -> DotVehicleCommand:
+	var basis := bus.body().global_basis
+	var forward := -basis.z
+	forward.y = 0.0
+	var right := basis.x
+	right.y = 0.0
+	var to := aim - bus.position()
+	to.y = 0.0
+	if forward.length() < 0.01 or to.length() < 0.5:
+		_bus_backing.erase(bus.instance_id)
+		return null
+	var wanted := to.normalized()
+	var off := rad_to_deg(acos(clampf(wanted.dot(forward.normalized()), -1.0, 1.0)))
+
+	var turning: Dictionary = _bus_backing.get(bus.instance_id, {})
+	if turning.is_empty():
+		var limit := RAMP_LINED_UP if arena.lining_up(bus.position()) else RAMP_BACK_FROM
+		if off < limit:
+			return null
+		turning = {"reverse": true, "held": 0.0}
+	elif off < RAMP_BACK_TO:
+		_bus_backing.erase(bus.instance_id)
+		return null
+
+	var reverse: bool = turning["reverse"]
+	var held: float = float(turning["held"]) + delta
+	if held > (RAMP_BACK_LONGEST if reverse else RAMP_FORWARD_LONGEST):
+		reverse = not reverse
+		held = 0.0
+	turning["reverse"] = reverse
+	turning["held"] = held
+	_bus_backing[bus.instance_id] = turning
+
+	# +1 steers right (DotVehicleCommand's convention). Forward, the wheel points at the
+	# side the point is on; in reverse it goes the other way, which brings the nose round
+	# towards the same side.
+	var toward := 1.0 if wanted.dot(right.normalized()) >= 0.0 else -1.0
+	var command := DotVehicleCommand.new()
+	command.throttle = -RAMP_TURN_THROTTLE if reverse else RAMP_TURN_THROTTLE
+	command.steer = -toward if reverse else toward
+	command.sanitise()
+	return command
+
+
+## How fast a bot drives while it is lining up on and climbing the ramp, in m/s.
+const RAMP_SPEED := 9.0
+
+## Degrees off its nose the point a ramp-bound bot steers for has to be before it turns
+## round, on the floor and on the line-up; the angle it turns round to; the longest each
+## leg of the turn lasts, in seconds; and the throttle it turns at. See
+## [method _turn_for_the_ramp].
+const RAMP_BACK_FROM := 110.0
+const RAMP_BACK_TO := 15.0
+const RAMP_LINED_UP := 35.0
+const RAMP_BACK_LONGEST := 2.5
+const RAMP_FORWARD_LONGEST := 1.5
+const RAMP_TURN_THROTTLE := 0.7
+
 
 
 func _nearest_runner(to: Vector3) -> BfhPlayer:

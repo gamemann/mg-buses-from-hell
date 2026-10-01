@@ -1037,10 +1037,9 @@ func _round_the_ramp(from: Vector3, target: Vector3) -> Vector3:
 	var foot_z := ramp_foot().z
 	var deck_front := -(radius - LEDGE_DEPTH)
 
-	# Up there already, or lined up at the bottom: the ramp is its road, not its obstacle.
+	# Up there already: the deck is open floor.
 	var on_deck := absf(from.x) < LEDGE_WIDTH * 0.5 and from.z < deck_front
-	var in_lane := absf(from.x) < RAMP_WIDTH * 0.5 and from.z < foot_z + RAMP_APPROACH
-	if on_deck or in_lane:
+	if on_deck:
 		return target
 
 	# A quarry on the ramp or the deck is reached from the bottom of it.
@@ -1049,7 +1048,12 @@ func _round_the_ramp(from: Vector3, target: Vector3) -> Vector3:
 		or (absf(target.x) < LEDGE_WIDTH * 0.5 and target.z < deck_front)
 	)
 	if target_up:
-		return Vector3(0.0, target.y, foot_z + RAMP_APPROACH)
+		return _up_the_ramp(from, target, half, foot_z, deck_front)
+
+	# Lined up at the bottom: the ramp is its road, not its obstacle.
+	var in_lane := absf(from.x) < RAMP_WIDTH * 0.5 and from.z < foot_z + RAMP_APPROACH
+	if in_lane:
+		return target
 
 	# Against the slab itself, not the slab widened by a bus. A bus that is BESIDE the ramp
 	# and driving away from it passes through the widened box without ever touching the
@@ -1065,6 +1069,71 @@ func _round_the_ramp(from: Vector3, target: Vector3) -> Vector3:
 		side = 1.0
 
 	return Vector3(side * (half + PILLAR_CLEARANCE), target.y, foot_z + PILLAR_CLEARANCE)
+
+
+## Whether a bus at [param from] chasing [param target] has to go up the ramp to get
+## there: the quarry is on the ramp or the deck and the bus is not on the deck yet.
+func ramp_bound(from: Vector3, target: Vector3) -> bool:
+	if _ramp == null:
+		return false
+	var half := RAMP_WIDTH * 0.5 + BUS_HALF_WIDTH
+	var deck_front := -(radius - LEDGE_DEPTH)
+	if absf(from.x) < LEDGE_WIDTH * 0.5 and from.z < deck_front:
+		return false
+	return (
+		(absf(target.x) < half and target.z < ramp_foot().z)
+		or (absf(target.x) < LEDGE_WIDTH * 0.5 and target.z < deck_front)
+	)
+
+
+## Whether a bus at [param from] is on the ramp or in the strip in front of its foot
+## where a bus bound up it follows the centreline. See [method _up_the_ramp].
+func lining_up(from: Vector3) -> bool:
+	if _ramp == null:
+		return false
+	var half := RAMP_WIDTH * 0.5 + BUS_HALF_WIDTH
+	var foot_z := ramp_foot().z
+	var deck_front := -(radius - LEDGE_DEPTH)
+	var on_ramp := (
+		absf(from.x) < RAMP_WIDTH * 0.5 + 0.5 and from.z <= foot_z and from.z >= deck_front
+		and from.y > ramp_surface_at(0.0, from.z) + 0.5
+	)
+	var in_front := absf(from.x) < half and from.z > foot_z \
+		and from.z < foot_z + RAMP_LINE_UP + RAMP_STRIP_PAST
+	return on_ramp or in_front
+
+
+## The way up to a quarry on the ramp or the deck, from [param from] on the floor or the
+## ramp: the ramp's centreline [constant RAMP_LOOKAHEAD] ahead of the bus while it is on
+## the ramp or in front of its foot, the line-up point [constant RAMP_LINE_UP] in front of
+## the foot otherwise, and the corner of the foot first if the line to that would go
+## through the slab.
+##
+## [b]Pursued along the centreline, because the ramp is 5 m wide and a bus is 2.5.[/b]
+## This used to return the quarry itself once the bus was in front of the foot, and the
+## driver's line to a point 40 m away corrects sideways slowly enough that a bus that
+## arrived 2 m off the middle was still 1.8-2.6 m off it halfway up, with its outer
+## wheels over the edge: measured 2026-10-01, it went over the side at 3.3 m up and wedged
+## against the slab. Aiming at the centreline a fixed distance ahead pulls it onto the
+## middle within a bus length or two, and only the deck itself releases it to the quarry.
+##
+## [b]And round the foot first, which is the other half of the same bug.[/b] A bus beside
+## the slab (where buses start) was sent straight at the line-up point, through the
+## ramp's side; it held the throttle against it and the stuck rule sent it home, over
+## and over, for as long as the runner stood on the deck.
+func _up_the_ramp(from: Vector3, target: Vector3, half: float, foot_z: float,
+		deck_front: float) -> Vector3:
+	if lining_up(from):
+		var ahead := from.z - RAMP_LOOKAHEAD
+		if ahead < deck_front:
+			return target
+		return Vector3(0.0, target.y, ahead)
+
+	var approach := Vector3(0.0, target.y, foot_z + RAMP_LINE_UP)
+	if _crosses_ramp(from, approach, RAMP_WIDTH * 0.5, deck_front, foot_z):
+		var side := signf(from.x) if absf(from.x) > 0.01 else 1.0
+		return Vector3(side * (half + PILLAR_CLEARANCE), target.y, foot_z + PILLAR_CLEARANCE)
+	return approach
 
 
 ## Whether the segment [param from] to [param to] passes through the box [param half]
@@ -1098,6 +1167,21 @@ const BUS_HALF_WIDTH := 1.25
 
 ## How far in front of the ramp's foot a bus lines up before driving up it.
 const RAMP_APPROACH := 8.0
+
+## How far up the ramp's centreline a bus on it aims. See [method _up_the_ramp].
+const RAMP_LOOKAHEAD := 6.0
+
+## How far in front of the foot a bus chasing somebody up the ramp lines up, and the
+## depth of the strip in front of the foot where it follows the centreline.
+const RAMP_LINE_UP := 11.0
+
+## How far the line-up strip reaches past the line-up point. A bus steering for that point
+## arrives AT it, and with the strip ending exactly there it was 0.08 m outside, so its
+## target stayed the point it was parked on and it sat at 0 m/s for the rest of the round
+## (measured 2026-10-01, from the north-east, with the first reverse-only turn; the
+## two-leg turn happens not to arrive there, so `headless_run` passes without this, and
+## it stays because the boundary is wrong whichever turn reaches it).
+const RAMP_STRIP_PAST := 3.0
 
 
 func _round_the_obstacles(from: Vector3, target: Vector3) -> Vector3:
@@ -1167,6 +1251,7 @@ func _round_the_obstacles(from: Vector3, target: Vector3) -> Vector3:
 		preferred = other
 
 	return Vector3(preferred.x, target.y, preferred.z)
+
 
 
 ## The waypoint one bus-width to [param away] of obstacle [param blocking].

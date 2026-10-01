@@ -33,11 +33,11 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 212
+const CHECKS := 213
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 27
+const SECTIONS := 28
 
 const TICK := 1.0 / 60.0
 
@@ -98,6 +98,7 @@ func _run() -> void:
 	await _test_the_second_lane()
 	await _test_the_courtyard_lanes()
 	await _test_the_hook_gaps()
+	await _test_up_onto_the_deck()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -2071,6 +2072,79 @@ func _line_room(arena: BfhArena, mouth: Vector3, out: Vector3, out_by: float) ->
 ## with a drive that was never kept, through the physics space every world here used to
 ## share; the courtyard's west lane read differently once each world had its own. This
 ## is that measurement, kept.
+## [b]A bot bus chases a runner up the ramp onto the deck.[/b] Until 2026-10-01 none
+## could: from every start here the bus wedged against the slab or circled the foot, and
+## a runner on the deck was safe from bots for as long as they stood there. Seven starts,
+## a runner standing still on the deck's middle, twenty seconds each; a start counts when
+## the bus kills them.
+##
+## [b]Five are asserted and two are printed.[/b] `spawn` (where a bus actually begins,
+## beside the slab facing the bowl) and `sw` still fail: see CLAUDE.md, "Up the ramp".
+## They are printed every run so the day they pass is seen.
+func _test_up_onto_the_deck() -> void:
+	print("up the ramp onto the deck, driven by a bot")
+	var asserted := ["foot8", "south20", "east", "ne", "west"]
+	var missed := PackedStringArray()
+	for start_kind: String in ["spawn", "foot8", "south20", "east", "ne", "sw", "west"]:
+		var game := _world(func(c: BfhConfig) -> void:
+			c.crate_count = 0
+			c.barrel_count = 0
+			c.round_seconds = 120.0)
+		var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+		var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+		_put(runner, Vector3(-30.0, 0.05, 20.0))
+		game.start()
+		await _step(game, 30)
+		for prop in game.props.all_props():
+			if not prop.instance_id in game.scaffold_ids:
+				game.props.remove(prop.instance_id)
+		await _step(game, 2)
+
+		var arena := game.arena
+		var foot := arena.ramp_foot()
+		var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+		var starts := {
+			"foot8": Vector3(0.0, 1.4, foot.z + 8.0),
+			"south20": Vector3(0.0, 1.4, foot.z + 20.0),
+			"east": Vector3(8.0, 1.4, 2.0),
+			"ne": Vector3(10.0, 1.4, -2.0),
+			"sw": Vector3(-8.0, 1.4, 3.0),
+			"west": Vector3(-6.0, 1.4, 0.0),
+		}
+		if starts.has(start_kind):
+			var body := bus.body()
+			body.linear_velocity = Vector3.ZERO
+			body.angular_velocity = Vector3.ZERO
+			body.global_transform = Transform3D(Basis.looking_at(Vector3.FORWARD), starts[start_kind])
+		driver.is_bot = true
+		var deck := arena.ledge_centre()
+		deck.y = arena.deck_top() + 0.05
+		_put(runner, deck)
+
+		var killed_at := -1.0
+		var peak := 0.0
+		for i in range(int(20.0 / TICK)):
+			var still := DotFpsCommand.new()
+			still.yaw = runner.controller.state.yaw
+			runner.controller.apply_command(still)
+			game.simulate(TICK)
+			await get_tree().physics_frame
+			peak = maxf(peak, bus.speed())
+			if not runner.health.alive:
+				killed_at = float(i) * TICK
+				break
+		print("  ..    %-8s %s" % [start_kind,
+			"on the deck, killed at %.2f s, peak %.1f m/s" % [killed_at, peak] if killed_at >= 0.0
+			else "never reached them (bus at %s)" % str(bus.position().snapped(Vector3(0.1, 0.1, 0.1)))])
+		if start_kind in asserted and killed_at < 0.0:
+			missed.append(start_kind)
+		await _dispose(game)
+
+	_check(missed.is_empty(), "a bot bus reaches a runner on the deck from in front of the ramp and from either side",
+		"missed: %s" % ", ".join(missed))
+	_done()
+
+
 func _test_the_hook_gaps() -> void:
 	print("the hook's gaps, driven")
 	var gaps := [[2, 1, "south-middle"], [1, 0, "middle-north"]]
