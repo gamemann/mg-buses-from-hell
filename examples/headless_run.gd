@@ -78,6 +78,10 @@ func _run() -> void:
 	print("buses-from-hell headless run")
 	print("")
 
+	if OS.get_environment("BFH_ONLY_HOOK") != "":  # TEMP-R8
+		await _test_the_hook_gaps()  # TEMP-R8
+		get_tree().quit(0)  # TEMP-R8
+		return  # TEMP-R8
 	_test_config()
 	await _test_world_builds()
 	await _test_bowl_layout()
@@ -90,6 +94,7 @@ func _run() -> void:
 	# world has its own physics space (see `_world`), so none reads another's history.
 	await _test_the_second_lane()
 	await _test_the_courtyard_lanes()
+	await _test_the_hook_gaps()
 	await _test_sides()
 	await _test_standing_on_a_crate()
 	await _test_hammer()
@@ -1937,6 +1942,19 @@ func _test_the_courtyard_lanes() -> void:
 ##
 ## A fresh world each time, so one lane's bus cannot be the next lane's obstacle.
 func _drive_a_lane(lane: int, out_by: float, in_the_lane: bool = false) -> Dictionary:
+	return await _drive_into(func(arena: BfhArena) -> Array:
+		var middle := arena.yard_middle(0)
+		var mouth := arena.yard_lane_middle(0, lane)
+		var out := mouth - middle
+		out.y = 0.0
+		return [mouth, middle, out.normalized()], out_by, in_the_lane)
+
+
+## The drive [method _drive_a_lane] makes, into any gap: [param where] is given the
+## built arena and returns [code][mouth, middle, out][/code] — the gap's middle, where
+## the runner stands when not in it, and the unit direction out of the gap. The bus
+## starts [param out_by] metres along [code]out[/code] from the mouth, facing in.
+func _drive_into(where: Callable, out_by: float, in_the_lane: bool = false) -> Dictionary:
 	var game := _world(func(c: BfhConfig) -> void:
 		c.crate_count = 0
 		c.barrel_count = 0
@@ -1951,12 +1969,10 @@ func _drive_a_lane(lane: int, out_by: float, in_the_lane: bool = false) -> Dicti
 			game.props.remove(prop.instance_id)
 	await _step(game, 2)
 
-	var arena := game.arena
-	var middle := arena.yard_middle(0)
-	var mouth := arena.yard_lane_middle(0, lane)
-	var out := mouth - middle
-	out.y = 0.0
-	out = out.normalized()
+	var at_gap: Array = where.call(game.arena)
+	var mouth: Vector3 = at_gap[0]
+	var middle: Vector3 = at_gap[1]
+	var out: Vector3 = at_gap[2]
 	var start := mouth + out * out_by
 
 	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
@@ -2002,6 +2018,54 @@ func _drive_a_lane(lane: int, out_by: float, in_the_lane: bool = false) -> Dicti
 		"outcome": outcome, "peak": peak, "seconds": float(took) * TICK,
 		"nearest": nearest, "start": start, "wedged": wedged,
 	}
+
+
+## [b]The hook's two narrow gaps, driven.[/b] `[steer-3]` measured these on 2026-09-29
+## with a drive that was never kept, through the physics space every world here used to
+## share; the courtyard's west lane read differently once each world had its own. This
+## is that measurement, kept.
+func _test_the_hook_gaps() -> void:
+	print("the hook's gaps, driven")
+	var probe0 := _world()  # TEMP-R8
+	await _step(probe0, 2)  # TEMP-R8
+	var hp := probe0.arena.pillars()  # TEMP-R8
+	print("TEMP hook ", hp[8], hp[9], hp[10], " dogleg ", hp[7], " scaffold ", probe0.arena._scaffold_origin, probe0.arena.scaffold_size(), " r ", probe0.config.arena_radius)  # TEMP-R8
+	await _dispose(probe0)  # TEMP-R8
+	var gaps := [[2, 1, "south-middle"], [1, 0, "middle-north"]]
+	var rows: Array[Dictionary] = []
+	for g: Array in gaps:
+		for out_by: float in [8.0, 14.0]:
+			for in_gap: bool in [false, true]:
+				var r := await _drive_into(_hook_gap.bind(g[0], g[1]), out_by, in_gap)
+				r["gap"] = g[2]
+				r["out_by"] = out_by
+				r["in_gap"] = in_gap
+				rows.append(r)
+				print("  ..    %-12s %4.1f m out  runner %-8s | %-9s %4.1f m/s peak %5.2f s wedged %4.1f nearest %4.1f"
+					% [g[2], out_by, "in gap" if in_gap else "centroid", r.outcome, r.peak,
+						r.seconds, r.wedged, r.nearest] + "  start %s" % r.start)
+	_done()
+
+
+## [code][mouth, middle, out][/code] for [method _drive_into]: the gap between hook
+## pillars [param a] and [param b] (offsets from [constant BfhArena.HOOK_FIRST]), its
+## middle on clear floor, the hook's centroid, and the direction out of the gap away
+## from that centroid, square to the gap.
+func _hook_gap(arena: BfhArena, a: int, b: int) -> Array:
+	var p := arena.pillars()
+	var h := BfhArena.HOOK_FIRST
+	var pa := p[h + a]
+	var pb := p[h + b]
+	var centroid := (p[h] + p[h + 1] + p[h + 2]) / 3.0
+	centroid.y = 0.0
+	var along := pb - pa
+	along.y = 0.0
+	var gap := along.length() - 2.0 * BfhArena.PILLAR_RADIUS
+	var mouth := Vector3(pa.x, 0.0, pa.z) + along.normalized() * (BfhArena.PILLAR_RADIUS + gap * 0.5)
+	var out := Vector3(-along.z, 0.0, along.x).normalized()
+	if out.dot(mouth - centroid) < 0.0:
+		out = -out
+	return [mouth, centroid, out]
 
 
 func _test_sides() -> void:
