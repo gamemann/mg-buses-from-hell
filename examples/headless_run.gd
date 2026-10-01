@@ -37,7 +37,7 @@ const CHECKS := 211
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 26
+const SECTIONS := 27
 
 const TICK := 1.0 / 60.0
 
@@ -78,10 +78,6 @@ func _run() -> void:
 	print("buses-from-hell headless run")
 	print("")
 
-	if OS.get_environment("BFH_ONLY_HOOK") != "":  # TEMP-R8
-		await _test_the_hook_gaps()  # TEMP-R8
-		get_tree().quit(0)  # TEMP-R8
-		return  # TEMP-R8
 	_test_config()
 	await _test_world_builds()
 	await _test_bowl_layout()
@@ -2026,11 +2022,6 @@ func _drive_into(where: Callable, out_by: float, in_the_lane: bool = false) -> D
 ## is that measurement, kept.
 func _test_the_hook_gaps() -> void:
 	print("the hook's gaps, driven")
-	var probe0 := _world()  # TEMP-R8
-	await _step(probe0, 2)  # TEMP-R8
-	var hp := probe0.arena.pillars()  # TEMP-R8
-	print("TEMP hook ", hp[8], hp[9], hp[10], " dogleg ", hp[7], " scaffold ", probe0.arena._scaffold_origin, probe0.arena.scaffold_size(), " r ", probe0.config.arena_radius)  # TEMP-R8
-	await _dispose(probe0)  # TEMP-R8
 	var gaps := [[2, 1, "south-middle"], [1, 0, "middle-north"]]
 	var rows: Array[Dictionary] = []
 	for g: Array in gaps:
