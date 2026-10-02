@@ -33,13 +33,18 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 213
+const CHECKS := 214
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
 const SECTIONS := 28
 
 const TICK := 1.0 / 60.0
+
+## Seconds a bot bus may stand still with its throttle off, mid-chase, before
+## [method _watch_parked] calls it parked. The three-point turn passes through a standstill
+## between legs, but with the throttle held.
+const PARKED_LIMIT := 1.0
 
 ## Half the bus hull's length (props/bfh_bus.tscn: 2.5 x 1.8 x 5.4 m).
 const BUS_HALF_LENGTH := 2.7
@@ -74,6 +79,12 @@ var _worlds_built := 0
 ## length of the route as straight legs between its waypoints, and whether it finished.
 ## Read by [method _route_report], which prints it.
 var _route := {}
+
+## The longest a bot bus in any chase driven here sat still with its throttle off while
+## its quarry was alive, and which drive it was. See [method _watch_parked].
+var _parked_longest := 0.0
+var _parked_where := ""
+var _parked_for := 0.0
 
 
 func _ready() -> void:
@@ -410,6 +421,28 @@ func _dispose(game: BfhGame) -> void:
 ## drum perfectly was reported as sent home. At its top speed a bus covers 0.4 m a tick.
 func _sent_home(before: Vector3, after: Vector3) -> bool:
 	return Vector2(after.x - before.x, after.z - before.z).length() > 3.0
+
+
+## Called once a tick by every chase this file drives, with a fresh [param what] (and
+## [param first] true) on its first tick.
+##
+## [b]A bus can lose a chase three ways, and only two of them were ever looked for.[/b] It
+## can be run home by the stuck rule, it can wedge, and it can PARK: stand still with the
+## throttle off, which the stuck rule never answers because it reads intent, so it sits
+## there for the rest of the round with the runner in plain view. `steer_around` did it
+## for a week (a bus handed the point it was already standing on, beside a pillar, which
+## the driver calls arrived), and every table here printed it as "never reached them".
+func _watch_parked(bus: DotVehicleInstance, what: String, first: bool = false) -> void:
+	if first:
+		_parked_for = 0.0
+	var idle := bus.command == null or absf(bus.command.throttle) < 0.05
+	if idle and bus.speed() < 0.2:
+		_parked_for += TICK
+	else:
+		_parked_for = 0.0
+	if _parked_for > _parked_longest:
+		_parked_longest = _parked_for
+		_parked_where = what
 
 
 ## Prints how a bot bus's drive went: the ground it covered next to the straight line
@@ -2004,6 +2037,8 @@ func _drive_into(where: Callable, out_by: float, in_the_lane: bool = false) -> D
 		game.simulate(TICK)
 		await get_tree().physics_frame
 		took += 1
+		_watch_parked(bus, "into %s, %.0f m out%s" % [str(mouth.snapped(Vector3.ONE)), out_by,
+			", runner in it" if in_the_lane else ""], took == 1)
 		var at := bus.position()
 		if _sent_home(last, at):
 			outcome = "sent home"
@@ -2133,6 +2168,7 @@ func _test_up_onto_the_deck() -> void:
 			if not runner.health.alive:
 				killed_at = float(i) * TICK
 				break
+			_watch_parked(bus, "up the ramp from %s" % start_kind, i == 0)
 		print("  ..    %-8s %s" % [start_kind,
 			"on the deck, killed at %.2f s, peak %.1f m/s" % [killed_at, peak] if killed_at >= 0.0
 			else "never reached them (bus at %s)" % str(bus.position().snapped(Vector3(0.1, 0.1, 0.1)))])
@@ -2142,6 +2178,10 @@ func _test_up_onto_the_deck() -> void:
 
 	_check(missed.is_empty(), "a bot bus reaches a runner on the deck from in front of the ramp and from either side",
 		"missed: %s" % ", ".join(missed))
+	# Every chase driven so far: the courtyard's lanes, the hook's gaps and these.
+	_check(_parked_longest < PARKED_LIMIT,
+		"no bot bus chasing a runner it can see is ever parked with the throttle off",
+		"%.2f s, %s" % [_parked_longest, _parked_where])
 	_done()
 
 

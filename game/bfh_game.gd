@@ -1229,6 +1229,21 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		minf(config.bus_top_speed, RAMP_SPEED) if bound else config.bus_top_speed
 	)
 	var aim := arena.steer_around(bus.position(), beyond)
+	# [b]And never the point the bus is already standing on.[/b] `steer_around` hands a
+	# bus the point beside a pillar across its line; a bus that stops there with the
+	# pillar still (just) across it -- level with it, centimetres ahead -- is handed the
+	# same point again, which `DotVehicleDriver` calls arrived: it brakes with the
+	# throttle at zero, and `_unstick` only answers a bus asking to go, so it was parked
+	# for the rest of the round with the runner in plain view (measured 2026-10-01 from
+	# the spawn lane, chasing a runner on the deck). Level with a pillar is past it, so a
+	# bus at a standstill on its waypoint drives on along its line to the quarry. Only at a
+	# standstill: done at speed, inside `steer_around`, it threw the stacks' pillar drive
+	# off its line onto the next pillar in the row. `headless_run`'s "no bot bus ... is
+	# ever parked" holds it.
+	var on_it := Vector2(aim.x - bus.position().x, aim.z - bus.position().z).length()
+	if on_it < PARKED_ON_WAYPOINT and bus.speed() < 1.0 and line.length() > 0.5:
+		aim = bus.position() + line.normalized() * BfhArena.PILLAR_CLEARANCE
+		aim.y = beyond.y
 	if bound:
 		var backing := _turn_for_the_ramp(bus, aim, delta)
 		if backing != null:
@@ -1305,6 +1320,10 @@ func _turn_for_the_ramp(bus: DotVehicleInstance, aim: Vector3, delta: float) -> 
 	command.sanitise()
 	return command
 
+
+## How near its waypoint a stopped bot bus has to be to be standing on it: twice the
+## autopilot's 0.5 m `arrive_radius`. See [method _autopilot].
+const PARKED_ON_WAYPOINT := 1.0
 
 ## How fast a bot drives while it is lining up on and climbing the ramp, in m/s.
 const RAMP_SPEED := 9.0
