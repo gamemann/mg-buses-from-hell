@@ -6,6 +6,7 @@ const BfhPlayer := preload("bfh_player.gd")
 
 const BfhGame := preload("bfh_game.gd")
 const BfhStats := preload("bfh_stats.gd")
+const BfhAvatars := preload("bfh_avatars.gd")
 
 ## Where the services keep punishments. Empty is [DotGameServices]'s own default,
 ## `user://buses_punishments.json` — the store a real server enforces.
@@ -103,13 +104,19 @@ func _make_services() -> Node:
 	return services
 
 
-## [b]No identity layer, and that one is still deliberate.[/b] Profiles and avatars are
-## real in this family and this game has not written that layer; [DotGameModule] logs its
-## absence and carries on, which is the honest state — a server where everybody is a guest
-## is a server. What it is NOT is a gap in anything else: a client connects, plays a whole
-## round, talks, is scored, and can be gagged for it.
-func _wants_platform_module() -> bool:
-	return false
+## Profiles, avatars and admission: dot-platform's [DotPlatformIdentity] over this game's
+## one-slot schema. [DotGameModule] builds it before the services and loads dot-platform's
+## own module beside it.
+##
+## [b]Authentication is not here and was never this game's.[/b] Whether a player is proven
+## to be somebody is the host's `dot_auth_server`, the same for every game it runs; what
+## this layer does is everything after — a scoped profile, the name on it, a face, and a key
+## their numbers outlive the connection under.
+func _make_identity() -> Node:
+	var identity_layer := DotPlatformIdentity.new()
+	identity_layer.avatar_schema = BfhAvatars.schema()
+	identity_layer.stock_avatar_fn = BfhAvatars.stock_avatar
+	return identity_layer
 
 
 func _game_load() -> DotResult:
@@ -129,6 +136,7 @@ func _game_load() -> DotResult:
 	)
 
 	_wire_chat()
+	_wire_identity(world)
 
 	_add_tunables(world)
 
@@ -359,6 +367,71 @@ func _cmd_say(ctx: DotCmdContext) -> void:
 		return
 
 	ctx.reply("Said: %s" % text)
+
+
+## Who somebody is reaches the world: a face as they are seated, the real name and face once
+## dot-platform has them, and the key what they keep is filed under.
+##
+## [b]Three events and one path.[/b] Admission finishes AFTER a player is seated whenever the
+## profile store is slower than the join — dot-server has no stage to hold them in — so
+## `player_admitted` is the moment the real name and face exist; a wardrobe change and an
+## operator's `platform_name` are the same thing later. All three end in
+## [method BfhNetBridge.refresh_player], a JOIN everybody already knows how to apply.
+func _wire_identity(world: BfhGame) -> void:
+	var link := bridge as BfhNetBridge
+
+	if link != null:
+		link.avatar_fn = _avatar_for
+		hook_post("player_admitted", _on_profile)
+		hook_post("player_avatar_changed", _on_profile)
+		hook_post("player_renamed", _on_profile)
+
+	if world.progress != null:
+		world.progress.durable_key_fn = func(id: StringName) -> String:
+			var held: Object = _platform_player(BfhNetBridge.session_of(id))
+			return str(held.call("key")) if held != null else ""
+
+
+## dot-platform's state for a session, through its module, or null.
+##
+## [b]Through the module's `player_for`, never the hub by a key made here.[/b] The hub keys a
+## player by their scoped profile key, which only admission knows; a lookup by
+## `u<session>` finds nobody, every time, and reads as "no avatar" rather than a wrong key.
+## Duck-typed, because a server without dot-platform is a configuration.
+func _platform_player(session_id: int) -> Object:
+	var session := server.session_by_userid(session_id) if server != null else null
+	var platform: Object = server.modules.get_module("platform") \
+		if server != null and server.modules != null else null
+
+	if session == null or platform == null or not platform.has_method("player_for"):
+		return null
+
+	var held: Variant = platform.call("player_for", session)
+	return held as Object if held is Object else null
+
+
+## What a session looks like: what dot-platform resolved for them, or the stock person.
+func _avatar_for(session_id: int) -> DotAvatar:
+	var held := _platform_player(session_id)
+
+	if held != null and held.get("avatar") is DotAvatar:
+		return held.get("avatar") as DotAvatar
+
+	if identity != null and identity.has_method("avatar_for"):
+		return identity.call("avatar_for", String(BfhNetBridge.player_key(session_id)))
+
+	return null
+
+
+func _on_profile(event: DotEvent) -> void:
+	var session_id := event.get_int("userid")
+	var session := server.session_by_userid(session_id) if server != null else null
+	var link := bridge as BfhNetBridge
+
+	if session == null or link == null:
+		return
+
+	link.refresh_player(session_id, session.display_name, _avatar_for(session_id))
 
 
 ## One player's session: the five numbers and what they have earned. With no argument,

@@ -30,13 +30,19 @@ const BfhStats := preload("bfh_stats.gd")
 ## a lifetime; wiring one straight into the other adds the running total to itself on every
 ## reading. The link differences them, and that is its whole job.
 ##
-## [b]In memory, and nothing is reported, both for the same reason: this game has no
-## identity layer.[/b] Without one a player's key is their session on this server
-## (`bfh-u<session>`), and a session id is handed out again by the next boot — so a file
-## store would give one person's lifetime to whoever next got their number, and a report to
-## the backbone would file it under a name that means nobody. dot-stats refuses an account
-## id as a key for the same reason. When `BfhModule._wants_platform_module` turns on, the
-## key becomes the scoped pseudonymous one and both of these become one line each.
+## [b]A signed-in player is filed under their scoped profile key[/b] (2026-10-03), which
+## [member durable_key_fn] supplies from dot-platform and which can never carry a site
+## account id. Everybody else — a guest, or anybody on a server with no platform — is still
+## `bfh-u<session>`, and THAT is why this stays in memory and unreported: a session id is
+## handed out again by the next boot, so a file store would give one guest's lifetime to
+## whoever next got their number, and a report would file it under a name that means
+## nobody. Turning either on is one line each the day guests are not counted at all.
+##
+## [b]A key is fixed the first time it is asked for, for the rest of the session.[/b]
+## Counting begins as a player is added, which is after admission whenever the profile store
+## is quicker than the join; one seated first keeps the session key until they reconnect,
+## because moving half a session's numbers mid-flight would file the second half against a
+## total the first half never reached.
 
 const CHANNEL := "bfh.progress"
 
@@ -67,6 +73,13 @@ var _shoves: Dictionary = {}
 
 ## storage key -> player id, for turning an unlock back into somebody to tell.
 var _player_of_key: Dictionary = {}
+
+## `func(player_id: StringName) -> String`: the durable key for a person, or "" for none.
+## Set by the module; see the class note.
+var durable_key_fn: Callable = Callable()
+
+## Player id -> the key fixed for them this session. See [method key_of].
+var _fixed: Dictionary = {}
 
 
 ## Builds both trackers and listens to [param world]. Call once, after this is in the tree
@@ -142,12 +155,24 @@ func attach(world: Node3D) -> DotResult:
 ## a dedicated server they do most of the flattening; a bot earning "Rush Hour" is a board
 ## of who the server was, and a runner flattened by a bot credits nobody.
 func key_of(player_id: StringName) -> String:
+	if _fixed.has(player_id):
+		return _fixed[player_id]
+
 	var player := _player(player_id)
 
 	if player == null or player.is_bot:
 		return ""
 
-	return "bfh-%s" % String(player_id)
+	var key := "bfh-%s" % String(player_id)
+
+	if durable_key_fn.is_valid():
+		var durable := str(durable_key_fn.call(player_id))
+
+		if durable != "":
+			key = durable
+
+	_fixed[player_id] = key
+	return key
 
 
 func _player(player_id: StringName) -> BfhPlayer:
@@ -203,9 +228,11 @@ func _begin(key: String) -> void:
 
 
 func _on_player_removed(player_id: StringName) -> void:
-	var key := "bfh-%s" % String(player_id)
+	# The key they were counted under, which is not always one this function could build.
+	var key: String = _fixed.get(player_id, "bfh-%s" % String(player_id))
 
 	_up_since.erase(player_id)
+	_fixed.erase(player_id)
 
 	if not _player_of_key.has(key):
 		return

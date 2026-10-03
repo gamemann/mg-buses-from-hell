@@ -30,6 +30,11 @@
 /addons/dot_chat
 /addons/dot_voice
 /addons/dot_moderation
+/addons/dot_cloud
+/addons/dot_auth
+/addons/dot_user
+/addons/dot_user_avatar
+/addons/dot_platform
 
 # Exports
 build/

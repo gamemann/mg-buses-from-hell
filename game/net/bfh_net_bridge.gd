@@ -122,6 +122,11 @@ var rtt_source: Callable = Callable()
 ## layer's `relay_voice`, because the bridge is the only thing that names both ends.
 var voice_relay_fn: Callable = Callable()
 
+## `func(session_id: int) -> DotAvatar`: what a player looks like, asked once as they are
+## seated. Assigned by the module, which is what has the identity layer; unset, or answering
+## null, is the stock person, which is what everybody was before there was one.
+var avatar_fn: Callable = Callable()
+
 var _entities: Node = null
 
 ## session id -> [BfhPlayerNet].
@@ -391,6 +396,11 @@ func _on_player_added(id: StringName) -> void:
 	if not registered.ok:
 		DotLog.warn(CHANNEL, "could not replicate a player", {"error": str(registered.error)})
 		return
+
+	# Before the JOIN, so the first thing anybody hears about this person is their face.
+	if player.avatar == null and avatar_fn.is_valid():
+		var avatar: Variant = avatar_fn.call(session_id)
+		player.avatar = avatar as DotAvatar if avatar is DotAvatar else null
 
 	_broadcast(BfhEvents.Kind.JOIN, _join_body(session_id))
 	roster_changed.emit(session_id)
@@ -1068,8 +1078,32 @@ func _join_body(session_id: int) -> PackedByteArray:
 		session_id,
 		behaviour.identity.net_id,
 		behaviour.player.display_name,
-		game.team_of(behaviour.player.player_id)
+		game.team_of(behaviour.player.player_id),
+		behaviour.player.avatar
 	)
+
+
+## Tells everybody who somebody is now: a profile that arrived after they were seated, a
+## wardrobe change, an operator's rename. Server only.
+##
+## [b]Through JOIN, which a client already applies to a player it has.[/b] A second message
+## for "this person changed" would be a second thing a joiner has to be told and a second
+## order two of them can arrive in. An empty [param display_name] keeps the one they have.
+func refresh_player(session_id: int, display_name: String, avatar: DotAvatar) -> bool:
+	if net == null or not net.is_server or game == null:
+		return false
+
+	var player: BfhPlayer = game.players.get(player_key(session_id))
+
+	if player == null or not _behaviours.has(session_id):
+		return false
+
+	if display_name != "":
+		player.display_name = display_name
+
+	player.avatar = avatar
+	_broadcast(BfhEvents.Kind.JOIN, _join_body(session_id))
+	return true
 
 
 ## To every peer that has said it is ready, and to nobody else.
@@ -1342,6 +1376,9 @@ func _apply_join(reader: DotNetReader) -> void:
 	else:
 		player.display_name = str(join["name"])
 
+	# Both branches: a JOIN for somebody this client already has is the server saying who
+	# they are NOW — see [method refresh_player].
+	player.avatar = join["avatar"]
 	game.sides[id] = int(join["team"])
 	roster_changed.emit(session_id)
 

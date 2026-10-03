@@ -1,6 +1,8 @@
 extends Node
 
 const BfhAudio := preload("../game/bfh_audio.gd")
+const BfhAvatars := preload("../game/bfh_avatars.gd")
+const BfhFigure := preload("../game/bfh_figure.gd")
 const BfhBusNet := preload("../game/net/bfh_bus_net.gd")
 const BfhClient := preload("../game/bfh_client.gd")
 const BfhEvents := preload("../game/net/bfh_events.gd")
@@ -45,11 +47,11 @@ const BfhSpectate := preload("../game/bfh_spectate.gd")
 ## the wrong reason. A real client is a separate program with its own export and its own
 ## `user://` config. Make them disagree, and let HELLO correct it.
 
-const CHECKS := 166
+const CHECKS := 175
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 20
+const SECTIONS := 21
 
 ## Who the client is, on both ends.
 const CLIENT_PEER := 7
@@ -117,6 +119,7 @@ func _run() -> void:
 		await _test_a_lossy_link()
 		await _test_blind_and_beacon()
 		await _test_somebody_else_is_drawn()
+		await _test_who_somebody_is_crosses()
 		await _test_a_runner_who_is_out()
 		await _test_a_barrel_is_drawn()
 		await _test_the_scoreboard()
@@ -203,6 +206,19 @@ func _test_the_wire() -> void:
 	_check(bool(join["ok"]) and int(join["net_id"]) == 31, "join round-trips")
 	_check(str(join["name"]) == "Ada", "join: with a name")
 	_check(int(join["team"]) == BfhGame.TEAM_DRIVERS, "join: and a side")
+	_check(join["avatar"] == null, "join: and no face is the stock person, not a refused join")
+
+	var face := BfhAvatars.stock_avatar(&"u1")
+	face.set_part(BfhAvatars.SLOT_SKIN, &"skin_k")
+	var faced := BfhEvents.read_join(DotNetReader.new(
+		BfhEvents.write_join(SESSION, 31, "Ada", BfhGame.TEAM_RUNNERS, face)
+	))
+	_check(
+		bool(faced["ok"]) and faced["avatar"] is DotAvatar
+			and (faced["avatar"] as DotAvatar).digest() == face.digest()
+			and int(faced["team"]) == BfhGame.TEAM_RUNNERS,
+		"join: and a face, after the side rather than in front of it"
+	)
 
 	var team := BfhEvents.read_team(DotNetReader.new(
 		BfhEvents.write_team(SESSION, BfhGame.TEAM_RUNNERS)
@@ -1635,6 +1651,107 @@ const FRAMES_PER_TICK := 4
 ## Driven through `BfhClient.present_frame`, the function the real client's `_process`
 ## calls, so a client that stops interpolating or stops building bodies fails here rather
 ## than in a screenshot.
+## Who somebody is reaches every client: the face they were seated with, and a new name and
+## face when the server learns them — which is what dot-platform's admission, a wardrobe
+## change and an operator's rename all end in.
+##
+## [b]Asserted on the drawn figure, not on the field.[/b] A client that stored the avatar
+## and drew the hash anyway would pass every check about the document; the atlas the figure
+## was BUILT with is the thing a player sees. A runner, because a driver wears the uniform
+## whatever their face.
+func _test_who_somebody_is_crosses() -> void:
+	_section("who somebody is crosses, and is what is drawn")
+
+	_check(
+		BfhAvatars.SKINS.size() == BfhFigure.RUNNER_ATLASES.size(),
+		"there is one skin per runner atlas, so a skin index is an atlas index",
+		"%d skins, %d atlases" % [BfhAvatars.SKINS.size(), BfhFigure.RUNNER_ATLASES.size()]
+	)
+
+	# What the module hands the bridge: the platform's answer, as a fixed face chosen to be
+	# one this player's id does NOT hash to, or a figure built from the hash would pass. The
+	# bridge hands out a bot's session as it seats it, so the face answers any session.
+	var chosen := [-1]
+	var face_of := {}
+	_server_bridge.avatar_fn = func(session_id: int) -> DotAvatar:
+		var key := BfhNetBridge.player_key(session_id)
+		chosen[0] = (BfhAvatars.stock_index(key) + 3) % BfhAvatars.SKINS.size()
+		var face := BfhAvatars.stock_avatar(key)
+		face.set_part(BfhAvatars.SLOT_SKIN, BfhAvatars.SKINS[chosen[0]])
+		face_of[key] = face
+		return face
+
+	var seated := _server_bridge.add_bot("Cyd", BfhGame.TEAM_RUNNERS)
+	_server_bridge.avatar_fn = Callable()
+	await _steps(6)
+
+	var mine := _client_player()
+	var theirs: BfhPlayer = _client_game.players.get(seated.player_id) if seated != null else null
+
+	if seated == null or theirs == null or mine == null:
+		_check(false, "a runner seated with a face reaches the client")
+		_done()
+		return
+
+	var _shown := BfhClient.present_frame(_client_net, _client_game, mine, 1.0 / 60.0, 0.0)
+	var key := seated.player_id
+	var session := BfhNetBridge.session_of(key)
+	_check(
+		theirs.avatar != null and theirs.avatar.digest() == (face_of[key] as DotAvatar).digest(),
+		"a runner seated with a face arrives wearing it"
+	)
+	_check(
+		theirs.figure != null and theirs.figure.atlas == str(BfhFigure.RUNNER_ATLASES[chosen[0]]),
+		"and is drawn in it, not in the one their id hashes to",
+		theirs.figure.atlas.get_file() if theirs.figure != null else "no figure"
+	)
+
+	# Later: the profile arrives, or they change their face, or an operator renames them.
+	var later: int = (int(chosen[0]) + 1) % BfhAvatars.SKINS.size()
+	if later == BfhAvatars.stock_index(key):
+		later = (later + 1) % BfhAvatars.SKINS.size()
+	var changed := BfhAvatars.stock_avatar(key)
+	changed.set_part(BfhAvatars.SLOT_SKIN, BfhAvatars.SKINS[later])
+
+	var told := _server_bridge.refresh_player(session, "Cydney", changed)
+	await _steps(4)
+	_shown = BfhClient.present_frame(_client_net, _client_game, mine, 1.0 / 60.0, 0.0)
+
+	_check(
+		told and theirs.display_name == "Cydney" and seated.display_name == "Cydney",
+		"a new name reaches the server's world and the client's",
+		theirs.display_name
+	)
+	_check(
+		theirs.figure != null and theirs.figure.atlas == str(BfhFigure.RUNNER_ATLASES[later]),
+		"and a new face is drawn the frame after, without them rejoining",
+		theirs.figure.atlas.get_file() if theirs.figure != null else "-"
+	)
+
+	var foreign := DotAvatar.make(&"some_other_game")
+	foreign.set_part(BfhAvatars.SLOT_SKIN, BfhAvatars.SKINS[later])
+	_server_bridge.refresh_player(session, "", foreign)
+	await _steps(4)
+	_shown = BfhClient.present_frame(_client_net, _client_game, mine, 1.0 / 60.0, 0.0)
+
+	_check(
+		theirs.display_name == "Cydney" and theirs.figure != null
+			and theirs.figure.atlas
+				== str(BfhFigure.RUNNER_ATLASES[BfhAvatars.stock_index(key)]),
+		"a face from another game's schema is the stock person, and the name is kept",
+		theirs.figure.atlas.get_file() if theirs.figure != null else "-"
+	)
+
+	_server_bridge.remove_player(session)
+	await _steps(4)
+	_check(
+		not _client_game.players.has(key),
+		"and they leave again, so the sections after count as before"
+	)
+
+	_done()
+
+
 func _test_somebody_else_is_drawn() -> void:
 	_section("somebody else has a body, where the server has them, moving every frame")
 

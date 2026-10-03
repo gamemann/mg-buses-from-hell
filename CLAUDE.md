@@ -35,6 +35,7 @@ game/
   bfh_stats.gd      the five per-player numbers, declared once
   bfh_awards.gd     what they earn, as rules over them
   bfh_progress.gd   dot-stats and dot-achievements, fed by the world's own signals
+  bfh_avatars.gd    what a runner looks like, as a document: one slot, six skins, the stock hash
   bfh_settings.gd   the player's settings, and the screen Escape opens
   bfh_client.gd     one local player, alone or against a server
   bfh_client_chat.gd  the client's chat box and its microphone
@@ -48,7 +49,7 @@ props/              the crate, the barrel and the bus, as scenes — plus the ar
 fx/                 the barrel's blast, as the scene dot-fx spawns: built in code, no art
 assets/kenney/      four CC0 models and their atlases. See its own README
 scenes/             bfh_server.tscn, which is all a deployed server instantiates
-examples/           headless_run (213), headless_net (166), dedicated (79)
+examples/           headless_run (213), headless_net (175), dedicated (89)
 tools/              shot.gd/.tscn — render a frame and look at it; net_shot.gd/.tscn — a
                     connected client watching another runner, with a jitter probe, and
                     (--walk) running its own, with a prediction probe
@@ -170,7 +171,17 @@ The last row is the one a player would have felt. `BfhClient` draws the camera f
 
 **A bot is not counted, and the flag had to move for that.** `is_bot` was set by the bridge and the offline client on the line after `add_player` returned — after `player_added`, which is what begins a player's counting — so every listener read it as false. It is `add_player`'s fifth argument now.
 
-**In memory, and reported nowhere, because this game has no identity layer.** A key is `bfh-u<session>`, and a session id is handed out again after a restart: a file store would give one person's lifetime to whoever next got their number, and a backbone report would file it under a name meaning nobody. When `BfhModule._wants_platform_module` turns on, the key becomes the scoped pseudonymous one and both become one line. `bfh_stats [userid]` prints a session.
+**A signed-in player is filed under their scoped profile key; everybody else is still `bfh-u<session>`, and that is why this stays in memory and reported nowhere.** `BfhProgress.durable_key_fn`, wired by the module from dot-platform (2026-10-03), is asked when a player is added, and the key is fixed for the session (`_fixed`) — so somebody seated before their profile arrived keeps the session key until they reconnect, rather than having half a session filed under a total the first half never reached. A guest's key is a session id handed out again after a restart, so a file store would still give one guest's lifetime to whoever next got their number; turning either on is one line the day guests are not counted. `bfh_stats [userid]` prints a session.
+
+## Who somebody is: profiles, names and faces (2026-10-03)
+
+**The module turned the identity layer off as a decision, and it is on now** — and it is not this game's code: `_make_identity()` returns dot-platform's `DotPlatformIdentity` over `BfhAvatars.schema()`, and dot-game loads dot-platform's module beside it. Authentication stays the host's `dot_auth_server`; what this game gained is the scoped profile, the name on it, a face, and a progress key that outlives the connection. mg-smash-copter got the same layer the same day, and its CLAUDE.md has the longer account; what differs here:
+
+- **A face is what a runner looks like.** One slot, `BfhAvatars.SKINS`, in `BfhFigure.RUNNER_ATLASES` order. **A driver wears `DRIVER_ATLAS` whatever their face**, because in an asymmetric game the side is the first thing to read off a body; a face is somebody on foot. The stock face is the old id hash exactly, so a server without the platform draws everybody as before, and dot-platform resolves a first-timer to the same function over their scoped key.
+- **The document travels in JOIN, appended after the side**, and a JOIN for somebody a client already has is "who they are now": `BfhNetBridge.refresh_player`, sent on `player_admitted`, `player_avatar_changed` and `player_renamed`, because admission can finish after seating.
+- **The platform is asked through its module's `player_for`**, never the hub by `u<session>`, which finds nobody and reads as "no avatar".
+
+`headless_net`'s "who somebody is crosses, and is what is drawn" checks the face a runner is seated with, a refresh of name and face, and another schema's document — on the atlas the figure was built with; armed by dropping the avatar from `_join_body` (three checks). `dedicated`'s "who somebody is" admits one session after seating and one before: late, the name and face arrive and the progress key stays the seat's; early, they are seated as themselves and filed under the scoped key. Armed by unhooking `player_admitted` (three checks) and by not wiring `durable_key_fn` (one).
 
 ## A player's settings, and the screen Escape opens
 
@@ -188,7 +199,7 @@ The `.gitignore` is the dependency manifest, and on 2026-09-25 five linked addon
 - **dot-physics is unlinked.** Nothing names a layer or a surface: the hammer's ray is all layers and the bowl has one kind of floor. Only comments in dot-props and dot-spawn mention it.
 - **dot-fx was unlinked, and it was the right tool for the one thing still missing** — a barrel going off was heard and not drawn. It had been linked for two weeks without a single effect; a manifest line that fetches and parses an addon nobody uses is a dependency that lies. **Re-linked 2026-09-27 with the first effect**; see "A barrel, drawn, and the score".
 
-And four were linked for this work: **dot-spectate, dot-stats, dot-achievements, dot-settings** (dot-audio was already linked, for the beacon). dot-server-deploy already vendors all five, so a delivered pack finds them.
+And four were linked for this work: **dot-spectate, dot-stats, dot-achievements, dot-settings** (dot-audio was already linked, for the beacon). dot-server-deploy already vendors all five, so a delivered pack finds them. **Five more on 2026-10-03, for the identity layer: dot-cloud, dot-auth, dot-user, dot-user-avatar, dot-platform** — dot-platform's own manifest, which the shell vendors too.
 
 ## Decision 1: metres and seconds, not a genre's units
 
@@ -661,8 +672,8 @@ find . -name '*.gd' -not -path './.godot/*' -not -path './addons/*' | while read
     godot --headless --path . --check-only --script "res://${f#./}"
 done
 godot --headless --path . res://examples/headless_run.tscn   # 214 checks, 28 sections, the simulation
-godot --headless --path . res://examples/headless_net.tscn   # 166 checks, 20 sections, over a loopback
-godot --headless --path . res://examples/dedicated.tscn      # 79 checks, 11 sections, as a server
+godot --headless --path . res://examples/headless_net.tscn   # 175 checks, 21 sections, over a loopback
+godot --headless --path . res://examples/dedicated.tscn      # 89 checks, 12 sections, as a server
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=8
 xvfb-run -a godot --path . --resolution 1280x720 res://tools/shot.tscn -- --seconds=6 --stacks
 tools/shot.sh 9 tanks.png --tanks                            # the same, through the wrapper

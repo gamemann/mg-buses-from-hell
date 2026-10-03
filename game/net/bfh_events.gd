@@ -71,6 +71,11 @@ const NAME_BYTES := 64
 const ID_BYTES := 64
 const TEXT_BYTES := 256
 
+## The most an avatar document may take in a JOIN. One slot is about eighty bytes; the rest
+## is room for slots this game does not have yet, and a cap a hostile document cannot talk
+## its way past.
+const AVATAR_BYTES := 1024
+
 ## Where a body may be, in metres, on the wire.
 ##
 ## [b]Read from [BfhGame], not written here.[/b] A quantised position is decoded against
@@ -143,14 +148,22 @@ static func read_hello(r: DotNetReader) -> Dictionary:
 
 # --- Players ---------------------------------------------------------------
 
+## A join, or a change to who somebody is: their name, their side, their avatar.
+##
+## [b]The avatar is the document, not the skin it picks[/b] — as JSON, capped at
+## [constant AVATAR_BYTES], and empty for the stock person — so a slot this game adds later
+## needs no new wire. [b]Appended, never inserted[/b]: a field before it would move the
+## side for every reader of the old layout.
 static func write_join(
-	player_id: int, net_id: int, display_name: String, team: int
+	player_id: int, net_id: int, display_name: String, team: int,
+	avatar: DotAvatar = null
 ) -> PackedByteArray:
 	var w := _w()
 	w.write_varint(player_id)
 	w.write_varint(net_id)
 	w.write_string(display_name, NAME_BYTES)
 	w.write_uint(clampi(team, 0, 3), 2)
+	w.write_string(JSON.stringify(avatar.to_dict()) if avatar != null else "", AVATAR_BYTES)
 	return w.to_bytes()
 
 
@@ -159,11 +172,26 @@ static func read_join(r: DotNetReader) -> Dictionary:
 	var net_id := r.read_varint()
 	var display_name := r.read_string(NAME_BYTES)
 	var team := r.read_uint(2)
+	var text := r.read_string(AVATAR_BYTES)
+	var avatar: DotAvatar = null
+
+	# A document that does not parse is the stock person, not a refused join: an avatar is
+	# cosmetic, and somebody who cannot be drawn as themselves can still be drawn.
+	if text != "":
+		var parsed: Variant = JSON.parse_string(text)
+
+		if parsed is Dictionary:
+			var built := DotAvatar.from_dict(parsed)
+
+			if built.ok:
+				avatar = built.value
+
 	return {
 		"player_id": player_id,
 		"net_id": net_id,
 		"name": display_name,
 		"team": team,
+		"avatar": avatar,
 		"ok": r.ok(),
 	}
 

@@ -4,6 +4,7 @@ const BfhConfig := preload("../game/bfh_config.gd")
 const BfhGame := preload("../game/bfh_game.gd")
 const BfhContent := preload("../game/bfh_content.gd")
 const BfhPlayer := preload("../game/bfh_player.gd")
+const BfhAvatars := preload("../game/bfh_avatars.gd")
 
 ## Boots a real [DotServer], loads this game into it as a module, and runs the commands
 ## an operator would actually type.
@@ -22,7 +23,7 @@ const BfhPlayer := preload("../game/bfh_player.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 79
+const CHECKS := 89
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -35,7 +36,7 @@ const SERVER_DIR := "user://bfh_dedicated"
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 11
+const SECTIONS := 12
 
 ## The port this test listens on. Nothing else on a developer's machine is likely to be
 ## holding it, and a boot that failed on a busy 27015 would look like the module being
@@ -84,6 +85,7 @@ func _run() -> void:
 		_test_the_services()
 		await _test_the_live_tools()
 		await _test_progress_and_spectating()
+		await _test_who_they_are()
 		await _test_it_unloads_cleanly()
 		_test_no_message_preloads_itself()
 
@@ -156,6 +158,127 @@ func _shut_down() -> void:
 		server = null
 
 	await get_tree().process_frame
+
+
+## Profiles, names and faces on a real server: dot-platform's identity layer, its module, the
+## three events this game redraws a player on, and the key what they keep is filed under.
+##
+## [b]Both orders a real join has.[/b] Admission runs off dot-server's state changes and is
+## not awaited, so a player is admitted before they are seated when the profile store is
+## quicker than the content download — the usual case — and after when it is slower. Late,
+## the world has to be TOLD; early, it has to ask. Each order is driven here the way
+## dot-server drives it.
+func _test_who_they_are() -> void:
+	print("who somebody is")
+
+	var module := _module()
+	var identity: Object = module.get("identity") if module != null else null
+
+	_check(identity is DotPlatformIdentity, "the module built dot-platform's identity layer")
+	_check(server.modules.has_module("platform"), "and dot-game loaded the platform module")
+	_check(
+		identity is DotPlatformIdentity and (identity as DotPlatformIdentity).avatars != null
+			and (identity as DotPlatformIdentity).avatars.schema.id == BfhAvatars.SCHEMA_ID,
+		"validating avatars against this game's schema"
+	)
+
+	var net: DotNetManager = module.get("net")
+	var previous_send := net.send_fn
+	net.send_fn = func(_peer: int, _payload: PackedByteArray, _delivery: int) -> void:
+		pass
+	var platform := server.modules.get_module("platform")
+
+	# Late: seated with no identity, then given one and announced.
+	var late := DotClientSession.new()
+	late.peer_id = 7171
+	late.userid = 717
+	late.display_name = "guest-717"
+	var _adopted := server.adopt_session(late)
+	server.events.fire("client_spawn", {"userid": 717, "name": "guest-717"})
+
+	var player: BfhPlayer = game.players.get(&"u717")
+	_check(
+		player != null and player.avatar != null
+			and player.avatar.digest() == BfhAvatars.stock_avatar(&"u717").digest(),
+		"seated before the platform knows them, they wear the stock look for their seat"
+	)
+
+	late.identity = DotAuthIdentity.from_dict({
+		"uid": "backbone:acc-717", "provider": "backbone", "provider_id": "acc-717",
+		"display_name": "Margaret", "authenticated_at": int(Time.get_unix_time_from_system()),
+	})
+	platform.call("_on_client_state_changed", late)
+
+	var deadline := Time.get_ticks_msec() + 5000
+	while (player == null or player.display_name != "Margaret") \
+			and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+
+	var admitted: Object = platform.call("player_for", late)
+	var late_key := str(admitted.call("key")) if admitted != null else ""
+	_check(
+		player != null and player.display_name == "Margaret",
+		"admitted late, the world calls them by their profile's name",
+		player.display_name if player != null else "-"
+	)
+	_check(
+		player != null and admitted != null and player.avatar == admitted.get("avatar")
+			and player.avatar.digest() == BfhAvatars.stock_avatar(StringName(late_key)).digest(),
+		"and draws what the platform resolved: this game's stock look, for their scoped key",
+		late_key
+	)
+	_check(
+		game.progress == null or game.progress.key_of(&"u717") == "bfh-u717",
+		"and what they keep stays under their seat's key for this session, not split in two",
+		game.progress.key_of(&"u717") if game.progress != null else "-"
+	)
+
+	var renamed := _run_command("platform_name 717 Grace")
+	for _i in range(10):
+		await get_tree().process_frame
+	_check(
+		player != null and player.display_name == "Margaret" and _said(renamed, "account"),
+		"renaming a signed-in player is refused with the reason, and the world keeps the name",
+		"%s | %s" % [player.display_name if player != null else "-", " | ".join(renamed)]
+	)
+
+	# Early: signed in before they are seated, which is the usual order.
+	var early := DotClientSession.new()
+	early.peer_id = 7181
+	early.userid = 718
+	early.display_name = "guest-718"
+	early.identity = DotAuthIdentity.from_dict({
+		"uid": "backbone:acc-718", "provider": "backbone", "provider_id": "acc-718",
+		"display_name": "Hedy", "authenticated_at": int(Time.get_unix_time_from_system()),
+	})
+	_adopted = server.adopt_session(early)
+
+	deadline = Time.get_ticks_msec() + 5000
+	while platform.call("player_for", early) == null and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
+
+	server.events.fire("client_spawn", {"userid": 718, "name": early.display_name})
+	var signed_in: BfhPlayer = game.players.get(&"u718")
+	var held: Object = platform.call("player_for", early)
+	var early_key := str(held.call("key")) if held != null else ""
+	_check(
+		signed_in != null and held != null and signed_in.display_name == "Hedy"
+			and signed_in.avatar == held.get("avatar"),
+		"admitted before they are seated, they are seated with their name and face",
+		signed_in.display_name if signed_in != null else "-"
+	)
+	_check(
+		game.progress == null or (early_key != "" and game.progress.key_of(&"u718") == early_key
+			and game.progress.stats.has_player(StringName(early_key))),
+		"and what they keep is filed under the key that outlives the connection",
+		game.progress.key_of(&"u718") if game.progress != null else "-"
+	)
+
+	for session in [late, early]:
+		module.get("roster").call("remove", session)
+		var _released := server.release_session(session.peer_id)
+	net.send_fn = previous_send
+	_done()
 
 
 ## A section reached its end. See [constant SECTIONS].

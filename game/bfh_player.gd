@@ -3,6 +3,7 @@ extends CharacterBody3D
 const BfhConfig := preload("bfh_config.gd")
 const BfhBeacon := preload("bfh_beacon.gd")
 const BfhFigure := preload("bfh_figure.gd")
+const BfhAvatars := preload("bfh_avatars.gd")
 const BfhHammer := preload("bfh_hammer.gd")
 
 ## One person in the bowl: their movement, their view, their health, and their hammer.
@@ -44,6 +45,12 @@ signal beacon_pulsed(at: Vector3)
 
 @export var player_id: StringName = &"local"
 @export var display_name: String = "Runner"
+
+## What this player looks like on foot, as a dot-user-avatar document; null is the stock
+## person. Set on a server from the platform — see `bfh_module._avatar_for` — and carried to
+## every client in JOIN. Null falls back to the same hash [BfhAvatars] calls stock, so a
+## server with no identity layer draws everybody exactly as it always did.
+var avatar: DotAvatar = null
 
 ## Whether a command is sampled from the input devices each tick.
 ##
@@ -379,10 +386,15 @@ func present_body(own_view: bool, driver_side: bool = false) -> bool:
 	return shown
 
 
-## Which of the runner atlases this player wears, from their id rather than from a random
-## draw, so every client dresses the same person the same way.
+## Which of the runner atlases this player wears: their avatar's skin, or the one their id
+## hashes to — from the id rather than a random draw, so every client dresses the same
+## person the same way. A document naming a skin this build lacks is the hash, not a guess.
 func _runner_atlas() -> String:
-	var index := int(hash(String(player_id)) & 0x7fffffff) % BfhFigure.RUNNER_ATLASES.size()
+	var index := BfhAvatars.skin_index(avatar)
+
+	if index < 0 or index >= BfhFigure.RUNNER_ATLASES.size():
+		index = BfhAvatars.stock_index(player_id)
+
 	return str(BfhFigure.RUNNER_ATLASES[index])
 
 
