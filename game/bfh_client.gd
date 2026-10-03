@@ -476,11 +476,18 @@ func _physics_process(delta: float) -> void:
 	# runs at the server's rate is almost always exactly one.
 	var ticks := net.clock.advance(delta)
 
-	for _i in range(ticks):
+	# [b]Each pass is its own tick.[/b] `advance` has already moved the clock by all of
+	# them, so `input_tick()` is the LAST one on every pass: a frame worth two ticks sent
+	# the second twice and the first never, the server repeated a stale command for the
+	# one it never got, and the predictor's replay stopped at the hole and drew the player
+	# short of where they were -- after every hitch, and on every frame the display and
+	# the tick rate do not line up. Arithmetic here rather than a new dot-net call,
+	# because a pack has to run on whatever client shell the player already has.
+	for i in range(ticks):
 		if not net.clock.is_synced():
 			continue
 
-		bridge.client_tick(net.clock.input_tick(), move)
+		bridge.client_tick(net.clock.input_tick() - (ticks - 1 - i), move)
 
 
 func _process(delta: float) -> void:
