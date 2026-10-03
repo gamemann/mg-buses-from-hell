@@ -1,6 +1,8 @@
-This is a **game** built on TMC's **Dot** collection, rather than a piece of it. It is the asymmetric one: two drivers in buses against everybody else on foot, in a walled sand bowl.
+This is a game to demonstrate the capabilities of the [**Dot collection**](https://moddingcommunity.com/co/4-dot-assets) built on-top of [Godot 4](https://godotengine.org/) and [TMC's gaming platform](https://moddingcommunity.com/play). In this 3D game, one or two players are the bus driver(s) while all other players are on foot trying to survive. The bus driver's job is to run over the runners. This is heavily inspired off of a classic Counter-Strike: Source MiniGames map called [**buses_from_hell**](https://gamebanana.com/mods/127607) ([gameplay video](https://www.youtube.com/watch?v=wnY1eu890k4)).
 
-The **Dot** collection is a set of open source Godot 4 assets that provide modular building blocks for games and applications in the TMC ecosystem, covering core functionality, networking, authentication, cloud integration, and more. This project is built out of them, so it doubles as a worked example of what they look like in a real game rather than in a demo.
+![Preview](https://github.com/gamemann/mg-buses-from-hell/blob/main/images/preview.gif?raw=true)
+
+*Play on my test server [here](https://moddingcommunity.com/godot/s/bfh01/play)!*
 
 **This project and the assets under it are COMPLETELY OPEN SOURCE**. You are free to use, modify, and distribute them under the terms of the MIT license. The only thing not open source is the back-end web infrastructure. So if you opt into using your own authentication backend instead of integrating with TMC, you will need to build and integrate your own back-end infrastructure.
 
