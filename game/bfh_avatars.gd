@@ -82,3 +82,35 @@ static func skin_index(avatar: DotAvatar) -> int:
 		return -1
 
 	return SKINS.find(avatar.part_in(SLOT_SKIN))
+
+
+## A member's site avatar as one of this game's runners: their top's skin, when this game
+## ships it. See `DotPlatformIdentity.avatar_translate_fn`. Null for a skin this game does
+## not draw and for a document that is not the site's: the member is their stock runner.
+static func from_site(foreign: DotAvatar) -> DotAvatar:
+	var top := _site_skin(foreign, &"top")
+	var skin := StringName("skin_%s" % top)
+
+	if top == "" or not SKINS.has(skin):
+		return null
+
+	var avatar := DotAvatar.make(SCHEMA_ID)
+	avatar.set_part(SLOT_SKIN, skin)
+	return avatar
+
+
+## The letter of the site's skin in [param slot] of its `builtin` document, or "".
+##
+## The site's avatar is the Kenney kit's eighteen painted skins, `skin-a` to `skin-r`,
+## chosen per face, top and legs — the same atlases this game draws, spelt the site's way.
+static func _site_skin(foreign: DotAvatar, slot: StringName) -> String:
+	if foreign == null or foreign.schema_id != &"builtin":
+		return ""
+
+	var part := String(foreign.part_in(slot))
+
+	if part.length() != 6 or not part.begins_with("skin-"):
+		return ""
+
+	var letter := part.substr(5, 1)
+	return letter if letter >= "a" and letter <= "r" else ""

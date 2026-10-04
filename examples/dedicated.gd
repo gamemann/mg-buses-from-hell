@@ -23,7 +23,7 @@ const BfhAvatars := preload("../game/bfh_avatars.gd")
 ## still a dedicated server as far as its console, its cvars and its modules are
 ## concerned, and those are what this is about.
 
-const CHECKS := 89
+const CHECKS := 91
 
 ## Everything this run writes, and it is deleted on the way in and on the way out.
 ##
@@ -70,6 +70,28 @@ func _run() -> void:
 	var probe: Array = []
 	if not _is_exit_probe():
 		probe = await _run_exit_probe()
+
+	# A member's site avatar, translated into this game's schema. The site's document is the
+	# Kenney skins spelt `skin-c`; without a translation every member is stock here.
+	var site_avatars = preload("res://game/bfh_avatars.gd")
+	var site_doc := DotAvatar.make(&"builtin")
+	site_doc.set_part(&"top", &"skin-c")
+	site_doc.set_part(&"face", &"skin-k")
+	var as_ours: DotAvatar = site_avatars.from_site(site_doc)
+	_check(
+		as_ours != null and site_avatars.schema().validate(as_ours).ok and as_ours.part_in(&"skin") == &"skin_c",
+		"a member's site avatar becomes this game's, and its schema accepts it",
+		str(as_ours.to_dict()) if as_ours != null else "null"
+	)
+	var unknown_skin := DotAvatar.make(&"builtin")
+	unknown_skin.set_part(&"top", &"skin-r")
+	unknown_skin.set_part(&"face", &"skin-r")
+	var not_site := DotAvatar.make(&"elsewhere")
+	not_site.set_part(&"top", &"skin-c")
+	_check(
+		site_avatars.from_site(unknown_skin) == null and site_avatars.from_site(not_site) == null,
+		"a skin this game does not draw, or a document that is not the site's, is stock"
+	)
 
 	DotPaths.remove_tree(SERVER_DIR)
 	DirAccess.make_dir_recursive_absolute(SERVER_DIR)

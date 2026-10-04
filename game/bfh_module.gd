@@ -116,6 +116,7 @@ func _make_identity() -> Node:
 	var identity_layer := DotPlatformIdentity.new()
 	identity_layer.avatar_schema = BfhAvatars.schema()
 	identity_layer.stock_avatar_fn = BfhAvatars.stock_avatar
+	identity_layer.avatar_translate_fn = BfhAvatars.from_site
 	return identity_layer
 
 
