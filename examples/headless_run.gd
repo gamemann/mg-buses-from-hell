@@ -33,11 +33,11 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 214
+const CHECKS := 225
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
-const SECTIONS := 28
+const SECTIONS := 29
 
 const TICK := 1.0 / 60.0
 
@@ -107,6 +107,7 @@ func _run() -> void:
 	# Beside the stacks' other checks now, which is the order that used to fail: every
 	# world has its own physics space (see `_world`), so none reads another's history.
 	await _test_the_second_lane()
+	await _test_the_colonnade()
 	await _test_the_courtyard_lanes()
 	await _test_the_hook_gaps()
 	await _test_up_onto_the_deck()
@@ -1848,6 +1849,211 @@ func _test_the_second_lane() -> void:
 
 	await _dispose(game)
 	_done()
+
+
+# --- The colonnade (2026-10-03) ----------------------------------------------
+
+## The north-west rim: four pillars a walk's width off the wall, from the stacks' west
+## end to the deck's west corner.
+##
+## [b]What it holds.[/b] The walk and every gap in the row are lanes the autopilot drives
+## straight down, on the shipped bowl and on the smallest that has the colonnade, and a
+## smaller one leaves it out; a runner bot goes from the stacks' first lane, out of its
+## west mouth and along the whole walk to the deck's corner at a runner's pace; and the
+## bot bus runs down a runner standing still anywhere in it -- in each gap, on the walk
+## behind each gap, and on the walk from either end -- at a speed that kills. A covered
+## way a bus could not come down would be a place to win by standing still.
+##
+## [b]What it does not hold, and prints.[/b] The bus from where the west bus starts a
+## round, facing the way it starts, at a runner on the walk. Measured on 2026-10-03 with
+## no colonnade at all, that bus missed a runner standing still on the open floor anywhere
+## 26 to 38 m out across this quarter and ended against the wall; it does the same here.
+## The turn out of the start is the autopilot's, not the colonnade's.
+func _test_the_colonnade() -> void:
+	print("the colonnade")
+
+	var shipped := BfhArena.new()
+	add_child(shipped)
+	shipped.build(46.0)
+	var row := shipped.colonnade()
+	var walk := INF
+	var gap := INF
+	for i in range(row.size()):
+		walk = minf(walk, shipped.radius - Vector2(row[i].x, row[i].z).length() - BfhArena.PILLAR_RADIUS)
+		if i > 0:
+			gap = minf(gap, Vector2(row[i].x - row[i - 1].x, row[i].z - row[i - 1].z).length()
+				- 2.0 * BfhArena.PILLAR_RADIUS)
+	var room := shipped.colonnade_clearance()
+	remove_child(shipped)
+	shipped.free()
+	print("  ..    the walk %.2f m of clear floor to the wall, the gaps %.2f m, %.2f m to anything else (stacks, farm, ramp, deck); LANE_THROUGH %.2f"
+		% [walk, gap, room, BfhArena.LANE_THROUGH])
+	_check(row.size() == BfhArena.COLONNADE_PILLARS,
+		"the colonnade is built on the shipped bowl", "%d pillars" % row.size())
+	_check(row.size() > 1 and walk >= BfhArena.LANE_THROUGH and gap >= BfhArena.LANE_THROUGH,
+		"the walk behind it and every gap in it are lanes the autopilot drives straight down",
+		"walk %.2f m, narrowest gap %.2f m" % [walk, gap])
+	_check(row.size() > 0 and room >= BfhArena.LANE_THROUGH,
+		"and so is the floor between it and everything else", "%.2f m" % room)
+
+	# [b]And on the smallest bowl that has it, and not on the one below.[/b] The pillars
+	# keep their distance from the wall and from each other, so the arc swings in towards
+	# the deck's corner and the stacks' west end as the bowl shrinks.
+	var small := BfhArena.new()
+	add_child(small)
+	small.build(BfhArena.COLONNADE_MIN_RADIUS)
+	var small_room := small.colonnade_clearance()
+	var small_has := small.has_colonnade()
+	small.build(BfhArena.COLONNADE_MIN_RADIUS - 1.0)
+	var below_has := small.has_colonnade()
+	remove_child(small)
+	small.free()
+	_check(small_has and small_room >= BfhArena.LANE_THROUGH,
+		"and still on the smallest bowl it is built in",
+		"%.2f m at %.0f m" % [small_room, BfhArena.COLONNADE_MIN_RADIUS])
+	_check(not below_has, "and a smaller bowl leaves it out rather than closing a door")
+
+	# --- A runner takes it: down the stacks' first lane and out of its west mouth, onto
+	# the walk past the last pillar, and along it to the deck's west corner.
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var _driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	_put(runner, Vector3(10.0, 0.05, 30.0))
+	game.start()
+	await _step(game, 60)
+	for prop in game.props.all_props():
+		if not prop.instance_id in game.scaffold_ids:
+			game.props.remove(prop.instance_id)
+	await _step(game, 2)
+
+	var arena := game.arena
+	var route: Array = [arena.stack_point(Vector2(-17.0, 0.0))]
+	for k in range(9):
+		route.append(arena.colonnade_walk_point(1.15 - 1.25 * float(k) / 8.0))
+	_put(runner, arena.stack_point(Vector2(10.0, 0.0)) + Vector3(0.0, 0.05, 0.0))
+	await _step(game, 5)
+	await _run_route(game, runner, route, 900)
+	var pace := _route_report("out of the stacks' west mouth and along the walk to the deck's corner", runner)
+	_check(_route.get("finished", false),
+		"a runner goes from the stacks' first lane along the whole walk to the deck's corner",
+		"stopped at (%.1f, %.1f)" % [runner.global_position.x, runner.global_position.z])
+	_check(pace >= RUN_PACE, "at a runner's pace: a covered way, not an obstacle course",
+		"%.0f%% of max_speed" % (pace * 100.0))
+	await _dispose(game)
+
+	# --- And a bus comes down it. Each drive in its own world, because a runner run down
+	# is the end of that round: the autopilot facing the runner from 16 m out on the floor,
+	# at somebody standing in a gap and on the walk behind it; and from either end of the
+	# walk along it.
+	var probe := BfhArena.new()
+	add_child(probe)
+	probe.build(46.0)
+	var pillars := probe.colonnade()
+	var drives := []
+	for i in range(pillars.size() - 1):
+		var middle := (pillars[i] + pillars[i + 1]) * 0.5
+		var out := Vector3(middle.x, 0.0, middle.z).normalized()
+		var start := middle - out * 16.0
+		drives.append(["in gap %d" % i, middle, start, 0])
+		drives.append(["on the walk behind gap %d" % i,
+			middle + out * (BfhArena.PILLAR_RADIUS + BfhArena.COLONNADE_WALK * 0.5), start, 1])
+	drives.append(["on the walk, from its stacks end", probe.colonnade_walk_point(0.5),
+		probe.colonnade_walk_point(1.5), 2])
+	drives.append(["on the walk, from its deck end", probe.colonnade_walk_point(0.8),
+		probe.colonnade_walk_point(0.0), 2])
+	var west_start := probe.bus_start(1, 2)
+	var from_the_start: Vector3 = probe.colonnade_walk_point(0.5)
+	remove_child(probe)
+	probe.free()
+
+	var down := [0, 0, 0]
+	var of := [0, 0, 0]
+	var slowest := INF
+	var missed := [PackedStringArray(), PackedStringArray(), PackedStringArray()]
+	for d in drives:
+		var result: Dictionary = await _colonnade_chase(d[0], d[1], d[2], false)
+		of[d[3]] += 1
+		if result["killed"]:
+			down[d[3]] += 1
+		else:
+			missed[d[3]].append(d[0])
+		slowest = minf(slowest, result["fastest"])
+	_check(down[0] == of[0], "the bot bus runs down a runner standing still in every gap in the row",
+		"missed: %s" % ", ".join(missed[0]))
+	_check(down[1] == of[1], "and on the walk behind every gap", "missed: %s" % ", ".join(missed[1]))
+	_check(down[2] == of[2], "and on the walk from either end of it, coming along it",
+		"missed: %s" % ", ".join(missed[2]))
+	_check(slowest >= BfhConfig.new().bus_lethal_speed,
+		"every one of those drives gets up to a speed that kills",
+		"slowest peak %.1f m/s" % slowest)
+
+	# Printed, not asserted: see this section's doc.
+	var _from_start: Dictionary = await _colonnade_chase(
+		"on the walk, from the west bus's start (not asserted)", from_the_start, west_start, true)
+	_done()
+
+
+## One bot bus from [param start] at a runner standing still at [param hide], facing them
+## or, with [param as_spawned], the way a bus faces at the top of a round. Prints the drive
+## and returns whether it killed and how fast it got.
+func _colonnade_chase(what: String, hide: Vector3, start: Vector3, as_spawned: bool) -> Dictionary:
+	var game := _world(func(c: BfhConfig) -> void:
+		c.crate_count = 0
+		c.barrel_count = 0
+		c.round_seconds = 120.0)
+	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
+	var runner := game.add_player(&"r", "Runner", BfhGame.TEAM_RUNNERS)
+	_put(runner, Vector3(10.0, 0.05, 30.0))
+	game.start()
+	await _step(game, 60)
+	for prop in game.props.all_props():
+		if not prop.instance_id in game.scaffold_ids:
+			game.props.remove(prop.instance_id)
+	await _step(game, 2)
+
+	var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+	var body := bus.body()
+	var facing := Vector3(-start.x, 0.0, -start.z) if as_spawned \
+		else Vector3(hide.x - start.x, 0.0, hide.z - start.z)
+	body.linear_velocity = Vector3.ZERO
+	body.angular_velocity = Vector3.ZERO
+	body.global_transform = Transform3D(Basis.looking_at(facing.normalized()),
+		Vector3(start.x, 1.4, start.z))
+	driver.is_bot = true
+	_put(runner, hide + Vector3(0.0, 0.05, 0.0))
+
+	var last := bus.position()
+	var covered := 0.0
+	var fastest := 0.0
+	var reset := false
+	var took := 0
+	for i in range(720):
+		var still := DotFpsCommand.new()
+		still.yaw = runner.controller.state.yaw
+		runner.controller.apply_command(still)
+		game.simulate(TICK)
+		await get_tree().physics_frame
+		_watch_parked(bus, "at a runner %s" % what, i == 0)
+		took += 1
+		var at := bus.position()
+		if _sent_home(last, at):
+			reset = true
+			break
+		covered += Vector2(at.x - last.x, at.z - last.z).length()
+		fastest = maxf(fastest, bus.speed())
+		last = at
+		if not runner.health.alive:
+			break
+
+	var killed := not reset and not runner.health.alive
+	print("  ..    %-50s %s at %.2f s, %.1f m covered, %.1f m/s fastest, bus ends (%.1f, %.1f)"
+		% [what, "runs them down" if killed else ("SENT HOME" if reset else "never reaches them"),
+			float(took) * TICK, covered, fastest, last.x, last.z])
+	await _dispose(game)
+	return {"killed": killed, "fastest": fastest}
 
 
 # --- The courtyard's four lanes, driven (`[steer-3]`) ------------------------

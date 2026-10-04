@@ -496,6 +496,16 @@ What is in now, started by the 2026-10-01 nightly run and finished in a session 
 
 Rendered: `tools/shot.sh 9 lane.png --lane`, a runner's eyes at the west mouth looking down the lane — a row either side, a lane a bus is plainly meant to use, and pillars standing across its far end.
 
+## Decision 14: the colonnade, because the drivers' quarter was empty (2026-10-03, finished 2026-10-04)
+
+**The north-west quarter, where a bus starting west turns out into the bowl, had nothing in it**: thirty metres of sand between the stacks' west mouths, the wall and the deck's west end, and the place a runner scattered at the top of a round spent its first seconds in the open. **Four concrete pillars on an arc `COLONNADE_WALK` (7.6 m) off the wall**, `COLONNADE_SPACING` (10.4 m) apart, from the deck's west corner towards the stacks: a covered way along the rim with a column every ten metres to keep between a runner and a bus out on the floor. It joins the stacks' west mouths to the foot of the deck's west side, as the back yard and the second lane joined the farm and the stacks to the scaffold.
+
+**Along the rim, not in the middle, and that was measured.** The open floor there is where the west bus turns out of its start in a wide arc; a drum and three posts in the middle (the first design) wedged the bus on the post nearest its start. **No door in it**: the walk and every gap are past `LANE_THROUGH`, so the autopilot drives straight down any of them and nobody standing in one is safe (the courtyard's and the hook's narrow doors are not repeated). `colonnade_points`, `colonnade_walk_point` and `colonnade_clearance` are the one description; the pillars go through `_obstacles`, so the steering, the scatter keep-out and the gap rule needed no change.
+
+**`COLONNADE_MIN_RADIUS` is 45, and the first draft's 44 was a door.** The arc keeps its distance from the wall and its spacing, so on a smaller bowl it swings in towards the deck's corner; its tightest gap is 6.996 m at 44, 7.264 at 44.5, 7.558 at 45 and 8.216 on the shipped 46. `headless_run` asks it at the minimum and fired at 44.
+
+Started by the 2026-10-03 nightly, whose agent the 600 s ceiling killed with all of it uncommitted and that one check failing; finished in a live session. `headless_run`'s **the colonnade** (225 checks in all) builds it on the shipped bowl, holds the walk and every gap to `LANE_THROUGH`, asks the minimum radius both ways, has a runner bot go out of the stacks' west mouth and along the walk to the deck's corner (81.0 m of 81.6 in 12.50 s, 100% of `max_speed`), and runs a bot bus down a runner standing in it. Rendered: `tools/shot.sh 9 plan.png --plan`, the whole bowl from straight above, north up (new with it).
+
 ## What a runner can climb, and two routes that never existed
 
 The family asked every game in it whether the gaps and heights it asks a player to cross are inside what the movement can do. The two games asked first were both wrong. This one was wrong twice, and both were routes the documentation described.

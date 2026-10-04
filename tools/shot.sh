@@ -9,6 +9,7 @@
 #   tools/shot.sh 9 yard_in.png --yard=courtyard   # the same yard, through the lane from the courtyard
 #   tools/shot.sh 9 lane.png --lane           # the stacks' second lane, from its west mouth
 #   tools/shot.sh 9 ramp.png --ramp           # the ramp, from the side
+#   tools/shot.sh 9 plan.png --plan           # the whole bowl from straight above, north up
 #   tools/shot.sh 9 beacon.png --beacon       # an admin's beacon: the runner's ring, the bus's column
 #   tools/shot.sh 9 beacon_bus.png --beacon --bus   # the beacon round a driver's bus
 #   tools/shot.sh 9 blind.png --blind         # an admin's blind, through the HUD

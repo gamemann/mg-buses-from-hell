@@ -268,6 +268,60 @@ const TANK_CENTRE := Vector2(0.467, -0.152)
 ## two features closes, not where the farm runs out of sand.
 const TANK_MIN_RADIUS := 40.0
 
+## THE COLONNADE: the north-west rim, beside the drivers' start (2026-10-03).
+##
+## [b]The quarter of the bowl the buses come out into had nothing in it.[/b] The stacks
+## hold the west, the farm the east, the scaffold the south-east, and the north-west --
+## thirty metres of sand between the stacks' west mouths, the wall and the deck's west end
+## -- was where a runner scattered at the top of a round spent its opening seconds in the
+## open beside the west bus's start. It is the largest empty floor in the bowl.
+##
+## [b]Along the rim, not in the middle of it, and that was measured.[/b] The open floor in
+## that quarter is where a bus starting west turns out into the bowl: from its start the
+## bot bus comes round in a wide arc, and on 2026-10-03 it already missed a runner standing
+## still anywhere 26 to 38 m out along that quarter's middle and ended against the wall.
+## A drum and three posts in the middle of it (the first design tried) made that worse --
+## the bus wedged on the post nearest its start. So the floor is left to the drivers, and
+## the cover goes where a bus does not turn: four pillars on an arc a fixed
+## [constant COLONNADE_WALK] off the wall, from the stacks' west end to the deck's west
+## corner.
+##
+## [b]A covered way along the rim.[/b] Behind the pillars is a walk the width of the
+## stacks' second lane: a runner on it has a column every ten metres to keep between them
+## and a bus out on the floor, and a driver who wants them has to commit to the walk --
+## a lane against the wall with only the gaps for a way out -- or shadow them from the
+## floor. It joins the stacks' west mouths to the foot of the deck's west side, so the west
+## half's cover now reaches the height at the north end of the bowl as both features
+## already reach the scaffold in the south.
+##
+## [b]No door in it.[/b] The walk and every gap between pillars are past
+## [constant LANE_THROUGH], so the autopilot has a straight line through any of them and
+## nobody standing still in one is safe; the courtyard's and the hook's narrow doors
+## (nightly items `courtyard-west-lane-1`, `runner-standing-1`) are not repeated.
+
+## Clear floor between each pillar's face and the wall: the walk. The second lane's width.
+const COLONNADE_WALK := 7.6
+
+## Pillar centre to pillar centre, along the arc's chord: 8.0 m of clear floor between
+## faces, past [constant LANE_THROUGH].
+const COLONNADE_SPACING := 10.4
+
+const COLONNADE_PILLARS := 4
+
+## Where the first pillar stands, in degrees round the bowl from +X towards +Z: 236 is
+## north-west, with 8.6 m of floor between it and the deck's west corner. The rest step
+## towards the stacks.
+const COLONNADE_FIRST := 236.0
+
+## Below this it is left out. The pillars keep their distance from the wall and their
+## spacing, so on a smaller bowl the arc swings in towards the deck's corner and the
+## stacks' west end; measured by [method colonnade_clearance], which `headless_run` asks
+## at this radius. The tightest gap is 6.996 m at 44, 7.264 at 44.5, 7.558 at 45 and 8.216
+## on the shipped 46 (2026-10-04): it passes [constant LANE_THROUGH] from 44.5, and
+## `arena_radius` is set in whole metres, so 45. It was 44 in the first draft, which
+## `headless_run` refused -- a pillar 7.00 m from the deck's corner, a door.
+const COLONNADE_MIN_RADIUS := 45.0
+
 var radius: float = 46.0
 
 ## Set before [method build]. The layers every piece of the world goes on.
@@ -295,6 +349,9 @@ var _obstacle_radii: PackedFloat32Array = PackedFloat32Array()
 ## How many of [member _obstacles] are stack pillars. The rest are tanks.
 var _stack_count: int = 0
 
+## Where the tanks end in [member _obstacles]. The colonnade's pillars follow.
+var _tank_end: int = 0
+
 
 func build(p_radius: float) -> void:
 	radius = maxf(p_radius, 8.0)
@@ -316,6 +373,8 @@ func build(p_radius: float) -> void:
 	# two views has to be right whether or not the stacks went in.
 	_stack_count = _obstacles.size()
 	_build_tanks()
+	_tank_end = _obstacles.size()
+	_build_colonnade()
 	_place_scaffold()
 
 	DotLog.info(
@@ -325,7 +384,8 @@ func build(p_radius: float) -> void:
 			"radius": "%.0f m" % radius,
 			"segments": WALL_SEGMENTS,
 			"pillars": _stack_count,
-			"tanks": _obstacles.size() - _stack_count,
+			"tanks": _tank_end - _stack_count,
+			"colonnade": _obstacles.size() - _tank_end,
 			"scaffold": "%d crates" % scaffold_cells().size(),
 			"tightest gap": "%.1f m" % narrowest_gap(),
 		}
@@ -348,6 +408,7 @@ func _clear() -> void:
 	_obstacles = PackedVector3Array()
 	_obstacle_radii = PackedFloat32Array()
 	_stack_count = 0
+	_tank_end = 0
 
 
 ## Where a runner may be put: anywhere on the floor, inside a margin.
@@ -713,6 +774,99 @@ func _build_tanks() -> void:
 		_build_tank(farm, "Tank%d" % i, at, local.z)
 
 
+## The colonnade's pillars, through [method _add_obstacle] like every other cylinder,
+## so the steering, the scatter keep-out and the gap rule see them with no change. See
+## [constant COLONNADE_WALK].
+func _build_colonnade() -> void:
+	if radius < COLONNADE_MIN_RADIUS:
+		DotLog.info(
+			CHANNEL,
+			"colonnade left out, bowl too small",
+			{"radius": "%.0f m" % radius, "needs": "%.0f m" % COLONNADE_MIN_RADIUS},
+		)
+		return
+
+	var row := Node3D.new()
+	row.name = "Colonnade"
+	add_child(row)
+
+	var at := colonnade_points()
+	for i in range(at.size()):
+		_add_obstacle(at[i], PILLAR_RADIUS)
+		_build_pillar(row, "Colonnade%d" % i, at[i])
+
+
+## Where the colonnade's pillars stand, from the deck's end towards the stacks. Defined
+## whether or not this bowl has the colonnade.
+func colonnade_points() -> PackedVector3Array:
+	var out := PackedVector3Array()
+	var arc := colonnade_arc_radius()
+	var step := 2.0 * asin(COLONNADE_SPACING * 0.5 / arc)
+	var first := deg_to_rad(COLONNADE_FIRST)
+	for i in range(COLONNADE_PILLARS):
+		var angle := first - step * float(i)
+		out.append(Vector3(cos(angle), 0.0, sin(angle)) * arc)
+	return out
+
+
+## The radius of the circle the pillars' axes stand on.
+func colonnade_arc_radius() -> float:
+	return radius - COLONNADE_WALK - PILLAR_RADIUS
+
+
+## A point on the middle of the walk, [param t] of the way from the deck's end (0) to the
+## stacks' end (1), measured in pillar positions so 0.5 between pillars 1 and 2 of four.
+func colonnade_walk_point(t: float) -> Vector3:
+	var arc := colonnade_arc_radius()
+	var step := 2.0 * asin(COLONNADE_SPACING * 0.5 / arc)
+	var angle := deg_to_rad(COLONNADE_FIRST) - step * t * float(COLONNADE_PILLARS - 1)
+	var middle := radius - COLONNADE_WALK * 0.5
+	return Vector3(cos(angle), 0.0, sin(angle)) * middle
+
+
+## Whether this bowl was built with the colonnade.
+func has_colonnade() -> bool:
+	return _obstacles.size() > _tank_end
+
+
+## The pillars, deck end first. Empty on a bowl too small for it.
+func colonnade() -> PackedVector3Array:
+	return _obstacles.slice(_tank_end)
+
+
+## The narrowest clear floor between a colonnade pillar and anything that is not the walk
+## or a neighbour in the row: every other cylinder, the ramp's slab and the deck. The walk
+## (to the wall) and the gaps in the row are fixed by construction and measured by their
+## own checks.
+##
+## [b]Held to [constant LANE_THROUGH], not [constant BUS_GAP].[/b] A gap a bus fits and
+## the autopilot cannot drive through is a door a runner can stand in, and two of those
+## are open questions on this map already.
+func colonnade_clearance() -> float:
+	if not has_colonnade():
+		return INF
+	var nearest := INF
+	var deck_z := -(radius - LEDGE_DEPTH)
+	var half_ramp := RAMP_WIDTH * 0.5
+	var foot_z := ramp_foot().z
+	for i in range(_tank_end, _obstacles.size()):
+		var at := _obstacles[i]
+		for j in range(_tank_end):
+			var axis := Vector2(at.x - _obstacles[j].x, at.z - _obstacles[j].z).length()
+			nearest = minf(nearest, axis - PILLAR_RADIUS - _obstacle_radii[j])
+		nearest = minf(nearest, _to_box(at, -half_ramp, half_ramp, deck_z, foot_z) - PILLAR_RADIUS)
+		nearest = minf(nearest,
+			_to_box(at, -LEDGE_WIDTH * 0.5, LEDGE_WIDTH * 0.5, -radius, deck_z) - PILLAR_RADIUS)
+	return nearest
+
+
+## Clear distance on the floor from [param at] to an axis-aligned rectangle.
+static func _to_box(at: Vector3, x0: float, x1: float, z0: float, z1: float) -> float:
+	var dx := maxf(maxf(x0 - at.x, at.x - x1), 0.0)
+	var dz := maxf(maxf(z0 - at.z, at.z - z1), 0.0)
+	return Vector2(dx, dz).length()
+
+
 func _build_tank(parent: Node3D, node_name: String, at: Vector3, tank_radius: float) -> void:
 	var body := StaticBody3D.new()
 	body.name = node_name
@@ -827,7 +981,7 @@ func pillars() -> PackedVector3Array:
 
 ## Where the tanks stand, on the floor plane. Empty on a bowl too small for them.
 func tanks() -> PackedVector3Array:
-	return _obstacles.slice(_stack_count)
+	return _obstacles.slice(_stack_count, _tank_end)
 
 
 ## The middle of the [param index]th of [constant TANK_YARDS] on the built map: the
@@ -1675,7 +1829,8 @@ func describe() -> Dictionary:
 		"wall": "%.0f m" % WALL_HEIGHT,
 		"ledge": str(ledge_centre()),
 		"pillars": _stack_count,
-		"tanks": _obstacles.size() - _stack_count,
+		"tanks": _tank_end - _stack_count,
+		"colonnade": _obstacles.size() - _tank_end,
 		"scaffold": scaffold_cells().size(),
 		"ramp": "%.0f deg, lips %s" % [ramp_slope(), str(ramp_lips())],
 		"tightest gap": "%.1f m" % narrowest_gap(),

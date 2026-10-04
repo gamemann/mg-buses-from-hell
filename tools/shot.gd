@@ -21,6 +21,7 @@ func _run() -> void:
 	var look_at_yard := ""
 	var look_at_scaffold := false
 	var look_at_ramp := false
+	var plan := false
 	var show_chat := false
 	var beacon := false
 	var blind := false
@@ -49,6 +50,8 @@ func _run() -> void:
 			look_at_scaffold = true
 		elif arg == "--ramp":
 			look_at_ramp = true
+		elif arg == "--plan":
+			plan = true
 		elif arg == "--chat":
 			show_chat = true
 		elif arg == "--beacon":
@@ -341,6 +344,22 @@ func _run() -> void:
 			settle_board += get_process_delta_time()
 			await get_tree().process_frame
 		print("held: ", client.get("scoreboard").call("describe"))
+
+	# The whole bowl from straight above, north (the deck) at the top. The one view that
+	# shows where everything is against everything else -- which is the question when
+	# choosing where a new piece of the map goes, and the one a runner's-eye camera
+	# cannot answer.
+	var world_for_plan: BfhGame = client.get("game")
+	if plan and world_for_plan != null and world_for_plan.arena != null:
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+		cam.size = world_for_plan.arena.radius * 2.1
+		cam.global_position = Vector3(0.0, 80.0, 0.0)
+		cam.look_at(Vector3.ZERO, Vector3.FORWARD)
+		cam.far = 200.0
+		cam.current = true
+		await get_tree().process_frame
 
 	await RenderingServer.frame_post_draw
 	var image := get_viewport().get_texture().get_image()
