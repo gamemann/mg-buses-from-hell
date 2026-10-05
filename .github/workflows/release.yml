@@ -28,7 +28,7 @@ jobs:
     # @v1.2.2 (images/ left out of the pack, as well as v1.2.1's requires.json and draft-until-complete) until v1 is moved onto it.
     release:
         needs: validate
-        uses: modcommunity/dot-ci/.github/workflows/release.yml@v1.2.2
+        uses: modcommunity/dot-ci/.github/workflows/release.yml@v1.2.4
         permissions:
             contents: write
         with:
