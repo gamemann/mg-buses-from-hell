@@ -911,6 +911,11 @@ func _clear_bowl() -> void:
 func _lay_out_bowl() -> void:
 	var stream := random.stream(&"bowl")
 
+	if config.scatter_clears_bus_lanes:
+		arena.keep_start_lanes(maxi(config.driver_count, 1), config.bus_lane_width, config.bus_lane_length)
+	else:
+		arena.start_lanes.clear()
+
 	# The scaffold first, so nothing scattered is in its cells: the scatter keeps out of
 	# its footprint, and a block that landed inside it — which one did, before the
 	# keep-out — spread the whole staircase half a metre at the first step.

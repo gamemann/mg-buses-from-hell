@@ -1496,11 +1496,41 @@ func scatter_point(stream: DotRandomStream, margin: float, height: float) -> Vec
 		var z := stream.next_range_f(-usable, usable)
 		if Vector2(x, z).length() > usable:
 			continue
-		if _inside_a_pillar(x, z) or _inside_the_scaffold(x, z):
+		if _inside_a_pillar(x, z) or _inside_the_scaffold(x, z) or _inside_a_start_lane(x, z, margin):
 			continue
 		return Vector3(x, height, z)
 
 	return Vector3(0.0, height, 0.0)
+
+
+## Rectangles on the floor kept clear in front of the bus starts, as (centre x, centre z, half
+## width, half length), each running from a start toward the bowl's middle. Set by the game
+## from its config before it scatters; empty keeps nothing clear.
+var start_lanes: Array[Vector4] = []
+
+
+## Lanes from every start of [param count] buses, [param width] wide and [param length] long.
+func keep_start_lanes(count: int, width: float, length: float) -> void:
+	start_lanes.clear()
+	if width <= 0.0 or length <= 0.0:
+		return
+	for i in range(maxi(count, 1)):
+		var start := bus_start(i, count)
+		# A start stands at negative z facing the middle (+z), so its lane runs from it toward
+		# the middle and is mirrored for any start the other side of it.
+		var forward := signf(-start.z) if start.z != 0.0 else 1.0
+		start_lanes.append(Vector4(start.x, start.z + forward * length * 0.5, width * 0.5, length * 0.5))
+
+
+## Whether a prop dropped at (x, z) with its own size margin would sit in a start lane.
+func _inside_a_start_lane(x: float, z: float, margin: float) -> bool:
+	# The scatter's margin is a distance from the rim; a prop's own half-size here is a
+	# fraction of it, enough that a block's edge does not poke into the lane.
+	var pad := clampf(margin * 0.1, 0.5, 1.5)
+	for lane in start_lanes:
+		if absf(x - lane.x) < lane.z + pad and absf(z - lane.y) < lane.w + pad:
+			return true
+	return false
 
 
 ## Metres of floor around a pillar that nothing is dropped into.

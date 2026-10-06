@@ -33,7 +33,7 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 225
+const CHECKS := 228
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
@@ -587,6 +587,36 @@ func _test_bowl_layout() -> void:
 			inside = false
 			break
 	_check(inside, "every one of them inside the wall")
+
+	# The lanes in front of the bus starts are kept clear (`scatter_clears_bus_lanes`): none
+	# of what the round laid out, and none of a large sample. And the same sample with the
+	# lanes off does land in one, so the first two cannot pass by the lanes being nowhere.
+	var lanes := game.arena.start_lanes.size()
+	var in_lane := 0
+	for prop in game.props.all_props():
+		if not game.scaffold_ids.has(prop.instance_id) and game.arena._inside_a_start_lane(prop.position().x, prop.position().z, 0.0):
+			in_lane += 1
+	_check(lanes == maxi(game.config.driver_count, 1) and in_lane == 0,
+		"nothing scattered lies in the lane in front of a bus start", "%d lanes, %d props in one" % [lanes, in_lane])
+	var kept := DotRandomStream.new(777, &"bowl")
+	var sampled_in := 0
+	for _i in range(400):
+		var at := game.arena.scatter_point(kept, 12.0, 0.5)
+		if game.arena._inside_a_start_lane(at.x, at.z, 0.0):
+			sampled_in += 1
+	_check(sampled_in == 0, "and 400 more scatter points avoid it", "%d in a lane" % sampled_in)
+	var saved_lanes := game.arena.start_lanes.duplicate()
+	game.arena.start_lanes.clear()
+	var loose := DotRandomStream.new(777, &"bowl")
+	var would := 0
+	for _i in range(400):
+		var at := game.arena.scatter_point(loose, 12.0, 0.5)
+		for lane in saved_lanes:
+			if absf(at.x - lane.x) < lane.z and absf(at.z - lane.y) < lane.w:
+				would += 1
+				break
+	game.arena.start_lanes = saved_lanes
+	_check(would > 0, "while with the lanes off the same scatter does fall in them", "%d of 400" % would)
 
 	await _dispose(game)
 	_done()
@@ -1506,6 +1536,16 @@ func _test_the_scaffold() -> void:
 	body.global_transform = Transform3D(Basis.looking_at(toward),
 		Vector3(footprint.position.x - 24.0, 1.4, footprint.get_center().z))
 	driver.is_bot = true
+
+	# A clear run at it, and nothing propping it up: this asks what a bus does to the
+	# scaffold, not what the scatter left around it. Once the scatter began keeping the start
+	# lanes clear (`scatter_clears_bus_lanes`) every prop in the bowl moved, and the bus that
+	# had brought the runner down in 4.6 s hit a scaffold braced by what now lay beside it.
+	var clear_zone := AABB(footprint.position - Vector3(28.0, 1.0, 6.0), footprint.size + Vector3(34.0, 20.0, 12.0))
+	for prop in game.props.all_props():
+		if not game.scaffold_ids.has(prop.instance_id) and clear_zone.has_point(prop.position()):
+			var _cleared := game.props.remove(prop.instance_id)
+	await get_tree().physics_frame
 
 	var standing_before := game.scaffold_standing()
 	var down := false

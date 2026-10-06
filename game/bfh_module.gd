@@ -187,6 +187,11 @@ func _add_tunables(world: BfhGame) -> void:
 	_tunable("bfh_bus_lethal_speed", config.bus_lethal_speed,
 		"Closing speed at which a bus kills outright, in m/s",
 		func(value: float) -> void: config.bus_lethal_speed = value)
+	_tunable("bfh_bus_lane_width", config.bus_lane_width if config.scatter_clears_bus_lanes else 0.0,
+		"Metres kept clear in front of each bus start when the next round is laid out; 0 keeps nothing clear",
+		func(value: float) -> void:
+			config.scatter_clears_bus_lanes = value > 0.0
+			config.bus_lane_width = maxf(value, 0.0))
 
 
 ## A number as an operator would type it: `34`, not `34.000000`.

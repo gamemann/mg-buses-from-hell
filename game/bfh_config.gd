@@ -105,6 +105,15 @@ extends DotConfig
 ## How many crates are scattered at the start of a round.
 @export_range(0, 200, 1) var crate_count: int = 34
 
+## Whether the scatter keeps a lane clear in front of every bus start, and how big: a crate,
+## barrel or block dropped there is the first thing a bus hits, and a block 13 m ahead of a
+## start (it happened on the suite's seed) is a bus that ends its first second against it.
+## Christian's pick is on; off lets the bowl's scatter fall anywhere, as it used to.
+@export var scatter_clears_bus_lanes: bool = true
+## The kept-clear lane's width and length, in metres, from the bus's start along the way it faces.
+@export_range(0.0, 20.0, 0.5) var bus_lane_width: float = 6.0
+@export_range(0.0, 60.0, 1.0) var bus_lane_length: float = 24.0
+
 ## How many barrels.
 @export_range(0, 100, 1) var barrel_count: int = 9
 
