@@ -81,6 +81,17 @@ bfh_bus_top_speed 22         // m/s
 bfh_bus_lethal_speed 9       // closing speed at which a bus kills outright, m/s
 bfh_bus_lane_width 6         // metres kept clear in front of each bus start (0 = none)
 bfh_bots 1                   // fill empty driving seats with bots
+bfh_bot_aim_past 8           // metres past a runner a bot bus aims, so it arrives at speed
+bfh_bot_steer_clearance 3.6  // metres a bot bus keeps off a pillar's or drum's surface
+bfh_bus_stuck_break 1        // seconds a bus may push against something before what is under it breaks
+bfh_bus_stuck_reset 5        // seconds before a stuck bus is put back on its start line
+```
+
+Two settings are the map itself, so they are read when the bowl is built and are not cvars: set them in the JSON config, the environment (`BFH_HOOK_LAYOUT`, `BFH_COURTYARD_WEST_LANE`) or the command line (`--bfh-hook-layout`, `--bfh-courtyard-west-lane`) and restart. Connected clients are told them when they join.
+
+```
+hook_layout tight            // the three pillars past the stacks: tight (as built) or wide (5.6 m gaps opened to 7.4-7.6 m)
+courtyard_west_lane 7.6      // metres of floor in the tank farm's west lane; 6.6 is the farm as first built
 ```
 
 Console commands:

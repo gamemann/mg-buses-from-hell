@@ -114,12 +114,19 @@ static func _w() -> DotNetWriter:
 ## ends — which is what makes it free to deliver and free to change — so the radius is
 ## the whole map as far as the wire is concerned. A client on 46 against a server on 30
 ## has a wall seven metres past where the server says the wall is.
+##
+## [b]And the two layout choices an operator can make (2026-10-07), appended:[/b] where the
+## hook is which and how wide the courtyard's west lane is. A client on the default hook
+## against a server on the tight one would walk through a pillar it cannot see and stop at
+## one that is not there. The hook by name, the lane to the millimetre.
 static func write_hello(
 	player_id: int,
 	tick_rate: int,
 	server_tick: int,
 	arena_radius: float,
-	round_seconds: float
+	round_seconds: float,
+	hook_layout: String,
+	courtyard_west_lane: float
 ) -> PackedByteArray:
 	var w := _w()
 	w.write_varint(player_id)
@@ -127,7 +134,16 @@ static func write_hello(
 	w.write_varint(server_tick)
 	w.write_float_range(arena_radius, 0.0, 512.0, 16)
 	w.write_float_range(round_seconds, 0.0, CLOCK_MAX, CLOCK_BITS)
+	w.write_string(hook_layout, LAYOUT_NAME_BYTES)
+	w.write_float_range(courtyard_west_lane, 0.0, LAYOUT_MAX, LAYOUT_BITS)
 	return w.to_bytes()
+
+
+## The range and bits a layout length goes on the wire with: 1 mm steps up to 64 m. And
+## the longest a layout's name may be.
+const LAYOUT_MAX := 64.0
+const LAYOUT_BITS := 16
+const LAYOUT_NAME_BYTES := 32
 
 
 static func read_hello(r: DotNetReader) -> Dictionary:
@@ -136,12 +152,16 @@ static func read_hello(r: DotNetReader) -> Dictionary:
 	var server_tick := r.read_varint()
 	var arena_radius := r.read_float_range(0.0, 512.0, 16)
 	var round_seconds := r.read_float_range(0.0, CLOCK_MAX, CLOCK_BITS)
+	var hook_layout := r.read_string(LAYOUT_NAME_BYTES)
+	var courtyard_west_lane := r.read_float_range(0.0, LAYOUT_MAX, LAYOUT_BITS)
 	return {
 		"player_id": player_id,
 		"tick_rate": tick_rate,
 		"server_tick": server_tick,
 		"arena_radius": arena_radius,
 		"round_seconds": round_seconds,
+		"hook_layout": hook_layout,
+		"courtyard_west_lane": courtyard_west_lane,
 		"ok": r.ok(),
 	}
 

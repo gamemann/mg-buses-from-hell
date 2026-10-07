@@ -17,6 +17,8 @@ func _run() -> void:
 	var look_at_bus := false
 	var look_at_stacks := false
 	var look_at_lane := false
+	var look_at_hook := false
+	var look_at_west_lane := false
 	var look_at_tanks := false
 	var look_at_yard := ""
 	var look_at_scaffold := false
@@ -40,6 +42,10 @@ func _run() -> void:
 			look_at_stacks = true
 		elif arg == "--lane":
 			look_at_lane = true
+		elif arg == "--hook":
+			look_at_hook = true
+		elif arg == "--west-lane":
+			look_at_west_lane = true
 		elif arg == "--tanks":
 			look_at_tanks = true
 		elif arg == "--yard":
@@ -183,6 +189,43 @@ func _run() -> void:
 		cam.global_position = arena.stack_point(Vector2(-14.0, lane_z)) + Vector3(0.0, 1.7, 0.0)
 		cam.look_at(arena.stack_point(Vector2(arena.STACK_LANE_END, lane_z)) + Vector3(0.0, 1.4, 0.0),
 			Vector3.UP)
+		cam.current = true
+		await get_tree().process_frame
+
+	# Or stand outside the hook at a runner's eyes, square to its south-middle gap, and
+	# look in: whether its two gaps read as ways a bus comes through or as slots between
+	# columns. Pass --bfh-hook-layout=wide to see the other hook (`BfhArena.HOOK_LAYOUTS`).
+	var world_for_hook: BfhGame = client.get("game")
+	if look_at_hook and world_for_hook != null and world_for_hook.arena != null \
+			and not world_for_hook.arena.pillars().is_empty():
+		var arena = world_for_hook.arena
+		var p: PackedVector3Array = arena.pillars()
+		var h: int = arena.HOOK_FIRST
+		var centroid: Vector3 = (p[h] + p[h + 1] + p[h + 2]) / 3.0
+		var mouth: Vector3 = (p[h + 1] + p[h + 2]) * 0.5
+		var away: Vector3 = mouth - centroid
+		away.y = 0.0
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.global_position = mouth + away.normalized() * 11.0 + Vector3(0.0, 3.2, 0.0)
+		cam.look_at(centroid + Vector3(0.0, 1.0, 0.0), Vector3.UP)
+		cam.current = true
+		await get_tree().process_frame
+
+	# Or stand 9 m outside the courtyard's west lane at a runner's eyes and look through it
+	# to the courtyard's middle: 7.6 m between the 4.4 and 2.6 m drums since 2026-10-07.
+	var world_for_west: BfhGame = client.get("game")
+	if look_at_west_lane and world_for_west != null and world_for_west.arena != null \
+			and not world_for_west.arena.tanks().is_empty():
+		var arena = world_for_west.arena
+		var middle: Vector3 = arena.yard_middle(0)
+		var mouth: Vector3 = arena.yard_lane_middle(0, 3)
+		var away: Vector3 = mouth - middle
+		away.y = 0.0
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.global_position = mouth + away.normalized() * 9.0 + Vector3(0.0, 2.2, 0.0)
+		cam.look_at(middle + Vector3(0.0, 1.2, 0.0), Vector3.UP)
 		cam.current = true
 		await get_tree().process_frame
 

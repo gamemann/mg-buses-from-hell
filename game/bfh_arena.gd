@@ -115,6 +115,9 @@ const PILLAR_LAYOUT: Array[Vector2] = [
 	# safe by standing still -- and a game whose runners win by standing still is
 	# not this game. `narrowest_pillar_gap` is the measurement and
 	# `headless_run` asks it of the whole layout, not of the hook.
+	#
+	# These three are [constant HOOK_LAYOUTS]' "tight" hook, the default; see there for
+	# the "wide" one an operator can choose instead, and why it is not the default.
 	Vector2(22.5, -6.2),
 	Vector2(27.5, 0.0),
 	Vector2(23.0, 6.6),
@@ -149,6 +152,46 @@ const PILLAR_LAYOUT: Array[Vector2] = [
 
 ## The first of the hook's three pillars in [constant PILLAR_LAYOUT].
 const HOOK_FIRST := 8
+
+## The hook's three pillars, stack-local, by name: what [code]BfhConfig.hook_layout[/code]
+## chooses between. Each replaces [constant PILLAR_LAYOUT]'s [code]HOOK_FIRST[/code] to
+## [code]HOOK_FIRST + 2[/code] in that order (north, middle, south).
+##
+## [b]"tight" is the hook as built, and still the default: gaps of 5.59 m (south-middle)
+## and 5.56 m (middle-north),[/b] past [constant BUS_GAP], so a bus fits, and under
+## [constant LANE_THROUGH], so the autopilot does not go -- a runner standing still in
+## either is never reached by a bot bus (`runner-standing-1`, pinned in `headless_run`).
+##
+## [b]"wide" is the 2026-10-06 decision for that item, kept selectable and not the
+## default, because it breaks the gap rule it was meant to keep (measured 2026-10-07).[/b]
+## The middle pillar at x = 30.3 opens the gaps to 7.44 m (south-middle) and 7.56 m (middle-north), and a bot then runs
+## down a runner standing in either from 8 and 14 m out -- but from 11 m out at the
+## middle-north gap it is still sent home (the back yard's west drum turns that approach
+## 17.5 degrees off square, and 7.56 m at that angle is inside the steering's corridor),
+## and the middle pillar stands 3.48 m from the scaffold on the shipped 46 m bowl (2.63 m
+## at 45) and 4.31 m from the back yard's west drum at 40: gaps under BUS_GAP, which the
+## build logs as a WARN when this is chosen. [b]No other three-pillar hook was found that
+## does better,[/b] by a search over every pillar position within about 3 m of the old
+## ones: the middle pillar cannot move out (the scaffold and that drum), the north one is
+## boxed by the end of the stacks' south row and the dog-leg (opening it leaves a 5.75 m
+## door to the row's end, where the bot wedged), and the south one stands 0.9 m off the
+## line a bus takes at the scaffold's low end (every move that opens it puts it across
+## that line, and the scaffold section's bus no longer brought the runner down). The way
+## through is a change to the steering or to the hook's neighbours: Christian's call.
+const HOOK_LAYOUTS := {
+	"tight": [Vector2(22.5, -6.2), Vector2(27.5, 0.0), Vector2(23.0, 6.6)],
+	"wide": [Vector2(22.5, -6.2), Vector2(30.3, 0.0), Vector2(23.0, 6.6)],
+}
+
+## The hook a map gets when nothing says otherwise. [constant PILLAR_LAYOUT] carries it.
+const HOOK_DEFAULT := "tight"
+
+## Set before [method build]: which of [constant HOOK_LAYOUTS] the hook is. Layout data
+## rather than a constant so an operator can choose it, and it reaches a client in the
+## HELLO, because the map is this function run on both ends. An unknown name builds the
+## default and says so.
+var hook_layout: String = HOOK_DEFAULT
+
 
 ## The stacks' lanes, as the stack-local [code]z[/code] of each centre line: the first
 ## lane between the two original rows, and the second between the old south row and the
@@ -244,6 +287,52 @@ const TANK_LAYOUT: Array[Vector3] = [
 	Vector3(-1.5, 17.5, 2.6),
 	Vector3(11.5, 15.0, 2.2),
 ]
+
+## The courtyard's west lane, as the clear floor between its two drums (the 4.4 m tank 0
+## and the 2.6 m tank 3), by default.
+##
+## [b]7.6 m since 2026-10-07, and it was 6.60.[/b] Under [constant LANE_THROUGH] a lane is
+## somewhere the bot bus stops against a drum, and at 6.60 a runner standing in its mouth
+## was sent home from every start 7-12 m out: a refuge from the bots for as long as they
+## stood there (`courtyard-west-lane-1`). Widened to the stacks' second lane's 7.6, so no
+## lane into the courtyard is somewhere to win by standing still. Tank 0 is what moves,
+## straight out along the line from tank 3 through its [constant TANK_LAYOUT] position,
+## because tank 3 is a side of the back yard too and tank 0 is in nothing else; the north
+## lane it also bounds goes from 8.23 to about 8.4 m.
+const COURTYARD_WEST_LANE := 7.6
+
+## The west lane as it was built (2026-09-23 to 2026-10-06), and [constant TANK_LAYOUT]'s
+## own tank 0: still selectable through [code]BfhConfig.courtyard_west_lane[/code].
+const COURTYARD_WEST_LANE_NARROW := 6.6
+
+## The tanks either side of the courtyard's west lane, in [constant TANK_LAYOUT]. Tank 0
+## is the one [member courtyard_west_lane] moves.
+const WEST_LANE_TANKS := Vector2i(0, 3)
+
+## Set before [method build]: the courtyard's west lane, in metres of clear floor. Layout
+## data for the reason [member hook_layout] is, and sent in the HELLO with it.
+var courtyard_west_lane: float = COURTYARD_WEST_LANE
+
+
+## [constant TANK_LAYOUT] with tank 0 placed for a west lane of [param west_lane] metres:
+## moved along the line from tank 3 through its constant position. A negative
+## [param west_lane] leaves the constant as it is.
+static func layout_with_west_lane(west_lane: float) -> Array[Vector3]:
+	var layout: Array[Vector3] = TANK_LAYOUT.duplicate()
+	if west_lane < 0.0:
+		return layout
+	var moved := TANK_LAYOUT[WEST_LANE_TANKS.x]
+	var fixed := TANK_LAYOUT[WEST_LANE_TANKS.y]
+	var out := Vector2(moved.x - fixed.x, moved.y - fixed.y).normalized()
+	var at := Vector2(fixed.x, fixed.y) + out * (fixed.z + moved.z + west_lane)
+	layout[WEST_LANE_TANKS.x] = Vector3(at.x, at.y, moved.z)
+	return layout
+
+
+## [constant TANK_LAYOUT] as this arena builds it. See [member courtyard_west_lane].
+func tank_layout() -> Array[Vector3]:
+	return layout_with_west_lane(courtyard_west_lane)
+
 
 ## The farm's open floors, each as the tanks round it in order, so that neighbours in the
 ## list are the two sides of a lane. Indices into [constant TANK_LAYOUT].
@@ -388,8 +477,23 @@ func build(p_radius: float) -> void:
 			"colonnade": _obstacles.size() - _tank_end,
 			"scaffold": "%d crates" % scaffold_cells().size(),
 			"tightest gap": "%.1f m" % narrowest_gap(),
+			"hook": hook_layout,
+			"courtyard west lane": "%.2f m" % courtyard_west_lane,
 		}
 	)
+
+	# [b]The layout is an operator's to choose now, so the gap rule is said where it is
+	# broken.[/b] `headless_run` holds the shipped layout to BUS_GAP; a hook or a west lane
+	# set from a JSON file or the environment is not run through the suite, and a pair of
+	# drums closer than a bus is a pocket a runner wins by standing in.
+	if minf(narrowest_gap(), scaffold_clearance()) < BUS_GAP:
+		DotLog.warn(
+			CHANNEL,
+			"a gap on this map is too tight for a bus",
+			{"tightest": "%.2f m" % narrowest_gap(), "scaffold": "%.2f m" % scaffold_clearance(),
+				"bus needs": "%.2f m" % BUS_GAP,
+				"hook_layout": hook_layout, "courtyard_west_lane": courtyard_west_lane},
+		)
 
 
 ## Everything a previous [method build] put here.
@@ -707,10 +811,43 @@ func _build_stacks() -> void:
 	stacks.name = "Stacks"
 	add_child(stacks)
 
-	for i in range(PILLAR_LAYOUT.size()):
-		var at := stack_point(PILLAR_LAYOUT[i])
+	if not HOOK_LAYOUTS.has(hook_layout):
+		DotLog.warn(CHANNEL, "no hook by that name; building the default",
+			{"hook_layout": hook_layout, "default": HOOK_DEFAULT, "known": HOOK_LAYOUTS.keys()})
+	var layout := pillar_layout()
+	for i in range(layout.size()):
+		var at := stack_point(layout[i])
 		_add_obstacle(at, PILLAR_RADIUS)
 		_build_pillar(stacks, "Pillar%d" % i, at)
+
+
+## [constant PILLAR_LAYOUT] as this arena builds it: the hook from [member hook_layout].
+## Everything else in the stacks is the constant.
+func pillar_layout() -> Array[Vector2]:
+	return layout_with_hook(hook_layout)
+
+
+## [constant PILLAR_LAYOUT] with the hook named [param hook] (one of
+## [constant HOOK_LAYOUTS]; anything else is the default).
+static func layout_with_hook(hook: String) -> Array[Vector2]:
+	var layout: Array[Vector2] = PILLAR_LAYOUT.duplicate()
+	var points: Array = HOOK_LAYOUTS.get(hook, HOOK_LAYOUTS[HOOK_DEFAULT])
+	for i in range(points.size()):
+		layout[HOOK_FIRST + i] = points[i]
+	return layout
+
+
+## The clear floor in the named hook's two narrow gaps: [code]x[/code] south-middle (the
+## third pillar to the middle), [code]y[/code] middle-north (the middle to the first), as
+## `headless_run` names them. The base between the outer two is not one of them: it opens
+## onto the dog-leg, with no straight run at it.
+static func hook_gaps(hook: String) -> Vector2:
+	var layout := layout_with_hook(hook)
+	var middle := layout[HOOK_FIRST + 1]
+	return Vector2(
+		layout[HOOK_FIRST + 2].distance_to(middle) - 2.0 * PILLAR_RADIUS,
+		middle.distance_to(layout[HOOK_FIRST]) - 2.0 * PILLAR_RADIUS,
+	)
 
 
 ## A stack-local point ([code]x[/code] along the lanes, [code]z[/code] across them) on
@@ -766,8 +903,9 @@ func _build_tanks() -> void:
 
 	var centre := Vector2(TANK_CENTRE.x * radius, TANK_CENTRE.y * radius)
 
-	for i in range(TANK_LAYOUT.size()):
-		var local := TANK_LAYOUT[i]
+	var layout := tank_layout()
+	for i in range(layout.size()):
+		var local := layout[i]
 		var at := Vector3(centre.x + local.x, 0.0, centre.y + local.y)
 
 		_add_obstacle(at, local.z)
@@ -1418,7 +1556,16 @@ func _beside(blocking: int, right: Vector3, away: float) -> Vector3:
 ## Its own radius plus [constant PILLAR_CLEARANCE], which for a stack pillar is the
 ## PILLAR_RADIUS + PILLAR_CLEARANCE this used to be written as, unchanged.
 func _clearance(index: int) -> float:
-	return _obstacle_radii[index] + PILLAR_CLEARANCE
+	return _obstacle_radii[index] + steer_clearance
+
+
+## How far past an obstacle's surface the steering keeps a bot bus: [constant
+## PILLAR_CLEARANCE] unless `BfhConfig.bot_steer_clearance` says otherwise, which the
+## world writes here before each bot steers. [b]Only the steering reads it.[/b] The map's
+## rules -- [constant BUS_GAP], [constant LANE_THROUGH], every layout check -- are about the
+## shipped steering and stay the constant, so an operator who widens this has bots that
+## give everything more room and a map still measured against the default.
+var steer_clearance: float = PILLAR_CLEARANCE
 
 
 ## How much room there is at [param at], to the nearest obstacle that is not
@@ -1865,4 +2012,7 @@ func describe() -> Dictionary:
 		"ramp": "%.0f deg, lips %s" % [ramp_slope(), str(ramp_lips())],
 		"tightest gap": "%.1f m" % narrowest_gap(),
 		"scaffold clearance": "%.1f m" % scaffold_clearance(),
+		"hook": "%s, gaps %.2f / %.2f m" % [hook_layout, hook_gaps(hook_layout).x, hook_gaps(hook_layout).y],
+		"courtyard west lane": "%.2f m" % courtyard_west_lane,
+		"steer clearance": "%.1f m" % steer_clearance,
 	}

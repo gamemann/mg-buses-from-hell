@@ -1029,7 +1029,9 @@ func _admit(peer_id: int) -> void:
 		game.tick_rate,
 		net.clock.tick,
 		game.arena.radius if game.arena != null else game.config.arena_radius,
-		game.config.round_seconds
+		game.config.round_seconds,
+		game.arena.hook_layout if game.arena != null else game.config.hook_layout,
+		game.arena.courtyard_west_lane if game.arena != null else game.config.courtyard_west_lane
 	))
 
 	for other in _behaviours.keys():
@@ -1289,8 +1291,17 @@ func _apply_hello(reader: DotNetReader) -> void:
 	# all in the wrong place, and would walk through the visible wall into the server's
 	# real one.
 	var radius := float(hello["arena_radius"])
+	var hook := str(hello["hook_layout"])
+	var west := float(hello["courtyard_west_lane"])
 
-	if game.arena != null and absf(game.arena.radius - radius) > 0.01:
+	# And the two layout choices, which are as much the map as the radius is: a client on
+	# its own default hook against a server on the tight one has a pillar where the
+	# server has floor.
+	if game.arena != null and (absf(game.arena.radius - radius) > 0.01
+			or game.arena.hook_layout != hook
+			or absf(game.arena.courtyard_west_lane - west) > 0.005):
+		game.arena.hook_layout = hook
+		game.arena.courtyard_west_lane = west
 		game.arena.build(radius)
 
 	game.config.round_seconds = float(hello["round_seconds"])

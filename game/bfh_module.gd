@@ -192,6 +192,23 @@ func _add_tunables(world: BfhGame) -> void:
 		func(value: float) -> void:
 			config.scatter_clears_bus_lanes = value > 0.0
 			config.bus_lane_width = maxf(value, 0.0))
+	# The bots' knobs, live from the next tick: the autopilot and the stuck rule run on the
+	# authority only and read these every tick, so no client has anything to agree with.
+	# The hook and the courtyard's west lane are NOT here (`hook_layout`,
+	# `courtyard_west_lane`): they are the map, which every client builds from the HELLO it
+	# joined with, so they are set in the JSON file or the environment and need a restart.
+	_tunable("bfh_bot_aim_past", config.bot_aim_past,
+		"Metres past a runner a bot bus aims, so it arrives at speed",
+		func(value: float) -> void: config.bot_aim_past = maxf(value, 0.0))
+	_tunable("bfh_bot_steer_clearance", config.bot_steer_clearance,
+		"Metres a bot bus keeps off a pillar's or drum's surface; the map is laid out for 3.6",
+		func(value: float) -> void: config.bot_steer_clearance = maxf(value, 0.5))
+	_tunable("bfh_bus_stuck_break", config.bus_stuck_break_seconds,
+		"Seconds a bus may throttle against something before what is under it breaks",
+		func(value: float) -> void: config.bus_stuck_break_seconds = maxf(value, 0.1))
+	_tunable("bfh_bus_stuck_reset", config.bus_stuck_reset_seconds,
+		"Seconds a stuck bus is given before it is put back on its start line",
+		func(value: float) -> void: config.bus_stuck_reset_seconds = maxf(value, 0.1))
 
 
 ## A number as an operator would type it: `34`, not `34.000000`.

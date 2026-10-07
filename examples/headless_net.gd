@@ -1,5 +1,6 @@
 extends Node
 
+const BfhArena := preload("../game/bfh_arena.gd")
 const BfhAudio := preload("../game/bfh_audio.gd")
 const BfhAvatars := preload("../game/bfh_avatars.gd")
 const BfhFigure := preload("../game/bfh_figure.gd")
@@ -47,7 +48,7 @@ const BfhSpectate := preload("../game/bfh_spectate.gd")
 ## the wrong reason. A real client is a separate program with its own export and its own
 ## `user://` config. Make them disagree, and let HELLO correct it.
 
-const CHECKS := 175
+const CHECKS := 177
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
@@ -184,7 +185,7 @@ func _test_the_wire() -> void:
 	_section("the wire format")
 
 	var hello := BfhEvents.read_hello(DotNetReader.new(
-		BfhEvents.write_hello(SESSION, 128, 9001, 44.0, 180.0)
+		BfhEvents.write_hello(SESSION, 128, 9001, 44.0, 180.0, "wide", 6.6)
 	))
 	_check(bool(hello["ok"]), "hello round-trips")
 	_check(int(hello["player_id"]) == SESSION, "hello: who you are")
@@ -198,6 +199,12 @@ func _test_the_wire() -> void:
 	_check(
 		absf(float(hello["round_seconds"]) - 180.0) < 0.1,
 		"hello: and how long a round is"
+	)
+	_check(
+		str(hello["hook_layout"]) == "wide"
+			and absf(float(hello["courtyard_west_lane"]) - 6.6) < 0.005,
+		"hello: and the layout an operator chose, the hook and the courtyard's west lane",
+		"%s, %.3f" % [str(hello["hook_layout"]), float(hello["courtyard_west_lane"])]
 	)
 
 	var join := BfhEvents.read_join(DotNetReader.new(
@@ -346,6 +353,13 @@ func _make_game(server: bool, parent: Node) -> BfhGame:
 	config.crate_count = 10
 	config.barrel_count = 2
 	config.arena_radius = SERVER_RADIUS if server else CLIENT_RADIUS
+	# And the client on the layout alternatives rather than the defaults, so a client that
+	# ignored the server's in the HELLO would keep a different hook and courtyard (checked).
+	# The client, not the server: the server's runner walks a line in these sections that
+	# the wide hook's middle pillar stands across on a 44 m bowl.
+	if not server:
+		config.hook_layout = "wide"
+		config.courtyard_west_lane = BfhArena.COURTYARD_WEST_LANE_NARROW
 	config.round_seconds = 120.0
 	config.warmup_seconds = 0.0
 	config.intermission_seconds = 0.0
@@ -662,6 +676,21 @@ func _test_a_client_joins() -> void:
 		"and rebuilt its bowl at the server's radius, which in this game is the map",
 		"client %.1f m, server %.1f m" % [
 			_client_game.arena.radius, _server_game.arena.radius
+		]
+	)
+	var layout_off := 0.0
+	var client_obstacles := _client_game.arena.obstacles()
+	var server_obstacles := _server_game.arena.obstacles()
+	for i in range(mini(client_obstacles.size(), server_obstacles.size())):
+		layout_off = maxf(layout_off, client_obstacles[i].distance_to(server_obstacles[i]))
+	_check(
+		client_obstacles.size() == server_obstacles.size() and layout_off < 0.01
+			and _client_game.arena.hook_layout == _server_game.arena.hook_layout
+			and _client_game.arena.hook_layout != "wide",
+		"and built the server's hook and courtyard, not the ones it started with",
+		"%d vs %d obstacles, furthest %.3f m apart, hook %s" % [
+			client_obstacles.size(), server_obstacles.size(), layout_off,
+			_client_game.arena.hook_layout
 		]
 	)
 	_check(

@@ -33,7 +33,7 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 228
+const CHECKS := 235
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
@@ -490,6 +490,38 @@ func _test_config() -> void:
 	config.bus_lethal_speed = 9.0
 	config.round_seconds = 0.0
 	_check(not config.validate().ok, "so is a round with no clock")
+
+	# [b]The layout's two choices (2026-10-07), as data.[/b] The courtyard's west lane
+	# ships at the decision (past LANE_THROUGH) with the old 6.6 m selectable, still a
+	# bus's gap. The hook ships as built, because the decided "wide" hook breaks the gap
+	# rule at the scaffold (see `BfhArena.HOOK_LAYOUTS`); "wide" is selectable and its
+	# gaps are the bot's.
+	var shipped := BfhConfig.new()
+	var hook := BfhArena.hook_gaps(shipped.hook_layout)
+	var wide := BfhArena.hook_gaps("wide")
+	_check(
+		shipped.courtyard_west_lane >= BfhArena.LANE_THROUGH
+			and BfhArena.COURTYARD_WEST_LANE_NARROW >= BfhArena.BUS_GAP,
+		"the shipped courtyard west lane is wide enough for the bot bus, and the old one is still a bus's gap",
+		"%.2f m, and %.2f m" % [shipped.courtyard_west_lane, BfhArena.COURTYARD_WEST_LANE_NARROW]
+	)
+	_check(
+		shipped.hook_layout == "tight" and minf(hook.x, hook.y) >= BfhArena.BUS_GAP
+			and minf(wide.x, wide.y) >= BfhArena.LANE_THROUGH,
+		"the shipped hook is the one as built, and the wide one is selectable and the bot's",
+		"%s %.2f / %.2f m; wide %.2f / %.2f m" % [shipped.hook_layout, hook.x, hook.y, wide.x, wide.y]
+	)
+	var layered := BfhConfig.new()
+	layered.apply_dictionary({"hook_layout": "wide", "courtyard_west_lane": 6.6,
+		"bot_aim_past": 6.0, "bus_stuck_reset_seconds": 0.5})
+	_check(
+		layered.hook_layout == "wide" and is_equal_approx(layered.courtyard_west_lane, 6.6)
+			and is_equal_approx(layered.bot_aim_past, 6.0),
+		"and both, with the bots' knobs, are keys the layered config sets"
+	)
+	_check(not layered.validate().ok,
+		"a bus given up on before what is under it is broken is refused",
+		"reset %.1f s, break %.1f s" % [layered.bus_stuck_reset_seconds, layered.bus_stuck_break_seconds])
 	_done()
 
 
@@ -2136,8 +2168,17 @@ func _test_the_courtyard_lanes() -> void:
 			ways_in = open
 	var mouths: Array[Vector3] = []
 	var middle := probe.arena.yard_middle(0)
+	# Whether the steering's own straight-line test is clear from each drive's start to the
+	# point the bot aims at past the middle: the lane AND the floor beyond the middle.
+	var straight: Array[bool] = []
 	for i in range(lanes.size()):
-		mouths.append(probe.arena.yard_lane_middle(0, i))
+		var mouth := probe.arena.yard_lane_middle(0, i)
+		mouths.append(mouth)
+		var out := mouth - middle
+		out.y = 0.0
+		var from := mouth + out.normalized() * 8.0
+		var aim := middle - out.normalized() * BfhConfig.new().bot_aim_past
+		straight.append(probe.arena.steer_around(from, aim).distance_to(aim) < 0.01)
 	await _dispose(probe)
 
 	var through: Array[Dictionary] = []
@@ -2160,26 +2201,37 @@ func _test_the_courtyard_lanes() -> void:
 				"(wedged %.1f)" % a.wedged if a.wedged >= 0.0 else "",
 				b.outcome, b.peak, b.seconds])
 
-	# [b]A narrow lane stops the bus; what happens after that is not the lane's.[/b] Below
-	# LANE_THROUGH the nudge puts the bus into a drum, every time: wedged at 1.1-1.7 s
-	# from anywhere 6-12 m out. Whether it then works free is contact physics on a knife
-	# edge — the east lane's bus reaches the runner from 8.0 m out and is sent home from
-	# 8.1 — and it was that edge, read through a physics space every world in this file
-	# used to share, that made this check depend on which section ran first (see
-	# `_world`). So a narrow lane is held to stopping the bus and a wide one to not
-	# stopping it at all; the outcome after the wedge is printed in the table above.
-	var cfg := BfhConfig.new()
+	# [b]Held to the steering's own test, and since 2026-10-07 not to the lane's width
+	# alone.[/b] A lane of LANE_THROUGH is necessary for a straight line to the middle and
+	# it is not sufficient: the bot aims 8 m PAST its quarry, so the line has to be clear
+	# beyond the middle too. With the west lane widened to 7.6 m the line through it
+	# crosses the east drum's ring 8 m past the middle (5.2 m off its axis against 6.6),
+	# and the bus wedges in the lane from 7 to 12 m out: a runner in the middle is reached
+	# by the other three lanes, not that one. So a lane whose straight line `steer_around`
+	# leaves alone is held to "comes straight through", and the rest are printed: past a
+	# blocked line what happens is contact physics on a knife edge (the east lane's bus
+	# reaches from 7, 8 and 12 m out and wedges from 10; on 2026-09-30, before the west
+	# lane moved the courtyard's middle by 0.24 m, it was sent home from 8.1), and it was
+	# that edge, read through a physics space every world in this file used to share,
+	# that made this section depend on which ran first (see `_world`).
+	var clear_lanes := 0
 	for i in range(lanes.size()):
 		var a: Dictionary = through[i]
-		var wide := lanes[i] >= BfhArena.LANE_THROUGH
-		var clean: bool = a.outcome == "reaches" and a.wedged < 0.0
-		_check(clean == wide and (wide or a.wedged >= 0.0),
-			"lane %d (%.2f m): driven at a runner in the middle, the bot bus %s"
-				% [i, lanes[i], "comes straight through" if wide
-					else "stops against a drum in it"],
+		if not straight[i]:
+			print("  ..    lane %d (%.2f m): the steering's straight line to the middle is blocked; %s, wedged %.1f s (printed)"
+				% [i, lanes[i], a.outcome, a.wedged])
+			continue
+		clear_lanes += 1
+		_check(a.outcome == "reaches" and a.wedged < 0.0 and lanes[i] >= BfhArena.LANE_THROUGH,
+			"lane %d (%.2f m): a straight line to the middle, and the bot bus comes straight through"
+				% [i, lanes[i]],
 			"%s, %.1f m/s peak, %.2f s, wedged %.1f s, nearest %.1f m"
 				% [a.outcome, a.peak, a.seconds, a.wedged, a.nearest])
+	_check(clear_lanes == 2,
+		"and the courtyard has two such lanes, north and south",
+		"%d of %d" % [clear_lanes, lanes.size()])
 
+	var cfg := BfhConfig.new()
 	var slow_through := 0
 	for i in range(lanes.size()):
 		var a: Dictionary = through[i]
@@ -2189,27 +2241,45 @@ func _test_the_courtyard_lanes() -> void:
 	_check(slow_through == 0, "and through a wide lane it arrives at a speed that kills",
 		"%d below %.1f m/s" % [slow_through, cfg.bus_lethal_speed])
 
-	# [b]Except the west lane, and that is a finding, not a tolerance.[/b] A runner
-	# standing in its mouth is safe from the bot bus: sent home from every start 7-12 m
-	# out, run down only from 6. The shared physics space had it "reaches at 2.42 s".
-	# The same class as the hook's gaps (Decision 12); a layout call, nightly item
-	# `courtyard-west-lane-1`. Pinned as exactly lane 3, so a fix fails this check and
-	# gets the exception taken out, and a new safe lane fails it too.
-	var safe_in_a_lane := []
+	# [b]Nobody, in any lane, and since 2026-10-07 without an exception.[/b] At 6.60 m the
+	# west lane (3) was one: a runner standing in its mouth was sent home from every start
+	# 7-12 m out, run down only from 6 (`courtyard-west-lane-1`). It is 7.6 m now, past
+	# LANE_THROUGH, so this asks every lane with no list of known refuges in it.
 	var safe_detail := PackedStringArray()
 	for i in range(lanes.size()):
 		var b: Dictionary = standing[i]
 		if b.outcome != "reaches":
-			safe_in_a_lane.append(i)
 			safe_detail.append("%d (%s, nearest %.1f m)" % [i, b.outcome, b.nearest])
-	_check(safe_in_a_lane == [3],
-		"nobody standing in a lane is safe there, narrow or wide, but the west lane (known)",
+	_check(safe_detail.is_empty(),
+		"nobody standing in a lane is safe there, narrow or wide",
 		"safe in lane %s" % ", ".join(safe_detail))
+
+	# And the west lane from every start the finding was made from, not only the 8 m the
+	# table drives: 7 to 12 m out, a runner standing still in its mouth.
+	var west := 3
+	var west_safe := PackedStringArray()
+	for out_by: float in [7.0, 9.5, 12.0]:
+		var r := await _drive_a_lane(west, out_by, true)
+		print("  ..    west lane, runner in it, %4.1f m out: %-9s %4.1f m/s peak %5.2f s nearest %4.1f"
+			% [out_by, r.outcome, r.peak, r.seconds, r.nearest])
+		if r.outcome != "reaches":
+			west_safe.append("%.1f m: %s, nearest %.1f m" % [out_by, r.outcome, r.nearest])
+	_check(lanes[west] >= BfhArena.LANE_THROUGH and west_safe.is_empty(),
+		"the west lane is a way in, and a runner standing in it is run down from 7, 9.5 and 12 m out",
+		"%.2f m wide; safe from %s" % [lanes[west], ", ".join(west_safe)])
+
+	# The east lane (1, 5.38 m) is the one narrow lane left, and the runner standing in it
+	# is on a knife edge: on 2026-09-30 the bus reached from 8.0 m out and was sent home
+	# from 8.1. Printed, not asserted; see CLAUDE.md, Decision 12.
+	for out_by: float in [8.1, 10.0]:
+		var r := await _drive_a_lane(1, out_by, true)
+		print("  ..    east lane, runner in it, %4.1f m out: %-9s %4.1f m/s peak %5.2f s nearest %4.1f"
+			% [out_by, r.outcome, r.peak, r.seconds, r.nearest])
 
 	_check(every_room_has_a_way_in,
 		"every room in the farm keeps a lane the bot bus can come in by")
-	_check(refuges.size() == 2 and ways_in == 2,
-		"and the courtyard has two lanes a runner can shut behind them, and two ways in",
+	_check(refuges.size() == 1 and ways_in == 3,
+		"and the courtyard has one lane a runner can shut behind them, and three ways in",
 		"refuges %s, ways in %d, against LANE_THROUGH %.1f m"
 			% [refuges, ways_in, BfhArena.LANE_THROUGH])
 
@@ -2433,11 +2503,31 @@ func _test_up_onto_the_deck() -> void:
 
 func _test_the_hook_gaps() -> void:
 	print("the hook's gaps, driven")
+	# [b]Pinned, not fixed (`runner-standing-1`, 2026-10-07).[/b] Both gaps are a bus's
+	# (BUS_GAP) and not the bot's (LANE_THROUGH), and a runner standing still in either is
+	# never reached by a bot bus: sent home from 8, 11 and 14 m out, each start turned by
+	# `_clear_line` onto open floor if the square line is not (the 14 m middle-north start
+	# once began inside the back yard's west drum, and the physics threw the bus out at
+	# 121 m/s). The decided fix, the middle pillar at x = 30.3, is `hook_layout = "wide"`:
+	# it breaks the gap rule at the scaffold, so it is selectable and not shipped (see
+	# `BfhArena.HOOK_LAYOUTS`). Pinned so that a hook which does fix it fails these and gets
+	# them turned round, as the courtyard's west lane was.
+	var probe := _world()
+	probe.start()
+	await _step(probe, 2)
+	var widths := BfhArena.hook_gaps(probe.arena.hook_layout)
+	await _dispose(probe)
+	_check(minf(widths.x, widths.y) >= BfhArena.BUS_GAP
+			and maxf(widths.x, widths.y) < BfhArena.LANE_THROUGH,
+		"the hook's gaps are a bus's and not the bot bus's (known, runner-standing-1)",
+		"south-middle %.2f m, middle-north %.2f m, against BUS_GAP %.1f and LANE_THROUGH %.1f"
+			% [widths.x, widths.y, BfhArena.BUS_GAP, BfhArena.LANE_THROUGH])
+
 	var gaps := [[2, 1, "south-middle"], [1, 0, "middle-north"]]
 	var rows: Array[Dictionary] = []
 	for g: Array in gaps:
-		for out_by: float in [8.0, 14.0]:
-			for in_gap: bool in [false, true]:
+		for out_by: float in [8.0, 11.0, 14.0]:
+			for in_gap: bool in [true, false]:
 				var r := await _drive_into(_hook_gap.bind(g[0], g[1]), out_by, in_gap)
 				r["gap"] = g[2]
 				r["out_by"] = out_by
@@ -2449,7 +2539,7 @@ func _test_the_hook_gaps() -> void:
 					+ "  start (%.1f, %.1f), %.1f deg off square, %.2f m room" % [
 						r.start.x, r.start.z, r.turned, r.clear])
 
-	# Measuring-only, but not measuring the inside of a drum: see `_clear_line`.
+	# Not measuring the inside of a drum: see `_clear_line`.
 	var cramped := PackedStringArray()
 	for r: Dictionary in rows:
 		if r.clear < START_ROOM:
@@ -2457,6 +2547,17 @@ func _test_the_hook_gaps() -> void:
 	_check(cramped.is_empty(),
 		"every drive at the hook's gaps starts on clear floor with a clear line in",
 		"cramped: %s" % ", ".join(cramped))
+
+	for g: Array in gaps:
+		var reached := PackedStringArray()
+		for r: Dictionary in rows:
+			if r.gap != g[2] or not r.in_gap:
+				continue
+			if r.outcome == "reaches":
+				reached.append("%.0f m out in %.2f s" % [r.out_by, r.seconds])
+		_check(reached.is_empty(),
+			"a runner standing still in the hook's %s gap is not reached by a bot bus from 8, 11 or 14 m out (known)" % g[2],
+			"reached from %s: the hook is fixed, turn this check round" % ", ".join(reached))
 	_done()
 
 

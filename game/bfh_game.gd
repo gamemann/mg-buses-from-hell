@@ -287,6 +287,10 @@ func _build_random() -> void:
 func _build_arena() -> void:
 	arena = BfhArena.new()
 	arena.name = "Arena"
+	# The layout's two choices, before the build that reads them. A client's are its own
+	# defaults until the HELLO says what the server built (see the bridge).
+	arena.hook_layout = config.hook_layout
+	arena.courtyard_west_lane = config.courtyard_west_lane
 	add_child(arena)
 	arena.build(config.arena_radius)
 
@@ -1208,7 +1212,7 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 	line.y = 0.0
 
 	var beyond := (
-		quarry.global_position + line.normalized() * 8.0 if line.length() > 0.5
+		quarry.global_position + line.normalized() * config.bot_aim_past if line.length() > 0.5
 		else quarry.global_position
 	)
 
@@ -1233,6 +1237,9 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 	player.autopilot.target_speed = (
 		minf(config.bus_top_speed, RAMP_SPEED) if bound else config.bus_top_speed
 	)
+	# Written every tick rather than once, so `bfh_bot_steer_clearance` takes effect on the
+	# next tick. Only the bots read it; see [member BfhArena.steer_clearance].
+	arena.steer_clearance = config.bot_steer_clearance
 	var aim := arena.steer_around(bus.position(), beyond)
 	# [b]And never the point the bus is already standing on.[/b] `steer_around` hands a
 	# bus the point beside a pillar across its line; a bus that stops there with the
@@ -1247,7 +1254,7 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 	# ever parked" holds it.
 	var on_it := Vector2(aim.x - bus.position().x, aim.z - bus.position().z).length()
 	if on_it < PARKED_ON_WAYPOINT and bus.speed() < 1.0 and line.length() > 0.5:
-		aim = bus.position() + line.normalized() * BfhArena.PILLAR_CLEARANCE
+		aim = bus.position() + line.normalized() * config.bot_steer_clearance
 		aim.y = beyond.y
 	if bound:
 		var backing := _turn_for_the_ramp(bus, aim, delta)
@@ -1513,10 +1520,10 @@ func _break_props_under(bus: DotVehicleInstance, speed: float, by: StringName) -
 		prop_damage.impact(prop.instance_id, speed, by)
 
 
-## Seconds of asking to move before a bus is assumed to be caught on something.
+## Seconds of asking to move before a bus is assumed to be caught on something, and
+## before it is put back on its start line, by default. The live numbers are
+## `BfhConfig.bus_stuck_break_seconds` and `bus_stuck_reset_seconds`.
 const STUCK_BREAK_SEC := 1.0
-
-## And before it is put back on its start line.
 const STUCK_RESET_SEC := 5.0
 
 
@@ -1546,7 +1553,7 @@ func _unstick(bus: DotVehicleInstance, by: StringName, delta: float) -> void:
 	var held := float(_bus_stuck.get(bus.instance_id, 0.0)) + delta
 	_bus_stuck[bus.instance_id] = held
 
-	if held < STUCK_BREAK_SEC:
+	if held < config.bus_stuck_break_seconds:
 		return
 
 	# Whatever is under it, at any speed. This is the one place the closing-speed rule
@@ -1564,7 +1571,7 @@ func _unstick(bus: DotVehicleInstance, by: StringName, delta: float) -> void:
 			bus_struck.emit(prop.instance_id, by)
 			prop_damage.break_now(prop.instance_id, by)
 
-	if held < STUCK_RESET_SEC:
+	if held < config.bus_stuck_reset_seconds:
 		return
 
 	var index := maxi(_bus_ids.find(bus.instance_id), 0)

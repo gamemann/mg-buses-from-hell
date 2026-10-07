@@ -97,6 +97,27 @@ extends DotConfig
 ## Damage a non-lethal bump does, per m/s of closing speed.
 @export_range(0.0, 100.0, 0.5) var bus_bump_damage: float = 6.0
 
+@export_group("The bots")
+
+## How far past a runner the bot bus aims, in metres. The driver eases off as it nears
+## its target, so a target on the runner is one the bus arrives at gently; one past them
+## keeps the throttle down through the moment that matters.
+@export_range(0.0, 30.0, 0.5) var bot_aim_past: float = 8.0
+
+## How far past an obstacle's surface the bot steers a bus, in metres. 3.6 is the number
+## the map is laid out against (a lane narrower than twice it is one the bot will not
+## drive straight through); more gives every pillar and drum a wider berth and makes more
+## of the map a door, less shaves them closer and wedges sooner.
+@export_range(1.5, 8.0, 0.1) var bot_steer_clearance: float = 3.6
+
+## Seconds a bus may ask for throttle and go nowhere before whatever is under it is
+## broken, and before it is given up on and put back on its start line. A person's bus as
+## well as a bot's: it is the rule that frees a bus high-centred on a crate. A bot that is
+## put back sooner gives up on a quarry behind a drum sooner, which a runner sees as the
+## bus vanishing sooner.
+@export_range(0.2, 10.0, 0.1) var bus_stuck_break_seconds: float = 1.0
+@export_range(0.5, 60.0, 0.5) var bus_stuck_reset_seconds: float = 5.0
+
 @export_group("The arena")
 
 ## Radius of the bowl floor, in metres.
@@ -133,6 +154,29 @@ extends DotConfig
 ## barrel lifted a runner 7 to 8 cm at every distance. The comment above it said it was
 ## "the one way onto a crate stack".
 @export_range(0.0, 10.0, 0.1) var barrel_lift_height: float = 4.2
+
+## Which hook the stacks end in (the three pillars past the dog-leg), by name.
+## [code]tight[/code], the default, is the hook as built: gaps of 5.6 m that a bus fits and
+## the bot bus never drives into, so a runner standing still in one is safe from bots.
+## [code]wide[/code] is the 2026-10-06 decision to fix that (the middle pillar walked out
+## to 7.4-7.6 m gaps): a bot reaches a runner in either gap from most starts, but the
+## pillar then stands 3.5 m from the scaffold, under a bus's width, and the build logs it
+## as a WARN. It is not the default for that reason; `BfhArena.HOOK_LAYOUTS` says what was
+## measured. An unknown name builds the default and logs a WARN.
+##
+## [b]Read when the bowl is built, and not a cvar.[/b] The map is the arena's build run on
+## the server and on every client, and a client learns this in the HELLO when it joins; a
+## live change would move a pillar under the people already connected. Set it in the JSON
+## file, `BFH_HOOK_LAYOUT` or `--bfh-hook-layout` and restart.
+@export_enum("tight", "wide") var hook_layout: String = "tight"
+
+## The clear floor of the tank farm's courtyard's west lane, in metres: its 4.4 m drum is
+## moved out along the lane's axis to leave this much. 7.6 (Christian's pick, 2026-10-07)
+## is past the 7.2 m the bot bus needs, so no lane into the courtyard is a refuge from
+## the bots; 6.6 is the farm as first built, where a runner standing in the lane's mouth
+## was never reached. Read when the bowl is built, like [member hook_layout], for the
+## same reason.
+@export_range(4.8, 10.0, 0.1) var courtyard_west_lane: float = 7.6
 
 ## Seed for where they land.
 ##
@@ -172,6 +216,15 @@ func validate() -> DotResult:
 				% [bus_lethal_speed, bus_top_speed],
 		)
 
+	# Breaking what is under it is the first thing the stuck rule does, so a reset sooner
+	# than that would put a bus back on its start line for every crate it ever sat on.
+	if bus_stuck_reset_seconds < bus_stuck_break_seconds:
+		return DotResult.fail(
+			DotError.CODE_INVALID,
+			"bus_stuck_reset_seconds (%.1f) is below bus_stuck_break_seconds (%.1f)."
+				% [bus_stuck_reset_seconds, bus_stuck_break_seconds],
+		)
+
 	if arena_radius < 8.0:
 		return DotResult.fail(DotError.CODE_INVALID, "The bowl needs room to drive in.")
 
@@ -188,6 +241,11 @@ func describe() -> Dictionary:
 		"barrel_lift": "%.1f m" % barrel_lift_height,
 		"bus_top_speed": "%.1f m/s" % bus_top_speed,
 		"bus_lethal_speed": "%.1f m/s" % bus_lethal_speed,
+		"hook_layout": hook_layout,
+		"courtyard_west_lane": "%.1f m" % courtyard_west_lane,
+		"bot_aim_past": "%.1f m" % bot_aim_past,
+		"bot_steer_clearance": "%.1f m" % bot_steer_clearance,
+		"bus_stuck": "%.1f / %.1f s" % [bus_stuck_break_seconds, bus_stuck_reset_seconds],
 	}
 
 
