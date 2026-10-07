@@ -13,160 +13,118 @@ This project, along with every asset it is built on, was built initially with **
 
 I intend on reviewing code, testing, and editing documentation regularly. If you're interested in helping out, please let me know!
 
-## Two Buses Against Everybody Else
+## How it plays
+Two players drive buses. Everybody else is on foot in a walled sand bowl full of crates and exploding barrels. The drivers try to run the runners over before the clock runs out; the runners win if anybody is still standing at the end. Sides swap every three rounds, so everybody gets a turn driving.
 
-A round of this is two people in buses and everybody else on foot, in a walled sand bowl with crates and exploding barrels in it. The drivers try to run the runners over. The runners have a hammer, and the hammer does not hurt anybody — it breaks crates and shoves them. That is the whole game.
+The runners have a hammer, and **the hammer can't hurt anybody**. It breaks crates and shoves them. So the only thing a runner can change is the shape of the bowl: break the crate a driver is hiding behind, shove one into a bus's path, open a gap or close one. You can stand on a crate, and it carries you when it moves.
 
-It is a first-person game built on the `dot-*` addon family: [dot-props](https://github.com/modcommunity/dot-props) for the crates and barrels, [dot-vehicle](https://github.com/modcommunity/dot-vehicle) for the buses, [dot-combat](https://github.com/modcommunity/dot-combat) for health and damage, [dot-match](https://github.com/modcommunity/dot-match) for the round and the two sides, [dot-player-controller](https://github.com/modcommunity/dot-player-controller) for the movement, [dot-net](https://github.com/modcommunity/dot-net) for the replication, [dot-game](https://github.com/modcommunity/dot-game) for the server wiring, [dot-spectate](https://github.com/modcommunity/dot-spectate) for where you look when you are out, [dot-audio](https://github.com/modcommunity/dot-audio) for what you hear, [dot-stats](https://github.com/modcommunity/dot-stats) and [dot-achievements](https://github.com/modcommunity/dot-achievements) for what you earn, and [dot-settings](https://github.com/modcommunity/dot-settings) for your own settings.
+| | |
+| --- | --- |
+| **Crate** | 100 health. Three hammer swings, or one bus hit at speed. You can stand on it. |
+| **Barrel** | Explodes when anything hits it, throwing runners into the air and crates across the bowl. |
+| **Concrete block** | Can't be broken or pushed, so there is always some cover left. |
 
-## Running it
+The bowl always has three landmarks: a lane of concrete pillars in the west, four tanks round a courtyard in the east, and a staircase of crates in the south-east that is the only high ground a runner can climb (and a bus can knock down). The rest of the crates and barrels are scattered from a seed, so two servers on the same seed get the same layout.
+
+When you are run over, you watch the bus that got you for a moment, then whoever is still up until the next round.
+
+## Controls
+
+| Key | Runner | Driver |
+| --- | --- | --- |
+| **WASD** | Move | Drive and steer |
+| **Space** | Jump | |
+| **Mouse 1** | Swing the hammer | Horn |
+| **Tab** (hold) | Scoreboard | Scoreboard |
+| **Y** / **U** | Chat / chat to your side | Chat / chat to your side |
+| **V** | Push to talk (to your side) | Push to talk |
+| **Esc** | Settings | Settings |
+
+While you are out: **Mouse 1** / **Mouse 2** watch the next or previous player, and **Space** switches between their eyes and behind them.
+
+## Getting started
+You need [Godot 4.7](https://godotengine.org/download). The game is built from many Dot addons, each in its own repository, so the easiest way to get everything is [dot-bootstrap](https://github.com/modcommunity/dot-bootstrap). It clones every project and links the addons into each one:
 
 ```bash
-godot --path .                                                # play it, alone
-godot --headless --path . res://examples/headless_run.tscn    # the simulation, 183 checks over 23 sections
-godot --headless --path . res://examples/headless_net.tscn    # over the wire, 166 checks over 20 sections
-godot --headless --path . res://examples/dedicated.tscn       # as a server, 79 checks over 11 sections
-tools/shot.sh                                                 # render a frame and look at it
-tools/shot.sh 5 follow.png --watch=follow                     # run down, and where the camera goes
-tools/shot.sh 5 settings.png --settings                       # the settings screen
-tools/shot.sh 9 blind.png --blind                             # an admin's blind, through the HUD
-tools/shot.sh 9 beacon.png --beacon --bus                     # an admin's beacon, round a driver's bus
-tools/shot.sh 5 blast.png --blast                             # a barrel going off, as the client draws it
-tools/shot.sh 2 board.png --scoreboard                        # the scoreboard, Tab held
+git clone https://github.com/modcommunity/dot-bootstrap.git
+cd dot-bootstrap
+./bootstrap.sh
+cd projects/mg-buses-from-hell
+./game.sh
 ```
 
-The same client plays alone and plays online: with no server link in the registry it runs the world itself, and with one it predicts its own movement and draws everything else from what the server sends. There is no separate single-player build to keep in step.
+On Windows, run `bootstrap.ps1` instead and open the project in Godot.
 
-### The admin tools
+`game.sh` does everything else:
 
-dot-moderation's live tools, from dot-game's services layer: on the console and in chat (`!noclip`), with `@team:drivers` and `@team:runners` as targets. `modtools` lists what is supported and why the rest is refused.
-
-| Command | What it does here |
+| Command | What it does |
 | --- | --- |
-| `noclip`, `freeze`, `speed`, `gravity` | a runner's feet; refused for a driver while they drive, because the bus is what moves |
-| `god`, `buddha`, `hp`, `slay`, `slap`, `rename` | as everywhere |
-| `blind <player> [on\|off\|seconds]` | blacks out that player's own screen and nobody else's; the HUD's numbers stay |
-| `beacon <player> [on\|off]` | a pulsing ring, a column through walls and a ping, on every screen. On a driver it is drawn round their bus |
-| `bring`, `goto`, `send`, `return` | runners only, for the same reason as noclip |
+| `./game.sh` | Play offline (bots drive the buses) |
+| `./game.sh online` | Start a local server and the browser client, and print the link to open |
+| `./game.sh online down` | Stop them |
+| `./game.sh server` | Start a local dedicated server only |
+| `./game.sh test` | Check every script and run every test suite |
+| `./game.sh shot` | Save a screenshot to `screenshots/`. `./game.sh shot --help` lists the views |
+| `./game.sh help` | All of the options |
 
-Refused: `respawn` (a runner who is out stays out until the next round), `give` and `strip` (the hammer is the only thing anybody holds), `burn` (there is no fire in the bowl). Blind and beacon last through a new round; noclip and freeze end with it.
+`online` and `server` use [dot-server-deploy](https://github.com/modcommunity/dot-server-deploy), which bootstrap clones next to this one. Run its `./setup.sh` once first.
 
-## When you are out
+## Running a server
+Settings are cvars. Set them in the server's config, on the command line, or live from the console. Changes to the layout take effect from the next round.
 
-A runner who is run down is out until the next round, and does not spend it looking at the sand. For a second the camera looks from where they fell at the bus that did it, then for two from that bus's cab — who got you, and where they are going next — and then through the eyes of somebody still up, a bus included.
+```
+bfh_round_seconds 180        // length of a round
+bfh_drivers 2                // how many buses
+bfh_crates 34                // crates in the next round
+bfh_barrels 9                // barrels in the next round
+bfh_bus_top_speed 22         // m/s
+bfh_bus_lethal_speed 9       // closing speed at which a bus kills outright, m/s
+bfh_bus_lane_width 6         // metres kept clear in front of each bus start (0 = none)
+bfh_bots 1                   // fill empty driving seats with bots
+```
 
-| | |
+Console commands:
+
+| Command | |
 | --- | --- |
-| **Left click** | watch the next person |
-| **Right click** | the one before |
-| **Space** | their eyes, or behind them |
+| `bfh_status` | The round, the bowl and the buses |
+| `bfh_stats <userid>` | A player's numbers this session and what they have earned |
+| `bfh_say <text>` | Say something to everybody, as the server |
+| `bfh_net` | What the network code is doing |
 
-The server decides all of it: who you may watch, when the camera hands over, and when a new round puts you back on your feet. Anybody may be watched, a bus included — every position is already on every client in this game, so a rule against watching the bus would stop nobody who wanted to cheat and only the people who did not.
+### Admin commands
+These come from [dot-moderation](https://github.com/modcommunity/dot-moderation). Type them in the console, or in chat with a `!` in front. `@team:drivers` and `@team:runners` work as targets, and `modtools` lists what is supported.
 
-## What it sounds like
-
-A bus's engine is a pulse that quickens with its speed, positional, so a runner behind a tank can hear which side it is coming round. A driver's click is the horn. Hammers, crates breaking and being shoved, a runner bumped and a runner flattened, a barrel, and the round's own cues — including whether YOUR side won it — are all sounds now. None of it is an audio file: every sound is a synthesised stand-in from [dot-audio](https://github.com/modcommunity/dot-audio), and dropping a real file at the path the catalogue names replaces one without editing a line.
-
-## The score
-
-Hold **Tab** for the scoreboard; it also comes up on its own between rounds, saying who took the one just played. It is two tables, because the sides are not two teams of the same thing: the drivers, each in a bus or on foot, and the runners, each up or out. Over each is the number of rounds that side has won, which is what dot-match scores here — a side's tally rather than a group of people's, since everybody changes sides every third round.
-
-## What you earn
-
-Five numbers are counted per player — runners flattened, rounds survived, seconds survived, crates broken, and crates you shoved that a bus then drove into — and eight achievements are rules over them, most of them the runners'. They are kept for the session only: this game has no accounts yet, and a number filed under a connection id would be handed to whoever next got that id. `bfh_stats` on the server console prints them.
-
-## Settings
-
-**Escape** opens them: mouse sensitivity (the same number every game on the platform reads), field of view (a server may cap it) and three volumes, saved on your machine.
-
-## What a round is
-
-A bowl 46 m across with a wall round it and a ledge at one edge, reached by a ramp. Thirty-odd crates, nine barrels and a handful of concrete blocks are scattered across the floor from a seed, so two servers on the same seed lay out the same round.
-
-Three things stand in it every round. **The stacks**, a lane of concrete pillars in the west half, are cover you watch a bus through. **The tank farm**, four drums round a courtyard in the east, is cover you guess behind. **The scaffold**, twenty-four crates stacked as a staircase one, two and three high in the south-east, is the only height in the bowl a runner can climb — and since it is made of crates, a bus can take it away.
-
-The runners start on the sand. The drivers start in buses on the sand. The round ends when every runner is down, or when the clock runs out — the runners win the clock. Sides swap every three rounds, because driving is the fun half and there are only two seats for it.
-
-| | |
+| Command | |
 | --- | --- |
-| **Crate** | 100 hp. Three hammer swings, or one bus above its lethal speed. You can stand on one, and it moves when you do. |
-| **Barrel** | 34 hp and a 6.5 m blast. Everything sets it off. It throws a runner upward — two metres from the hammer's reach, past any jump — and shoves every loose crate near it further than that. |
-| **Concrete block** | Cannot be broken, cannot be pushed. Whatever the drivers flatten, this much cover is left. |
+| `noclip`, `freeze`, `speed`, `gravity` | Runners only (a driver's bus is what moves) |
+| `god`, `buddha`, `hp`, `slay`, `slap`, `rename` | |
+| `blind <player> [on\|off\|seconds]` | Blacks out that player's screen |
+| `beacon <player> [on\|off]` | A ring and a ping on that player (round the bus, for a driver) |
+| `bring`, `goto`, `send`, `return` | Runners only |
 
-## The hammer does not kill
+`respawn`, `give`, `strip` and `burn` are turned off: a runner who is out stays out until the next round, and the hammer is the only thing anybody holds.
 
-Giving the runners a gun makes this a deathmatch in a bowl: the buses stop mattering, the crates stop mattering, and the round is decided by aim. The hammer changes the *map* instead — break the crate somebody else is hiding behind, shove one into a bus's line, open a path, close one. Every use of it is about geometry, which is the only thing a person on foot has against a vehicle.
+## Stats and achievements
+Five numbers are counted per player (runners flattened, rounds survived, seconds survived, crates broken, and crates you shoved that a bus then hit) and there are eight achievements built on them. They only last for the session for now, because the game has no accounts yet.
 
-## Standing on a crate
-
-This is the mechanic the game exists for, and it needed work in dot-props to be possible at all.
-
-A character motor sweeps a shape and slides along whatever it hits, so a `RigidBody3D` crate is exactly as solid as the floor and exactly as immovable: a player stands on one and it does not sink, does not tip, and does not carry them anywhere when a bus shoves it out from under them. Every number involved is correct; there is nothing to notice except standing on a crate and expecting something.
-
-`DotPropCarry` in dot-props is the half that was missing, and `DotPropDamage` beside it is what makes a crate breakable. Both are new, both are documented in [that project's own notes](https://github.com/modcommunity/dot-props/blob/main/CLAUDE.md), and both are covered by its suite.
-
-## The art
-
-The bus drives cab-first now, which it did not for the first day of its life: the model faces +Z, this family's forward is -Z, and an unturned bus chases people backwards at 22 m/s with every number about it correct. Its wheels steer and roll, on a server and on a mirrored copy alike — a client watching a bus come round a corner cannot derive which way its front wheels are pointed from anything else that is replicated.
-
-The crate, the barrel and the bus are [Kenney's](https://kenney.nl), from the asset bundle in `assets/kenney/` — **CC0**, so more permissive than this repository's own licence. Three models and two texture atlases for the world, and one blocky character with seven atlases for the people in it (added 2026-09-24, when a connected client first drew anybody else); nothing else vendored. See `assets/kenney/README.md` for why the two kits are in separate folders.
-
-Everything else is still drawn in code: the bowl, its wall, the ledge and a generated one-metre grid, because what a runner judges a bus by is how fast a pattern of a known size goes past.
-
-## Playing it against a server
-
-It is a dedicated-server game, delivered the way every other game in this family is: published as a signed content pack and downloaded by the client shell on connect, so a new version needs no new client build.
+## Testing
 
 ```bash
-# in dot-server-deploy
-./server pack buses --source games/mg-buses-from-hell
-./server --game buses
+./game.sh test                  # every script parses, then every suite runs
+./game.sh test headless_run     # one suite
 ```
 
-`game/bfh_module.gd` is what a server loads. It subclasses `DotGameModule` — the first game in the family to do so — which is why it is ninety lines rather than the eight hundred each of the others carries: the netcode and its four load-bearing settings, the bridge, the message seal, the roster, the tick and a teardown in the reverse order are all in that addon. What is left here is this game's own: two console commands, seven cvars an operator can turn between rounds, and the rule that keeps the driving seats full.
-
-**An empty server fills its buses with bots.** Every other game in this family degrades gracefully when nobody is on it; this one is asymmetric, and a runner with no bus to run from has nothing to do at all. `bfh_bots 0` turns it off.
-
-### What replicates, and what does not
-
-| | |
+| Suite | What it covers |
 | --- | --- |
-| A runner's own movement | **Predicted**, and corrected. The only thing in the game that is. |
-| Everybody else's movement | Replicated and interpolated. |
-| Crates, barrels, blocks, buses | Server-authoritative, never predicted. Godot's rigid-body solver is not reproducible across machines, and cover that is a few centimetres out on a client is a runner shot at through a wall they believe they are behind. |
-| A driver | **Not predicted either**, and that is the interesting half: while somebody is in a bus their controller has no answer to predict. What makes the round trip acceptable is the bus — four tonnes that take a second to respond to anything, so the latency lands inside the time the vehicle was going to ignore the input anyway. |
-| The cover count | An event twice a second. A client does not run the prop spawner, so it cannot count what is left — and that number is the most important one on this HUD. |
-| A chat line | An event, decided entirely on the server: what a client sends is a channel and a string. |
-| Voice | Its own channel on the link, unreliable, stamped with the speaker the transport reported. |
+| `headless_run` | The game itself: rounds, buses, crates, barrels, the hammer and bots driving |
+| `headless_net` | A server and a client in one process, over the network code |
+| `dedicated` | A real server: boots, loads the game, runs its commands |
 
-## Talking to each other
+[`CLAUDE.md`](CLAUDE.md) has the design decisions and the reasoning behind them.
 
-Four channels, and the sides are why. Two drivers against everybody else is a game about two conversations that must not overhear each other — the drivers arranging who takes which half of the bowl, the runners calling which way one is coming — so **`team` is the channel that matters here**, and it is what voice defaults to. No other game in this family does that: everywhere else voice is the whole server, because everywhere else the sides are teams in a game rather than the game itself.
+## Credits
+The bus, crate, barrel and character are from [Kenney](https://kenney.nl) (CC0), in `assets/kenney/`. Each kit's licence is next to its files. The bowl and everything else is drawn in code, and every sound is generated, so there are no audio files.
 
-| | |
-| --- | --- |
-| **Y** | say something to everybody |
-| **U** | say it to your side only |
-| **V** | hold to talk. Push-to-talk, because a runner being chased by a bus is breathing into a microphone |
-
-There is no proximity channel, and that is a decision about the map: the bowl is 46 m across, so a proximity range worth having would be most of it, and a channel that reaches nearly everybody is a channel that lies about who can hear you.
-
-Moderation is dot-moderation's, keyed on the account rather than the connection — a gag that lasted until the gagged player pressed reconnect would be no gag at all. An admin's own channel ignores one, because a gag is about a player's speech and an admin who has been gagged has a bigger problem than chat.
-
-All of it is [dot-game](https://github.com/modcommunity/dot-game)'s `DotGameServices`, which this game is the first to use: sixty lines here against 557–718 in each of the other five, and the ordering that has a bug behind it — moderation before chat, because moderation is what publishes the mute source both routers look up when they start — lives in the addon now.
-
-## What does not work yet
-
-There are no profiles and no avatars: `dot-game` reports the missing identity layer and carries on, which is a server where everybody is a guest. Nothing else is in the way.
-
-~~Nothing is drawn for a barrel going off.~~ Drawn since 2026-09-27: a fireball, a ring on the sand out to exactly the blast's reach, a flash and smoke, from the event the server sends. See "A barrel, drawn" in CLAUDE.md.
-
-~~There is no scoreboard.~~ Since 2026-09-27: see "The score" above. Each player's own numbers are still on the server console rather than on their screen.
-
-~~A connected client does not predict its own runner yet.~~ Fixed 2026-09-25; see "A connected client predicted nothing" in CLAUDE.md.
-
-## Licence
-
-MIT. See [LICENSE](LICENSE).
-
-The art under `assets/kenney/` is the exception, and it is a more permissive one: those models and texture atlases are [Kenney's](https://kenney.nl), released under CC0 1.0, which is public domain with no attribution required. Each kit's own licence text ships unchanged beside the files it covers.
+## License
+MIT. See [LICENSE](LICENSE). The Kenney art is CC0, which is public domain.
