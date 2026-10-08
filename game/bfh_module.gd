@@ -192,6 +192,9 @@ func _add_tunables(world: BfhGame) -> void:
 		func(value: float) -> void:
 			config.scatter_clears_bus_lanes = value > 0.0
 			config.bus_lane_width = maxf(value, 0.0))
+	_tunable("bfh_scaffold_margin", config.scaffold_scatter_margin,
+		"Metres round the scaffold kept clear when the next round is laid out (never under 2.2)",
+		func(value: float) -> void: config.scaffold_scatter_margin = maxf(value, 0.0))
 	# The bots' knobs, live from the next tick: the autopilot and the stuck rule run on the
 	# authority only and read these every tick, so no client has anything to agree with.
 	# The hook and the courtyard's west lane are NOT here (`hook_layout`,

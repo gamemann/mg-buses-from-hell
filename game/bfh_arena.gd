@@ -1897,10 +1897,16 @@ func scaffold_clearance() -> float:
 	return nearest
 
 
+## Metres round the scaffold the scatter keeps clear, set by the game from
+## `BfhConfig.scaffold_scatter_margin` before it scatters. Never less than
+## [constant OBSTACLE_MARGIN], which is what every obstacle keeps.
+var scaffold_keep_out: float = OBSTACLE_MARGIN
+
+
 func _inside_the_scaffold(x: float, z: float) -> bool:
 	if not _has_scaffold:
 		return false
-	var box := scaffold_footprint().grow(OBSTACLE_MARGIN)
+	var box := scaffold_footprint().grow(maxf(scaffold_keep_out, OBSTACLE_MARGIN))
 	return x > box.position.x and x < box.end.x and z > box.position.z and z < box.end.z
 
 

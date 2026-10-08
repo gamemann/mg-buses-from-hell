@@ -135,6 +135,15 @@ extends DotConfig
 @export_range(0.0, 20.0, 0.5) var bus_lane_width: float = 6.0
 @export_range(0.0, 60.0, 1.0) var bus_lane_length: float = 24.0
 
+## Metres of floor round the scaffold's footprint that nothing is scattered into, to the
+## prop's centre. A prop beside the scaffold BRACES it: measured (2026-10-07), a barrel
+## 2.44 m off its west end kept a bus at full tilt from bringing a runner off the peak (34 of
+## 36 crates still standing), and with it gone the same bus did. A braced scaffold is a
+## refuge from the buses, which is the opposite of what the scaffold is for. 4 m clears it
+## and the block 3.74 m off that seed laid too. Never less than the 2.2 m every obstacle
+## keeps (`BfhArena.OBSTACLE_MARGIN`); `bfh_scaffold_margin` is the cvar.
+@export_range(0.0, 20.0, 0.5) var scaffold_scatter_margin: float = 4.0
+
 ## How many barrels.
 @export_range(0, 100, 1) var barrel_count: int = 9
 

@@ -919,6 +919,7 @@ func _lay_out_bowl() -> void:
 		arena.keep_start_lanes(maxi(config.driver_count, 1), config.bus_lane_width, config.bus_lane_length)
 	else:
 		arena.start_lanes.clear()
+	arena.scaffold_keep_out = config.scaffold_scatter_margin
 
 	# The scaffold first, so nothing scattered is in its cells: the scatter keeps out of
 	# its footprint, and a block that landed inside it — which one did, before the
