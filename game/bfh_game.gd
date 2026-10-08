@@ -1195,6 +1195,11 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		# they are at speed.
 		player.autopilot.arrive_radius = 0.5
 		player.autopilot.waypoint_radius = 2.0
+		# [b]No corner-cutting toward the next waypoint.[/b] The point beside a pillar is
+		# placed at exactly the clearance `steer_around` measured; blending it 4 m toward the
+		# quarry (the driver's default) drove the bus inside that clearance, and the colonnade's
+		# drive along the walk from its deck end wedged on a pillar and was sent home.
+		player.autopilot.look_ahead = 0.0
 
 	var quarry := _nearest_runner(bus.position())
 
@@ -1263,7 +1268,19 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 			return backing
 	else:
 		_bus_backing.erase(bus.instance_id)
-	player.autopilot.set_target(aim)
+	# [b]A point beside an obstacle is passed THROUGH, not arrived at.[/b] As the only
+	# waypoint it was the last one, and `DotVehicleDriver` slows into its last waypoint and
+	# brakes hard once inside `arrive_radius`: a bus coming round a stacks pillar at 15 m/s
+	# stood on the brake for two ticks beside it, lost its line, and put its front corner
+	# into the next pillar of the row, every time (measured 2026-10-07, round pillar 5:
+	# 4.6 s for a 27 m line, against 3.0 s as a route). So the detour is the first of two
+	# waypoints and the point past the quarry the second, which the driver passes at
+	# `waypoint_radius` with no slowing. Not up the ramp, whose line-up points are meant to
+	# be arrived at slowly and are tuned for it.
+	if not bound and Vector2(aim.x - beyond.x, aim.z - beyond.z).length() > 0.5:
+		player.autopilot.set_route(PackedVector3Array([aim, beyond]))
+	else:
+		player.autopilot.set_target(aim)
 	return player.autopilot.drive(bus, delta)
 
 

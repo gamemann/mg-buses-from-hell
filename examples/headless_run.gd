@@ -835,14 +835,6 @@ func _test_driving_the_stacks() -> void:
 	var game := _world(func(config: BfhConfig) -> void:
 		# Long enough that the round cannot end underneath the measurement.
 		config.round_seconds = 120.0
-		# [b]On the layout this was calibrated on, the obstacles' 2.2 m round the scaffold.[/b]
-		# Measured 2026-10-07: this bot drive passes on the suite's seed with that layout and on
-		# none of seeds 1, 2, 3, 42, 1338 or 2024 with the 4 m one (nor 1338, 2024 or 7 with 2.2
-		# m), wedging round pillar 5 or the hook's pillars; clearing every scattered prop first
-		# does not change that, nor does resetting the bot's driver. A real bot problem, filed as
-		# `bfh-stacks-drive-seed-1`; held here on the layout it was written on rather than on a
-		# seed found to pass, so it asks exactly what it asked before.
-		config.scaffold_scatter_margin = BfhArena.OBSTACLE_MARGIN
 	)
 
 	# [b]`is_bot`, and nothing else in this file sets it.[/b] `add_player` leaves it
@@ -867,12 +859,22 @@ func _test_driving_the_stacks() -> void:
 	# Lined up on the pillar with the quarry directly behind it, which is the geometry
 	# a runner using one for cover creates and the one the bot has no answer to.
 	var start := pillar + Vector3(0.0, 1.4, -26.0)
+	# Nothing the round scattered under the spot the bus is set down on: on seed 7 a crate
+	# lay 0.7 m from it, and the drive began with the bus climbing off it.
+	await _clear_round(game, start, 7.0)
 	body.linear_velocity = Vector3.ZERO
 	body.angular_velocity = Vector3.ZERO
 	body.global_transform = Transform3D(Basis.looking_at(Vector3(0.0, 0.0, 1.0)), start)
 
+	# [b]Put, not moved: `_put` writes the controller's state as well as the node.[/b] This
+	# set `global_position` alone, which the runner's next tick overwrites from its state, so
+	# the quarry was never behind the pillar at all: the bot chased wherever the round had
+	# scattered the runner (the `spawns` stream), and the drive was a different drive on
+	# every seed. That was `bfh-stacks-drive-seed-1` (2026-10-07): it passed on one seed,
+	# "covering 45 m for a 27 m line", and no prop, driver or layout reset changed it,
+	# because the thing that differed was the target.
 	var quarry := game.runners()[0]
-	quarry.global_position = pillar + Vector3(0.0, 1.2, 14.0)
+	_put(quarry, pillar + Vector3(0.0, 1.2, 14.0))
 
 	var last := bus.position()
 	var reset := false
@@ -896,7 +898,7 @@ func _test_driving_the_stacks() -> void:
 
 		# Held in place, because the quarry is being pushed around by the round and the
 		# bus's own start line is a long way from here: a bus back on it has been reset.
-		quarry.global_position = pillar + Vector3(0.0, 1.2, 14.0)
+		_put(quarry, pillar + Vector3(0.0, 1.2, 14.0))
 
 		if _sent_home(last, at):
 			reset = true
@@ -932,13 +934,14 @@ func _test_driving_the_stacks() -> void:
 	# By name: the hook was the last three of the layout until the second lane's row was
 	# appended after it.
 	var hook := arena.pillars()[BfhArena.HOOK_FIRST]
+	await _clear_round(game, hook + Vector3(0.0, 1.4, -26.0), 7.0)
 
 	body.linear_velocity = Vector3.ZERO
 	body.angular_velocity = Vector3.ZERO
 	body.global_transform = Transform3D(
 		Basis.looking_at(Vector3(0.0, 0.0, 1.0)), hook + Vector3(0.0, 1.4, -26.0)
 	)
-	quarry.global_position = hook + Vector3(0.0, 1.2, 14.0)
+	_put(quarry, hook + Vector3(0.0, 1.2, 14.0))
 
 	var through := false
 	var hook_reset := false
@@ -955,7 +958,7 @@ func _test_driving_the_stacks() -> void:
 		if not bus.is_alive():
 			break
 
-		quarry.global_position = hook + Vector3(0.0, 1.2, 14.0)
+		_put(quarry, hook + Vector3(0.0, 1.2, 14.0))
 		var here := bus.position()
 		hook_fastest = maxf(hook_fastest, bus.speed())
 		if not _sent_home(hook_last, here):
@@ -1137,13 +1140,6 @@ func _test_the_tank_farm() -> void:
 func _test_driving_the_farm() -> void:
 	var game := _world(func(config: BfhConfig) -> void:
 		config.round_seconds = 120.0
-		# [b]On the layout this was calibrated on, the obstacles' 2.2 m round the scaffold.[/b]
-		# Measured 2026-10-07: the drum drive fails with the 4 m layout on the suite's seed and
-		# on 1338 and 2024, and passes on 1, 2, 3 and 42; clearing every scattered prop first
-		# does not change that, nor does resetting the bot's driver. A real bot problem, filed as
-		# `bfh-stacks-drive-seed-1`; held here on the layout it was written on rather than on a
-		# seed found to pass, so it asks exactly what it asked before.
-		config.scaffold_scatter_margin = BfhArena.OBSTACLE_MARGIN
 	)
 
 	var driver := game.add_player(&"d", "Driver", BfhGame.TEAM_DRIVERS)
@@ -1161,6 +1157,7 @@ func _test_driving_the_farm() -> void:
 
 	# Lined up on the drum with the quarry hidden directly behind it: the geometry a
 	# runner using it for cover creates, and the one the bot has to solve blind.
+	await _clear_round(game, tank + Vector3(0.0, 1.4, -30.0), 7.0)
 	body.linear_velocity = Vector3.ZERO
 	body.angular_velocity = Vector3.ZERO
 	body.global_transform = Transform3D(
@@ -1169,7 +1166,9 @@ func _test_driving_the_farm() -> void:
 
 	var quarry := game.runners()[0]
 	var hide := tank + Vector3(0.0, 1.2, 16.0)
-	quarry.global_position = hide
+	# `_put`, for the reason `_test_driving_the_stacks` gives: moving the node alone left
+	# the runner where the round scattered them.
+	_put(quarry, hide)
 
 	var last := bus.position()
 	var reset := false
@@ -1187,7 +1186,7 @@ func _test_driving_the_farm() -> void:
 		if not bus.is_alive():
 			break
 
-		quarry.global_position = hide
+		_put(quarry, hide)
 		var at := bus.position()
 		top_speed = maxf(top_speed, bus.speed())
 		if not _sent_home(last, at):
@@ -1392,6 +1391,19 @@ func _prop_size_agrees(scene_path: String, expected: Vector3) -> bool:
 				size = Vector3(cylinder.radius * 2.0, cylinder.height, cylinder.radius * 2.0)
 	node.free()
 	return size.is_equal_approx(expected)
+
+
+## Removes every scattered prop (never the scaffold's) within [param reach] of
+## [param at] in plan, and lets the removal land: for a section that sets a bus down by
+## hand, which would otherwise set it down on whatever the round scattered there.
+func _clear_round(game: BfhGame, at: Vector3, reach: float) -> void:
+	for prop in game.props.all_props():
+		if prop.instance_id in game.scaffold_ids or prop.body() == null:
+			continue
+		var where := prop.body().global_position
+		if Vector2(where.x - at.x, where.z - at.z).length() < reach:
+			game.props.remove(prop.instance_id)
+	await _step(game, 2)
 
 
 func _put(player: BfhPlayer, at: Vector3) -> void:
@@ -3402,14 +3414,10 @@ func _test_what_a_bot_travels_at() -> void:
 func _test_spectating() -> void:
 	print("a runner who is out, and where they look")
 
-	# The 2.2 m scaffold layout this was calibrated on: with the 4 m one the death camera faces
-	# 0.87 of the way to the bus that hit them (the check wants more), on the suite's seed and
-	# on 2024, and passes on 1, 2, 3, 42 and 1338. See `_test_driving_the_stacks`.
 	var game := _world(func(c: BfhConfig) -> void:
 		c.round_seconds = 120.0
 		c.crate_count = 0
-		c.barrel_count = 0
-		c.scaffold_scatter_margin = BfhArena.OBSTACLE_MARGIN)
+		c.barrel_count = 0)
 	var driver := game.add_player(&"d", "Dee", BfhGame.TEAM_DRIVERS)
 	var out := game.add_player(&"r1", "Out", BfhGame.TEAM_RUNNERS)
 	var _up := game.add_player(&"r2", "Up", BfhGame.TEAM_RUNNERS)
@@ -3439,7 +3447,11 @@ func _test_spectating() -> void:
 	var bus := driver.ridden
 	game._bus_hit(out, &"d", 30.0, Vector3(0.0, 0.0, 1.0))
 	var eye := spectate.camera_for(&"r1")
-	var to_bus := (bus.global_position - eye.origin).normalized()
+	# [b]At the bus's CAB, which is what the death camera looks at[/b] (`pose_of` the killer,
+	# 3.8 m up), not at the body's origin under it. Measured against the origin this read
+	# 0.87 on two seeds out of six: the runner is wherever the round scattered them, and a
+	# runner who fell a few metres from the bus looks up at a cab the origin is well below.
+	var to_bus := (spectate.pose_of("d").origin - eye.origin).normalized()
 	_check(
 		not out.health.alive
 		and spectate.mode_of(&"r1") == DotSpectatorView.Mode.DEATH_CAM
