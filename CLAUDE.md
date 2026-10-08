@@ -6,7 +6,7 @@ Read the family-wide conventions in [`../../CLAUDE.md`](../../CLAUDE.md) first, 
 
 ## What this game is, versus the other five
 
-game-arena is a deathmatch, game-g2gfast is a timer server, game-playground is a sandbox, game-hungario is an eating game and game-simple-lobby is a lobby. This is the first **asymmetric** one, and everything below comes from that.
+game-arena is a deathmatch, game-g2gfast is a timer server, game-playground is a sandbox, and game-hungario is an eating game. This is the first **asymmetric** one, and everything below comes from that.
 
 The drivers cannot lose except to the clock. The runners cannot win except on the clock. Neither side can hurt the other's *position* — a driver cannot be killed and a runner cannot outrun a bus. The only thing either side can change is **the shape of the bowl between them**, and that is why the crates are the game rather than scenery in it.
 
@@ -659,7 +659,7 @@ const BfhEvent := preload("bfh_event.gd")   # for a typed `static func of() -> B
 
 **The check is on the source, and that is deliberate.** The symptom is reported after `quit()`, by the engine, as lines dot-ci's filter already treats as noise; no assertion can run where it happens. So `dedicated`'s last section reads every `DotNetMessage` script under `game/` as text and fails on a self-preload — and with the line put back it fails, and the leak comes back with it.
 
-**Every other game in this family has the same line**, in its event and its request: `game-arena`, `game-g2gfast`, `game-hungario`, `game-playground`, `game-simple-lobby` and `mg-smash-copter`, twelve files. It is the first thing to try on game-hungario's own leak at exit, which is the same shape.
+**Every other game in this family has the same line**, in its event and its request: `game-arena`, `game-g2gfast`, `game-hungario`, `game-playground` and `mg-smash-copter`, ten files. It is the first thing to try on game-hungario's own leak at exit, which is the same shape.
 
 ## What a bot actually travels at (`[bot-drive-1]`, 2026-09-27)
 
@@ -686,7 +686,7 @@ The family found that every bot in it was driven with forward and jump held, and
 
 **The first render was white.** Additive blending over a bright sand bowl under a pale sky saturated: the fireball read as a white ball and the ring as a white line. Alpha-blended orange reads over both. The ring also floated at knee height, because the server reports a barrel's blast at the barrel's middle; it sits `GROUND_BELOW` (half a barrel) under the centre now.
 
-**No other game in this family ships the scenes its dot-fx catalogue names.** game-arena, game-g2gfast, game-playground, game-hungario and game-simple-lobby each declare effects under `res://scenes/fx/…` and none of those directories exists, so every spawned effect in all five is refused as `missing` — which dot-fx logs at DEBUG, correctly for a pack still arriving and invisibly for an effect nobody shipped. `BfhFx.setup` WARNs on `missing_scenes()`, and `headless_net` asserts there are none. Found by reading, not by running those games.
+**No other game in this family ships the scenes its dot-fx catalogue names.** game-arena, game-g2gfast, game-playground and game-hungario each declared effects under `res://scenes/fx/…` and none of those directories existed, so every spawned effect in all four was refused as `missing` — which dot-fx logs at DEBUG, correctly for a pack still arriving and invisibly for an effect nobody shipped. `BfhFx.setup` WARNs on `missing_scenes()`, and `headless_net` asserts there are none. Found by reading, not by running those games.
 
 **The scoreboard is two tables, because the sides are not two teams of the same thing.** `bfh_scoreboard.gd`, a CanvasLayer at 50 (over the HUD, under the chat box), with dot-ui's `DotTableView` per side: the drivers ("driving" / "on foot") and the runners ("up" / "out", the living first). Held on Tab (`BfhClient._unhandled_input`, before the spectator's branch, since somebody who is out has most time to read it), and up on its own from `round_over` to the next `round_began`, with the round just played named at the bottom. **What dot-match scores here is rounds, per side** — `DotMatch.rounds_won` by team id, so "rounds the buses have won" whoever was in them; its per-player records are never reported to, for the reason under "What a player's numbers are", so there is no per-player number column. A client does not tick dot-match, so the tally rides the CLOCK (two varints appended; a pack's server and client are always the same build) into `BfhGame.remote_rounds`, and `BfhGame.rounds_won(team)` answers from dot-match on the authority and from that on a client. **On a round's end the server sends a CLOCK before the ROUND**, so a client's world has the new tally by the time its `round_over` puts the board up; the other order shows last round's score on the one screen whose job is saying who won. Each table has an explicit `custom_minimum_size`, because a `DotTableView` is a plain Control and inside a container it is otherwise laid out zero pixels tall.
 
