@@ -1,59 +1,39 @@
-extends CanvasLayer
+extends Node
 
 const BfhGame := preload("bfh_game.gd")
 const BfhPlayer := preload("bfh_player.gd")
+const BfhNetBridge := preload("net/bfh_net_bridge.gd")
 
 ## The score, and who is on which side: held on Tab, and up on its own between rounds.
 ##
-## [b]Two tables, not one, because the sides are not two teams of the same thing.[/b] A
-## symmetric game's scoreboard is one ranked list with a team colour per row; here two
-## people drive and everybody else runs, and "who is still up" is a question about the
-## runners only. So the buses get a short table and the runners a long one, side by side,
-## each under its side's tally.
+## [b]Two sides, not two teams of the same thing.[/b] A symmetric game's scoreboard is one
+## ranked list with a team colour per row; here two people drive and everybody else runs, and
+## "who is still up" is a question about the runners only. So the board is two blocks side by
+## side, each under its side's tally, and the per-player column is the one thing a player
+## looks for: in a bus or on foot, up or out.
 ##
 ## [b]What dot-match scores in this game is rounds, per side.[/b] Its per-player records —
 ## kills, deaths, score — are never reported to (a runner cannot kill and a driver cannot
 ## die, so they would be one number and a column of zeros; see "What a player's numbers
-## are" in CLAUDE.md), so the per-player column is the one thing a player looks for: in a
-## bus or on foot, up or out. The tallies are [method BfhGame.rounds_won], which is
-## dot-match's `rounds_won` on the authority and what the last CLOCK said on a client.
+## are" in CLAUDE.md). The tallies are [method BfhGame.rounds_won], which is dot-match's
+## `rounds_won` on the authority and what the last CLOCK said on a client.
 ##
-## [b]Every Control here is given its size, never left to find one.[/b] A [DotTableView] is
-## a plain Control over a full-rect box of rows, so its minimum size is zero, and inside a
-## container that is exactly the size it gets: the table is built, filled, and drawn zero
-## pixels tall. The family's HUDs have each met that once; `headless_net` measures the
-## cells.
-
-# No `const CHANNEL`: it draws state the world owns and decides nothing an operator would
-# read about. See the same note in [BfhHud].
-
-## Above the HUD and below the chat box (100), which a player may be typing in.
-const LAYER := 50
-
-const PANEL_HALF := Vector2(390.0, 220.0)
-
-## The height of a row in a table, for the tables' explicit sizes.
-const ROW_PX := 30.0
-
-## Rows a table is sized for. Beyond it the runners' table scrolls nothing and shows the
-## top of the list, which is the living, which is the part that matters.
-const DRIVER_ROWS := 3
-const RUNNER_ROWS := 10
-
-## A side's columns. Status is the per-player column; see the class notes. A function
-## rather than a const, because a const array is read-only and a table keeps what it is given.
-static func columns_for(team: int) -> Array[Dictionary]:
-	return [
-		{"key": &"name", "title": "Driver" if team == BfhGame.TEAM_DRIVERS else "Runner", "width": 3.0},
-		{"key": &"status", "title": "", "width": 1.4, "align": HORIZONTAL_ALIGNMENT_RIGHT},
-	]
-
-
-var game: BfhGame = null
+## [b]Drawn by dot-menu's `DotMenuScoreboard` since 2026-10-09[/b]; this file is what is this
+## game's: the sides, the statuses, the tallies, the line about the round, and being up on its
+## own after one. It drew its own two `DotTableView`s before, and had to give each an explicit
+## size because a table in a container is drawn zero pixels tall; the menu's board is
+## containers all the way down. Online the rows are the server's roster — names, pings and
+## time connected, which no client knew for anybody else — with the side and the status joined
+## in by id.
 
 ## Whose row is highlighted. Asked every time, because on a connected client the local
 ## player arrives in a JOIN frames after this exists.
 var _own: Callable = Callable()
+
+var game: BfhGame = null
+
+## The board it draws on: the menu's, or one of its own when bound without one (a suite).
+var board: DotMenuScoreboard = null
 
 ## Tab is down.
 var held: bool = false
@@ -64,22 +44,44 @@ var after_round: bool = false
 ## The last round's winner, a `BfhGame.TEAM_*` or 0, for the line under the tables.
 var last_winner: int = 0
 
-var root: Control = null
-var panel: PanelContainer = null
-var drivers_table: DotTableView = null
-var runners_table: DotTableView = null
-var drivers_header: Label = null
-var runners_header: Label = null
-var footer: Label = null
+var _layer: CanvasLayer = null
 
-var _drawn_signature: String = ""
+## When this client started: offline, the local player's time on.
+var _started_msec: int = Time.get_ticks_msec()
 
 
-func bind(p_game: BfhGame, own: Callable = Callable()) -> void:
+## [param p_board] is the menu's board; null builds one here. [param link] is the client
+## link, whose roster is drawn when there is one; null draws the local world.
+func bind(p_game: BfhGame, own: Callable = Callable(), p_board: DotMenuScoreboard = null, link: Object = null) -> void:
 	game = p_game
 	_own = own
-	layer = LAYER
-	_build()
+	board = p_board
+	if board == null:
+		_layer = CanvasLayer.new()
+		_layer.layer = 50
+		add_child(_layer)
+		board = DotMenuScoreboard.new()
+		board.name = "Board"
+		_layer.add_child(board)
+
+	board.title_text = "Buses from Hell"
+	board.columns = [
+		{"key": &"name", "title": "Player", "width": 3.0},
+		{"key": &"status", "title": "", "width": 1.4, "align": HORIZONTAL_ALIGNMENT_RIGHT},
+		{"key": &"seconds", "title": "Time", "kind": DotMenuScoreboard.KIND_DURATION},
+		{"key": &"ping", "title": "Ping", "kind": DotMenuScoreboard.KIND_PING},
+	]
+	board.sort_with = func(a: Dictionary, b: Dictionary) -> bool:
+		if (a.get(&"status", "") == "up") != (b.get(&"status", "") == "up"):
+			return a.get(&"status", "") == "up"
+		return str(a.get("name", "")).naturalnocasecmp_to(str(b.get("name", ""))) < 0
+	board.decorate = _decorate_row
+	board.prepare = _prepare
+	if link != null:
+		board.feed_from(link)
+	else:
+		board.source = snapshot
+
 	game.round_over.connect(func(_number: int, winner: int) -> void:
 		after_round = true
 		last_winner = winner
@@ -106,38 +108,72 @@ func shown() -> bool:
 	return held or after_round
 
 
-func _process(_delta: float) -> void:
-	if shown():
-		refresh()
-
-
-## Brings what is drawn up to date, and only rebuilds the rows when they changed: a
-## [DotTableView] rebuilds every Label on each `set_rows`, and this runs every frame it is up.
+## Up or down to match [method shown], and redrawn when up.
 func refresh() -> void:
-	if root == null:
+	if board == null:
 		return
+	if shown():
+		if board.is_open():
+			board.redraw()
+		else:
+			board.open()
+	else:
+		board.close()
 
-	root.visible = shown()
 
-	if not root.visible or game == null:
+## The local world as the board's snapshot: offline, and in a suite.
+func snapshot() -> Dictionary:
+	var players: Array = []
+	if game != null:
+		for id: StringName in game.players:
+			var who: BfhPlayer = game.players[id]
+			if who == null or not is_instance_valid(who):
+				continue
+			var here := int((Time.get_ticks_msec() - _started_msec) / 1000) if id == _own_id() else -1
+			players.append({"id": String(id), "name": who.display_name, "ping": -1, "seconds": here})
+	return {"server": {"name": "Buses from Hell", "game": "offline"}, "players": players}
+
+
+## The side and the status onto a row, by id — the server's roster names sessions, the world
+## names players, and [method BfhNetBridge.player_key] is the one place the two meet.
+func _decorate_row(row: Dictionary) -> void:
+	if game == null:
 		return
-
-	var own := _own_id()
-	var drivers := rows_for(game, BfhGame.TEAM_DRIVERS, own)
-	var runners := rows_for(game, BfhGame.TEAM_RUNNERS, own)
-
-	drivers_header.text = header_line(game, BfhGame.TEAM_DRIVERS)
-	runners_header.text = header_line(game, BfhGame.TEAM_RUNNERS)
-	footer.text = footer_line(game, after_round, last_winner)
-
-	var signature := str(drivers) + str(runners)
-	if signature != _drawn_signature:
-		_drawn_signature = signature
-		drivers_table.set_rows(drivers)
-		runners_table.set_rows(runners)
+	var id := StringName(str(row.get("id", "")))
+	if not game.players.has(id):
+		id = BfhNetBridge.player_key(int(row.get("id", 0)))
+	var who: BfhPlayer = game.players.get(id)
+	if who == null or not is_instance_valid(who):
+		return
+	var team := game.team_of(id)
+	row["team"] = team
+	row[&"status"] = status_of(who, team)
+	row["you"] = id == _own_id()
 
 
-## One side's rows, as a [DotTableView] takes them. Static so a check reads the same rows.
+## The two sides with their tallies, and the line about the round.
+func _prepare(snap: Dictionary) -> void:
+	if game == null:
+		return
+	snap["teams"] = [
+		{"id": BfhGame.TEAM_DRIVERS, "name": side_name(game, BfhGame.TEAM_DRIVERS),
+			"color": side_colour(game, BfhGame.TEAM_DRIVERS), "score": game.rounds_won(BfhGame.TEAM_DRIVERS)},
+		{"id": BfhGame.TEAM_RUNNERS, "name": side_name(game, BfhGame.TEAM_RUNNERS),
+			"color": side_colour(game, BfhGame.TEAM_RUNNERS), "score": game.rounds_won(BfhGame.TEAM_RUNNERS)},
+	]
+	snap["header"] = {"": footer_line(game, after_round, last_winner)}
+
+
+## What the board's header says about a side, and about the round. For a check.
+func header_text(team: int) -> String:
+	return header_line(game, team)
+
+
+func footer_text() -> String:
+	return footer_line(game, after_round, last_winner)
+
+
+## One side's rows. Static so a check reads the same rows the board draws.
 ##
 ## Drivers by name. Runners who are up first, then by name: the living are the part of the
 ## list a runner reads, and the table is capped at [constant RUNNER_ROWS].
@@ -214,87 +250,12 @@ func _own_id() -> StringName:
 	return player.player_id if player != null else &""
 
 
-func _build() -> void:
-	if root != null:
-		return
-
-	# Full-rect under the CanvasLayer, for the reason [BfhHud] gives: a CanvasLayer lays
-	# nothing out, and anchors on a child of one resolve against nothing.
-	root = Control.new()
-	root.name = "Scoreboard"
-	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.theme = DotUiTheme.dark().build()
-	root.visible = false
-	add_child(root)
-
-	panel = PanelContainer.new()
-	panel.name = "Panel"
-	panel.set_anchors_preset(Control.PRESET_CENTER)
-	panel.offset_left = -PANEL_HALF.x
-	panel.offset_right = PANEL_HALF.x
-	panel.offset_top = -PANEL_HALF.y
-	panel.offset_bottom = PANEL_HALF.y
-	# Held during play, so it never takes the mouse from the game under it.
-	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	root.add_child(panel)
-
-	var column := VBoxContainer.new()
-	column.add_theme_constant_override("separation", 10)
-	panel.add_child(column)
-
-	var sides := HBoxContainer.new()
-	sides.add_theme_constant_override("separation", 28)
-	sides.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	column.add_child(sides)
-
-	var left := _side(sides, BfhGame.TEAM_DRIVERS, DRIVER_ROWS, 2.0)
-	drivers_header = left[0]
-	drivers_table = left[1]
-
-	var right := _side(sides, BfhGame.TEAM_RUNNERS, RUNNER_ROWS, 3.0)
-	runners_header = right[0]
-	runners_table = right[1]
-
-	footer = Label.new()
-	footer.name = "Footer"
-	footer.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	footer.custom_minimum_size = Vector2(0.0, 26.0)
-	column.add_child(footer)
-
-
-## A side's header and table, in a column. Returns `[header, table]`.
-func _side(
-	parent: Control, team: int, rows: int, ratio: float
-) -> Array:
-	var side := VBoxContainer.new()
-	side.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	side.size_flags_stretch_ratio = ratio
-	parent.add_child(side)
-
-	var header := Label.new()
-	header.add_theme_font_size_override("font_size", 22)
-	header.add_theme_color_override("font_color", side_colour(game, team))
-	header.custom_minimum_size = Vector2(0.0, 36.0)
-	side.add_child(header)
-
-	var table := DotTableView.new()
-	# The size is the point; see the class notes. Header row plus [param rows].
-	table.custom_minimum_size = Vector2(0.0, ROW_PX * float(rows + 1))
-	table.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	table.max_rows = rows
-	table.highlight_colour = Color(1.0, 0.9, 0.5)
-	side.add_child(table)
-	table.set_columns(columns_for(team))
-
-	return [header, table]
-
-
 func describe() -> Dictionary:
+	var drawn := board.rows() if board != null else []
 	return {
 		"shown": shown(),
 		"held": held,
 		"after_round": after_round,
-		"drivers": drivers_table.row_count() if drivers_table != null else 0,
-		"runners": runners_table.row_count() if runners_table != null else 0,
+		"drivers": drawn.filter(func(r: Dictionary) -> bool: return int(r.get("team", 0)) == BfhGame.TEAM_DRIVERS).size(),
+		"runners": drawn.filter(func(r: Dictionary) -> bool: return int(r.get("team", 0)) == BfhGame.TEAM_RUNNERS).size(),
 	}

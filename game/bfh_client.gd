@@ -117,11 +117,11 @@ func _ready() -> void:
 	DotFpsSampler.register_default_actions(_sampler)
 
 	_build_hud()
-	_build_scoreboard()
 	_build_chat()
 	_build_audio()
 	_build_fx()
 	_build_settings()
+	_build_scoreboard()
 
 	if _offline:
 		_start_offline()
@@ -338,12 +338,14 @@ func _build_hud() -> void:
 
 
 ## After the world, because it listens to the world's round signals from the start: a
-## round that ends before anybody has pressed Tab still puts the score up.
+## round that ends before anybody has pressed Tab still puts the score up. After the
+## settings, because it draws on the menu's board.
 func _build_scoreboard() -> void:
 	scoreboard = BfhScoreboard.new()
 	scoreboard.name = "Scoreboard"
 	add_child(scoreboard)
-	scoreboard.bind(game, func() -> BfhPlayer: return player)
+	var board: DotMenuScoreboard = settings.menu.scoreboard if settings != null and settings.menu != null else null
+	scoreboard.bind(game, func() -> BfhPlayer: return player, board, link if not _offline else null)
 
 
 ## The player's settings, applied to everything that reads them. See [BfhSettings].
@@ -370,17 +372,26 @@ func _build_settings() -> void:
 	if audio != null:
 		settings.bind_audio(audio.audio)
 
-	if settings.stack != null:
+	if fx != null and fx.fx != null:
+		settings.bind_fx(fx.fx)
+
+	if settings.menu != null:
 		# [b]Walking is off while the menu is up, as it is while typing.[/b] The sampler
 		# polls the keyboard, and a player dragging a volume slider with the arrow keys
 		# would otherwise walk into the bus they had stopped to turn up.
-		settings.stack.menu_state_changed.connect(func(any_open: bool) -> void:
+		settings.menu_state_changed.connect(func(any_open: bool) -> void:
 			_suspend_input(any_open or (chat != null and chat.is_typing()))
-			# Back into the game on desktop. A browser needs the click that follows, which
-			# `_unhandled_input` already turns into a capture.
-			if not any_open and not DotPlatform.is_web():
+			# The menu takes Escape itself now, so the pointer is freed here rather than
+			# by the key. Back into the game on desktop on close; a browser needs the
+			# click that follows, which `_unhandled_input` already turns into a capture.
+			if any_open:
+				_release()
+			elif not DotPlatform.is_web():
 				_capture()
 		)
+		# Typing a line is the chat box's keyboard: Escape there closes the line, not
+		# opens the menu.
+		settings.menu.busy = func() -> bool: return chat != null and chat.is_typing()
 
 
 func _suspend_input(value: bool) -> void:

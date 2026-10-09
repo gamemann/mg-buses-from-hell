@@ -3958,11 +3958,13 @@ func _test_progress() -> void:
 func _test_settings() -> void:
 	print("a player's settings")
 
-	var schema := BfhSettings.schema()
+	var schema := BfhSettings.schema_for()
+	var applied := DotMenuApplier.APPLIES + DotMenuApplier.APPLIED_BY_MENU
+	var unapplied := schema.keys().filter(func(k: StringName) -> bool: return not applied.has(k))
 	_check(
-		schema.validate().ok and schema.keys().size() == 5,
-		"the settings document is valid, and it is five settings",
-		str(schema.keys())
+		schema.validate().ok and unapplied.is_empty() and schema.has(&"ui_volume") and schema.has(&"shake_scale"),
+		"the settings document is valid, and every setting in it is applied by something",
+		str(unapplied)
 	)
 
 	var fov := schema.find(&"field_of_view")
@@ -4005,7 +4007,7 @@ func _test_settings() -> void:
 
 	_check(
 		built.ok
-		and is_equal_approx(look.mouse_sensitivity, 4.0 * BfhSettings.DEGREES_PER_COUNT)
+		and is_equal_approx(look.mouse_sensitivity, 4.0 * DotMenuApplier.DEGREES_PER_COUNT)
 		and is_equal_approx(camera.fov, 110.0)
 		and is_equal_approx(mixed.mixer.master, 0.3),
 		"a saved setting reaches the sampler, the camera and the mixer on load, "
@@ -4015,7 +4017,7 @@ func _test_settings() -> void:
 
 	var _d := next.settings.set_value(&"sensitivity", 1.0)
 	_check(
-		is_equal_approx(look.mouse_sensitivity, BfhSettings.DEGREES_PER_COUNT),
+		is_equal_approx(look.mouse_sensitivity, DotMenuApplier.DEGREES_PER_COUNT),
 		"and one changed while playing is applied as it changes",
 		"%.4f" % look.mouse_sensitivity
 	)
@@ -4028,16 +4030,16 @@ func _test_settings() -> void:
 	)
 
 	_check(
-		next.stack != null and next.screen != null and not next.is_open(),
-		"the settings screen is built, and closed"
+		next.menu != null and not next.is_open(),
+		"the menu is built, and closed"
 	)
 	next.open()
 	_check(
-		next.is_open() and next.screen.visible,
+		next.is_open() and next.menu.screen.visible,
 		"it opens over the bowl"
 	)
 	next.close()
-	_check(not next.is_open() and not next.screen.visible, "and closes again")
+	_check(not next.is_open() and not next.menu.screen.visible, "and closes again")
 
 	remove_child(next)
 	next.free()

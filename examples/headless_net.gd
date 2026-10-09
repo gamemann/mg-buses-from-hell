@@ -2367,24 +2367,18 @@ func _test_the_scoreboard() -> void:
 	var took := board.handle_key(tab)
 	await get_tree().process_frame
 	await get_tree().process_frame
-	_check(took and board.shown() and board.root.visible, "Tab held puts it up")
+	_check(took and board.shown() and board.board.is_open(), "Tab held puts it up")
 
-	# Laid out with a size. See the class notes on the zero-size trap.
+	# Laid out with a size: the zero-size trap the old tables had, checked on the new board.
 	var sized := true
 	var detail := PackedStringArray()
-	for table: DotTableView in [board.drivers_table, board.runners_table]:
-		var grid := table.get_node("Grid") as Control
-		var need := 0.0
-		for line: Control in grid.get_children():
-			need += line.size.y
-			for cell: Control in line.get_children():
-				if cell.size.x < 2.0 or cell.size.y < 2.0:
-					sized = false
-					detail.append("a %s cell %s" % [table.name, str(cell.size)])
-		if table.size.y + 0.5 < need or table.size.x < 100.0:
+	for team in [BfhGame.TEAM_DRIVERS, BfhGame.TEAM_RUNNERS]:
+		var block := board.board.find_child("Team_%d" % team, true, false) as Control
+		if block == null or block.size.x < 100.0 or block.size.y < 40.0:
 			sized = false
-			detail.append("table %s for rows needing %.0f" % [str(table.size), need])
-	_check(sized, "every cell is laid out with a size, inside a table as big as its rows", ", ".join(detail))
+			detail.append("side %d: %s" % [team, str(block.size) if block != null else "missing"])
+	_check(sized and board.describe()["drivers"] >= 1 and board.describe()["runners"] >= 1,
+		"both sides are drawn, side by side, with a size and their players in them", ", ".join(detail))
 
 	tab.pressed = false
 	var _took_release := board.handle_key(tab)
@@ -2397,8 +2391,8 @@ func _test_the_scoreboard() -> void:
 		at_end.append({
 			"shown": board.shown(),
 			"drivers": _client_game.rounds_won(BfhGame.TEAM_DRIVERS),
-			"header": board.drivers_header.text,
-			"footer": board.footer.text,
+			"header": board.header_text(BfhGame.TEAM_DRIVERS),
+			"footer": board.footer_text(),
 			"winner": winner,
 		}), CONNECT_ONE_SHOT)
 	var bot_key := BfhNetBridge.player_key(BfhNetBridge.FIRST_BOT_SESSION)
