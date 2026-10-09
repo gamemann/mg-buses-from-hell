@@ -1847,9 +1847,40 @@ func _test_somebody_else_is_drawn() -> void:
 	)
 	_check(shown == 1, "so exactly one body is drawn on this client", "%d" % shown)
 
-	# Somewhere a person can run in a straight line: beside this client's own runner, on the
-	# floor. Placed on the server, as a respawn would be; the client learns it from snapshots.
-	var start := _server_player().controller.state.position + Vector3(2.0, 0.0, 0.0)
+	# [b]The bot drivers out of their buses for the run, and back in after it.[/b] The bot
+	# floors it at the nearest runner, and a runner thrown part-way through is a corner in the
+	# path that drawing a snapshot apart rounds off: this measures a steady run, so nothing
+	# drives at it.
+	var parked: Array = []
+	for bus in _server_game.vehicles.all_vehicles():
+		var sitting := _server_game.driver_of(bus.instance_id)
+		var driver: BfhPlayer = _server_game.players.get(sitting) if sitting != &"" else null
+		if driver != null and driver.is_bot:
+			_server_game.ride.exit(bus, sitting, true)
+			parked.append([bus, sitting, driver])
+
+	# Somewhere a person can run in a straight line: the most open floor in the bowl, asked of
+	# the arena, with the run's 6.4 m inside the clear circle (yaw 90 runs toward -x, so the
+	# start is 3 m to +x of its middle). Placed on the server, as a respawn would be; the
+	# client learns it from snapshots.
+	#
+	# [b]Not "2 m beside this client's own runner", which is where it started until
+	# 2026-10-08[/b]: wherever that runner happened to stand, which on three runs in four was
+	# beside the ramp's slab, so the run went off its edge and FELL — 21.65 m of path in 60
+	# ticks, an accelerating curve that drawing between snapshots rounds by 0.25 m, and a
+	# failure of the tracking check below that had nothing to do with tracking.
+	var open_at := Vector3.ZERO
+	var open_clear := -INF
+	var reach := _server_game.arena.radius - 4.0
+	for gx in range(-12, 13):
+		for gz in range(-12, 13):
+			var at := Vector3(float(gx) * reach / 12.0, 0.0, float(gz) * reach / 12.0)
+			var clear := _server_game.arena.floor_clear_at(at)
+			if clear > open_clear:
+				open_clear = clear
+				open_at = at
+	var start := open_at + Vector3(3.0, _server_player().controller.state.position.y, 0.0)
+	print("  ..    the run starts on open floor, %.1f m clear all round its middle" % open_clear)
 	other.controller.state.position = start
 	other.controller.state.velocity = Vector3.ZERO
 	other.global_position = start
@@ -1882,14 +1913,23 @@ func _test_somebody_else_is_drawn() -> void:
 	_check(moved > owed * 0.95, "the server runs them across the bowl, at runner_speed",
 		"%.2f of %.2f m" % [moved, owed])
 
-	# Tracking: every frame's body is within a hand of SOME position the server really had
-	# them at. Not the latest one, because a remote player is drawn an interpolation delay
-	# in the past on purpose — the nearest point on the server's own track is the fair test.
+	# Tracking: every frame's body is within a hand of the path the server really ran them
+	# along. Not the latest position, because a remote player is drawn an interpolation delay
+	# in the past on purpose.
+	#
+	# [b]The path, as the segments between ticks, and not the tick positions alone.[/b] A
+	# frame drawn between two ticks lies between two of them, and its distance from the nearer
+	# one is up to half a tick's travel, which at anything faster than a run (a throw, a fall)
+	# is most of the tolerance.
 	var worst := 0.0
 	for at in drawn:
 		var nearest := INF
-		for s in server_track:
-			nearest = minf(nearest, at.distance_to(s))
+		for k in range(server_track.size() - 1):
+			var a := server_track[k]
+			var b := server_track[k + 1]
+			var along := b - a
+			var t := 0.0 if along.length_squared() < 1e-9 else clampf((at - a).dot(along) / along.length_squared(), 0.0, 1.0)
+			nearest = minf(nearest, at.distance_to(a + along * t))
 		worst = maxf(worst, nearest)
 
 	_check(
@@ -1897,6 +1937,9 @@ func _test_somebody_else_is_drawn() -> void:
 		"and every frame draws them on the path the server ran them along",
 		"worst %.3f m off it, over %d frames" % [worst, drawn.size()]
 	)
+
+	for entry: Array in parked:
+		_server_game.ride.enter(entry[0], entry[1], entry[2], &"driver")
 	_check(
 		not drawn.is_empty() and drawn[drawn.size() - 1].distance_to(start) > 2.0
 		and drawn[drawn.size() - 1].distance_to(Vector3.ZERO) > 1.0,
