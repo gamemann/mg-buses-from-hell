@@ -207,6 +207,10 @@ var _bus_stuck: Dictionary = {}
 ## [method _turn_for_the_ramp].
 var _bus_backing: Dictionary = {}
 
+## Bus instance id -> the planned turn a bot is making in front of the ramp's foot. See
+## [method _turn_round_for_the_ramp].
+var _bus_turning: Dictionary = {}
+
 
 func _ready() -> void:
 	if config == null:
@@ -910,6 +914,7 @@ func _clear_bowl() -> void:
 	_bus_stuck.clear()
 	_bus_inverted.clear()
 	_bus_backing.clear()
+	_bus_turning.clear()
 
 
 func _lay_out_bowl() -> void:
@@ -1263,11 +1268,15 @@ func _autopilot(player: BfhPlayer, bus: DotVehicleInstance, delta: float) -> Dot
 		aim = bus.position() + line.normalized() * config.bot_steer_clearance
 		aim.y = beyond.y
 	if bound:
+		var turned := _turn_round_for_the_ramp(player, bus, delta)
+		if turned != null:
+			return turned
 		var backing := _turn_for_the_ramp(bus, aim, delta)
 		if backing != null:
 			return backing
 	else:
 		_bus_backing.erase(bus.instance_id)
+		_bus_turning.erase(bus.instance_id)
 	# [b]A point beside an obstacle is passed THROUGH, not arrived at.[/b] As the only
 	# waypoint it was the last one, and `DotVehicleDriver` slows into its last waypoint and
 	# brakes hard once inside `arrive_radius`: a bus coming round a stacks pillar at 15 m/s
@@ -1349,6 +1358,327 @@ func _turn_for_the_ramp(bus: DotVehicleInstance, aim: Vector3, delta: float) -> 
 	command.steer = -toward if reverse else toward
 	command.sanitise()
 	return command
+
+
+## A bot bus bound up the ramp that cannot simply drive at it: one with its back to it,
+## which turns round in front of the foot, and one climbing the ramp's first metres off the
+## middle, which backs down and lines up again. Null when neither applies, and the ordinary
+## line-up (and [method _turn_for_the_ramp]) drives.
+##
+## [b]Planned against the floor that is there, where [method _turn_for_the_ramp] is
+## planned against the clock.[/b] Buses start beside the slab facing the bowl, so the
+## spawn lane's bus has the ramp straight behind it and has to come round the foot and
+## turn the whole way round. The timed legs never got it up (measured 2026-10-02 and again
+## 2026-10-08): the turn began on the line-up strip with the bus still doing 8.5 m/s away
+## from the ramp, the 2.5 s reverse leg was mostly spent stopping it, so the nose swung 40
+## degrees and the bus was carried off the strip; the aim then flipped between the line-up
+## point and a point beside the pillar at (6.5, 10.3), and the legs dithered round that
+## pillar until the round ran out. What is different here, each answering one of those:
+##
+## - [b]Where.[/b] It drives to [method BfhArena.ramp_turn_point], the point on the
+##   centreline in front of the foot with the most clear floor round it, and begins the
+##   first leg as soon as its tail is clear of the foot, on the way in.
+## - [b]How long a leg is.[/b] A leg ends when the end of the bus it is moving towards is
+##   about to run out of floor ([method _end_blocked]: an obstacle, the slab, the deck), or
+##   out of reach of the turning point or more than [constant RAMP_TURN_ACROSS] off the
+##   centreline, or when the bus stops against something; never on a timer except as a
+##   backstop. Between legs it brakes to a standstill with the wheel already going over, so
+##   no leg begins by undoing the last one.
+## - [b]What it turns to.[/b] The ramp's axis, fixed for the whole turn, and the way round
+##   is chosen once. The aim of the moment moves as the bus does (6 m up the centreline from
+##   wherever it is, or the line-up point, or a pillar's shoulder), and a turn measured
+##   against it started and ended on different tests, which is the dithering above.
+## - [b]How it hands over.[/b] Not when it faces the ramp but when it will arrive ON the
+##   centreline: the "line" phase steers for where a full-lock straightening would put it
+##   ([constant RAMP_LINE_RADIUS]), drives slowly until that is within
+##   [constant RAMP_LINED_X] of the middle, backs off straight along the axis when it is
+##   too close to the foot to come right, and lets go only once the bus is on the slab.
+##   With the turn done the spawn bus stood 2-4 m off the centreline, and the ordinary
+##   line-up from there came at the foot across the line.
+##
+## [b]And a bus on the ramp heading for its edge backs down it,[/b] which is the `sw`
+## start's failure: it came into the strip diagonally at 7.6 m/s, crossed the foot at 33
+## degrees and climbed off the side, wedging 2.4 m up with a wheel over the edge. Caught
+## there, rather than at the foot, because coming at the foot like that is not always
+## fatal: the `east` start crosses at 38 degrees, the mirror image, and climbs. It and
+## `west` reach 1.7 m off the middle on the way up, so this catches them too, and they are
+## 3.5 and 2.7 s slower for it (13.6 and 14.5 s); a rule that could tell them from `sw`
+## before the fact was looked for and the numbers at the foot do not separate them.
+##
+## Done here rather than in `DotVehicleDriver`, and only for the ramp, for the same reason
+## as [method _turn_for_the_ramp]: every other drive in the bowl is the one it was.
+func _turn_round_for_the_ramp(player: BfhPlayer, bus: DotVehicleInstance,
+		delta: float) -> DotVehicleCommand:
+	var id := bus.instance_id
+	var pos := bus.position()
+	var basis := bus.body().global_basis
+	var forward := -basis.z
+	forward.y = 0.0
+	var right := basis.x
+	right.y = 0.0
+	if forward.length() < 0.01:
+		_bus_turning.erase(id)
+		return null
+	forward = forward.normalized()
+	right = right.normalized()
+	# Up the ramp is -Z: the deck is at the north rim.
+	var axis := Vector3(0.0, 0.0, -1.0)
+	var off := rad_to_deg(acos(clampf(forward.dot(axis), -1.0, 1.0)))
+	var foot_z := arena.ramp_foot().z
+	var out := pos.z - foot_z
+	var speed := bus.velocity().dot(forward)
+	# Where the bus would come out across the centreline if it straightened up from here
+	# at full lock: [constant RAMP_LINE_RADIUS] (1 - cos) of the angle it is heading in at,
+	# taken off its offset when it is heading towards the line and added when away.
+	var toward_line := -signf(pos.x) if absf(pos.x) > 0.01 else 0.0
+	var slant := atan2(forward.x * toward_line, -forward.z)
+	var settles := absf(pos.x) - signf(slant) * RAMP_LINE_RADIUS * (1.0 - cos(slant))
+	var lined := absf(settles) <= RAMP_LINED_X and off <= RAMP_LINED_OFF
+
+	var plan: Dictionary = _bus_turning.get(id, {})
+	if plan.is_empty():
+		# Facing away from the ramp, wherever it is: beside the slab, where the buses
+		# start, or in front of the foot.
+		if off >= RAMP_FACING_AWAY:
+			plan = {"phase": "approach"}
+		elif out < 0.0 and out > -RAMP_EDGE_CHECK and absf(pos.x) > RAMP_EDGE_X \
+				and arena.lining_up(pos) and speed > 0.0:
+			# Climbing the ramp's first metres off the middle, heading for its edge: back
+			# down it and line up again, rather than wedge a wheel over the side.
+			plan = {"phase": "line", "reverse": true}
+		else:
+			return null
+		plan["centre"] = arena.ramp_turn_point()
+		if not plan.has("reverse"):
+			plan["reverse"] = false
+		# Stopped first if it is to back off while still rolling at the slab.
+		plan["settling"] = plan["reverse"] and speed > RAMP_LEG_STILL
+		plan["held"] = 0.0
+		plan["sense"] = 1.0
+		_bus_turning[id] = plan
+		_bus_backing.erase(id)
+
+	var centre: Vector3 = plan["centre"]
+	var to_centre := Vector3(centre.x - pos.x, 0.0, centre.z - pos.z)
+	var held: float = float(plan["held"]) + delta
+	plan["held"] = held
+
+	if plan["phase"] == "approach":
+		# Arrived, or going past it, or far enough out that its tail is clear of the foot
+		# and the floor ahead is open: the first leg begins on the way in, which is two
+		# seconds of a twenty-second chase.
+		var arrived := to_centre.length() < RAMP_TURN_ARRIVE or (
+			to_centre.length() < RAMP_TURN_ARRIVE * 2.0 and forward.dot(to_centre) < 0.0) \
+			or (out > BUS_HALF_LENGTH + RAMP_TURN_MARGIN and speed > 0.5
+				and not _end_blocked(bus, pos, forward, right, false, centre))
+		if not arrived:
+			player.autopilot.target_speed = minf(config.bus_top_speed, RAMP_TURN_APPROACH)
+			player.autopilot.set_target(arena.steer_around(pos, centre))
+			return player.autopilot.drive(bus, delta)
+		plan["phase"] = "legs"
+		plan["held"] = 0.0
+		# The way round, once. Straight behind, either way is half a turn, so it goes the
+		# way that swings the nose across the centre rather than away from it.
+		if forward.dot(axis) > -0.985:
+			plan["sense"] = 1.0 if axis.dot(right) >= 0.0 else -1.0
+		else:
+			plan["sense"] = 1.0 if to_centre.dot(right) >= 0.0 else -1.0
+		# The leg it is already rolling on, or the one that leads towards the middle.
+		if absf(speed) > 0.5:
+			plan["reverse"] = speed < 0.0
+		else:
+			plan["reverse"] = forward.dot(to_centre) < 0.0
+
+	if plan["phase"] == "legs" and (off < RAMP_TURN_DONE
+			or (off < RAMP_LINED_OFF and absf(settles) < RAMP_TURN_NEARLY)):
+		plan["phase"] = "line"
+		plan["held"] = 0.0
+		plan["settling"] = true
+		plan["reverse"] = out < RAMP_LINE_COMMIT and not lined
+	elif plan["phase"] == "line" and off > RAMP_TURN_AGAIN:
+		plan["phase"] = "legs"
+		plan["held"] = 0.0
+		plan["settling"] = true
+		plan["sense"] = 1.0 if axis.dot(right) >= 0.0 else -1.0
+		plan["reverse"] = not plan["reverse"]
+
+	var reverse: bool = plan["reverse"]
+	var command := DotVehicleCommand.new()
+
+	if plan["phase"] == "line":
+		held = float(plan["held"])
+		if out < 0.0 and not reverse and not plan["settling"]:
+			# Onto the slab going forward: the ordinary climb takes it from here.
+			_bus_turning.erase(id)
+			return null
+		if not plan["settling"]:
+			var change := false
+			if reverse:
+				# Back far enough to straighten out in, or as far as the floor goes.
+				# (The floor test is for the floor: backing down the slab, the slab is under it.)
+				change = out >= RAMP_LINE_BACK_TO \
+					or (out > 0.0 and _end_blocked(bus, pos, forward, right, true)) \
+					or (held > RAMP_LEG_STALL and absf(speed) < 0.3)
+			else:
+				# Too close to the foot to come right before the slab: back off and try again.
+				change = not lined and out < RAMP_LINE_COMMIT \
+					or (held > RAMP_LEG_STALL and absf(speed) < 0.3)
+			if change:
+				reverse = not reverse
+				plan["reverse"] = reverse
+				plan["held"] = 0.0
+				plan["settling"] = true
+		if plan["settling"]:
+			command.brake = 1.0
+			if absf(speed) < RAMP_LEG_STILL and float(plan["held"]) > RAMP_LEG_SETTLE:
+				plan["settling"] = false
+				plan["held"] = 0.0
+			command.sanitise()
+			return command
+		if not reverse:
+			# Onto the centreline the way a lane-keeping controller does it: the heading it
+			# wants is the ramp's axis turned towards the centreline by an angle that grows
+			# with how far off it is, so the offset and the heading are taken out together
+			# and the bus arrives on the line pointing along it. The angle is the one from
+			# which a full-lock straightening lands on the line. A pursuit point 6 m up the
+			# line (what the ordinary line-up uses) does not converge in the room there is:
+			# from 4 m off and 12.5 m out it was still 1.7 m off and 18 degrees across 4.8 m
+			# from the foot, measured.
+			var across := minf(acos(clampf(1.0 - absf(pos.x) / RAMP_LINE_RADIUS, -1.0, 1.0)),
+				deg_to_rad(RAMP_LINE_STEEPEST))
+			var wanted := axis * cos(across) + Vector3(-signf(pos.x), 0.0, 0.0) * sin(across)
+			var turn := acos(clampf(wanted.dot(forward), -1.0, 1.0))
+			var toward := 1.0 if wanted.dot(right) >= 0.0 else -1.0
+			command.steer = toward * clampf(rad_to_deg(turn) / RAMP_LINE_STEER, 0.0, 1.0)
+			var fast := RAMP_SPEED if lined else RAMP_LINE_SLOW
+			if speed < fast:
+				command.throttle = RAMP_TURN_THROTTLE
+			elif speed > fast + 1.0:
+				command.brake = 0.5
+			command.sanitise()
+			return command
+		# Backing straight down the ramp's axis, for room: the nose held on the axis, so the
+		# forward run after it starts square and has only the offset to take out.
+		var angle := rad_to_deg(acos(clampf(axis.dot(forward), -1.0, 1.0)))
+		var side := 1.0 if axis.dot(right) >= 0.0 else -1.0
+		command.steer = -side * clampf(angle / 20.0, 0.0, 1.0)
+		if absf(speed) < RAMP_LEG_SPEED:
+			command.throttle = -1.0
+		command.sanitise()
+		return command
+
+	# The legs of the turn. `held` is re-read: a phase that just began has reset it.
+	held = float(plan["held"])
+	if not plan["settling"]:
+		var stopped := held > RAMP_LEG_STALL and absf(speed) < 0.3
+		# The turning point's reach and the centreline's bounds only once a leg is under
+		# way: a bus already outside them would otherwise find both ends "blocked" and
+		# never move again (measured from the sw start, stood still for 17 s).
+		var bounds: Variant = centre if held > RAMP_LEG_FREE else null
+		if _end_blocked(bus, pos, forward, right, reverse, bounds) or stopped \
+				or held > RAMP_LEG_LONGEST:
+			reverse = not reverse
+			plan["reverse"] = reverse
+			plan["held"] = 0.0
+			plan["settling"] = true
+
+	# +1 steers right (DotVehicleCommand's convention). Forward, the wheel is over to the
+	# side the turn goes; in reverse it is over the other way, which turns the nose the
+	# same way round.
+	var sense: float = plan["sense"]
+	command.steer = -sense if reverse else sense
+	if plan["settling"]:
+		command.brake = 1.0
+		if absf(speed) < RAMP_LEG_STILL and float(plan["held"]) > RAMP_LEG_SETTLE:
+			plan["settling"] = false
+			plan["held"] = 0.0
+	elif absf(speed) < RAMP_LEG_SPEED:
+		command.throttle = -1.0 if reverse else RAMP_TURN_THROTTLE
+	command.sanitise()
+	return command
+
+
+## Whether the end of [param bus] it is moving towards ([param reverse] for the tail) is
+## about to run out of floor: any of its two corners and its middle, a margin ahead along
+## the way that point is moving, inside [constant RAMP_TURN_MARGIN] of an obstacle, the
+## slab or the deck, or, with a [param centre], further than [constant RAMP_TURN_REACH]
+## from it and still going out.
+func _end_blocked(bus: DotVehicleInstance, pos: Vector3, forward: Vector3, right: Vector3,
+		reverse: bool, centre: Variant = null) -> bool:
+	var lead := forward * (-BUS_HALF_LENGTH if reverse else BUS_HALF_LENGTH)
+	var spin := bus.body().angular_velocity
+	var velocity := bus.velocity()
+	velocity.y = 0.0
+	for across: float in [-BUS_HALF_WIDTH, 0.0, BUS_HALF_WIDTH]:
+		var r := lead + right * across
+		var point := pos + r
+		var moving := velocity + spin.cross(r)
+		moving.y = 0.0
+		if moving.length() < 0.2:
+			continue
+		if arena.floor_clear_at(point + moving.normalized() * RAMP_TURN_MARGIN) < RAMP_TURN_MARGIN:
+			return true
+		if centre is Vector3:
+			var c: Vector3 = centre
+			var from_centre := Vector3(point.x - c.x, 0.0, point.z - c.z)
+			if from_centre.length() > RAMP_TURN_REACH and moving.dot(from_centre) > 0.0:
+				return true
+	# And the middle of the bus no further across from the centreline than
+	# [constant RAMP_TURN_ACROSS], so the turn ends in front of the ramp rather than beside it.
+	if centre is Vector3:
+		var c: Vector3 = centre
+		if absf(pos.x - c.x) > RAMP_TURN_ACROSS and velocity.x * (pos.x - c.x) > 0.0:
+			return true
+	return false
+
+
+## [method _turn_round_for_the_ramp]'s numbers. Degrees off the ramp's axis a ramp-bound
+## bot has to face for it to turn round; how fast it drives to the turning point (m/s) and
+## how near that counts as there (m).
+const RAMP_FACING_AWAY := 110.0
+const RAMP_TURN_APPROACH := 8.0
+const RAMP_TURN_ARRIVE := 2.0
+## How much floor the bus keeps ahead of the end it is moving towards; how far from the
+## turning point its corners may go; and how far across from the centreline its middle may
+## go, all in metres.
+const RAMP_TURN_MARGIN := 0.8
+const RAMP_TURN_REACH := 8.0
+const RAMP_TURN_ACROSS := 2.5
+## The turn becomes the line-up once the nose is within this many degrees of the axis, or
+## within [constant RAMP_LINED_OFF] with a straightening that would land it within this
+## many metres of the centreline; and goes back to turning beyond the third.
+const RAMP_TURN_DONE := 20.0
+const RAMP_TURN_NEARLY := 2.0
+const RAMP_TURN_AGAIN := 60.0
+## Lined up: a full-lock straightening at [constant RAMP_LINE_RADIUS] (the bus's turning
+## radius at line-up speed, with a margin) would put it within this many metres of the
+## centreline, and it is within this many degrees of the axis.
+const RAMP_LINED_X := 1.0
+const RAMP_LINED_OFF := 35.0
+const RAMP_LINE_RADIUS := 12.0
+## How far in front of the foot a bus backs off to before trying again, and how close it
+## can come to it not lined up before it does (m); the steepest it comes at the centreline,
+## and the error that is full lock (degrees); and how fast it lines up (m/s).
+const RAMP_LINE_BACK_TO := 9.0
+const RAMP_LINE_COMMIT := 4.0
+const RAMP_LINE_STEEPEST := 35.0
+const RAMP_LINE_STEER := 15.0
+const RAMP_LINE_SLOW := 4.0
+## A bus on the ramp's first this-many metres, more than this far off its middle, backs
+## down and lines up again: the bus is 2.5 m across on 5 m of slab, so at 1.5 m its outer
+## wheels are a quarter of a metre from the edge.
+const RAMP_EDGE_CHECK := 10.0
+const RAMP_EDGE_X := 1.5
+## The speed a leg is held under (m/s); how still the bus has to be, and for how long the
+## wheel has to swing, between legs; how long a leg can push without moving before it
+## counts as stopped; how long a leg runs before the turning point's bounds apply; and the
+## longest a leg lasts whatever the floor says (s).
+const RAMP_LEG_SPEED := 6.0
+const RAMP_LEG_STILL := 0.8
+const RAMP_LEG_SETTLE := 0.2
+const RAMP_LEG_STALL := 0.6
+const RAMP_LEG_FREE := 0.4
+const RAMP_LEG_LONGEST := 3.0
 
 
 ## How near its waypoint a stopped bot bus has to be to be standing on it: twice the

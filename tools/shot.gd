@@ -23,6 +23,7 @@ func _run() -> void:
 	var look_at_yard := ""
 	var look_at_scaffold := false
 	var look_at_ramp := false
+	var on_deck := false
 	var plan := false
 	var show_chat := false
 	var beacon := false
@@ -58,6 +59,8 @@ func _run() -> void:
 			look_at_ramp = true
 		elif arg == "--plan":
 			plan = true
+		elif arg == "--deck":
+			on_deck = true
 		elif arg == "--chat":
 			show_chat = true
 		elif arg == "--beacon":
@@ -87,6 +90,23 @@ func _run() -> void:
 			window.add_said("Driver", "coming round the stacks", Color(0.55, 0.82, 0.95))
 			window.add_said("Ada", "north ramp, north ramp", Color(0.88, 0.90, 0.94))
 			window.add_text("Bus driver 1 was run over by nobody", Color(0.98, 0.72, 0.35))
+
+	# The local runner stood on the deck from the first frame, so the bot bus has to come
+	# up the ramp for them, and a camera over the floor in front of the foot, where a bus
+	# that starts with its back to the ramp turns round (`--deck`, 2026-10-08).
+	var world_for_deck: BfhGame = client.get("game")
+	var runner_for_deck: Node3D = client.get("player")
+	if on_deck and world_for_deck != null and world_for_deck.arena != null and runner_for_deck != null:
+		var stand := world_for_deck.arena.ledge_centre()
+		stand.y = world_for_deck.arena.deck_top() + 0.05
+		runner_for_deck.global_position = stand
+		runner_for_deck.get("controller").get("state").set("position", stand)
+		var foot := world_for_deck.arena.ramp_foot()
+		var cam := Camera3D.new()
+		add_child(cam)
+		cam.global_position = foot + Vector3(-14.0, 17.0, 16.0)
+		cam.look_at(foot + Vector3(0.0, 0.0, 4.0), Vector3.UP)
+		cam.current = true
 
 	var elapsed := 0.0
 	while elapsed < seconds:

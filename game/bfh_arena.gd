@@ -1475,6 +1475,49 @@ const RAMP_LINE_UP := 11.0
 ## it stays because the boundary is wrong whichever turn reaches it).
 const RAMP_STRIP_PAST := 3.0
 
+## The nearest to the foot a bus turns round in front of it, in metres. See
+## [method ramp_turn_point].
+const RAMP_TURN_NEAREST := 5.0
+
+
+## The clear floor round [param at], in metres: to the nearest obstacle's surface, the
+## ramp's slab, the deck's face or the wall, whichever is closest.
+func floor_clear_at(at: Vector3) -> float:
+	var nearest := radius - Vector2(at.x, at.z).length()
+	for i in range(_obstacles.size()):
+		var axis := Vector2(at.x - _obstacles[i].x, at.z - _obstacles[i].z).length()
+		nearest = minf(nearest, axis - _obstacle_radii[i])
+	var deck_z := -(radius - LEDGE_DEPTH)
+	if _ramp != null:
+		nearest = minf(nearest,
+			_to_box(at, -RAMP_WIDTH * 0.5, RAMP_WIDTH * 0.5, deck_z, ramp_foot().z))
+	return minf(nearest, _to_box(at, -LEDGE_WIDTH * 0.5, LEDGE_WIDTH * 0.5, -radius, deck_z))
+
+
+## Where a bus that faces away from the ramp turns round to go up it: the point on the
+## centreline, between [constant RAMP_TURN_NEAREST] and [constant RAMP_LINE_UP] in front of
+## the foot, with the most clear floor round it.
+##
+## [b]Measured off the floor that is actually there, not a fixed distance.[/b] On the
+## shipped bowl the slab is behind it and the stacks' pillar at (-3.3, 7.6) in front, and
+## the point between them with the most room is 7.5 m out, with 7.1 m clear; the line-up
+## point (11 m) has 4.1 m, which is less than a turning bus sweeps. The stacks scale with
+## the bowl and the ramp does not, so on another bowl the best point is somewhere else,
+## and a constant tuned on this one would turn a bus into a pillar on that one.
+func ramp_turn_point() -> Vector3:
+	var foot_z := ramp_foot().z
+	var best := Vector3(0.0, 0.5, foot_z + RAMP_LINE_UP)
+	var most := -INF
+	var out := RAMP_TURN_NEAREST
+	while out <= RAMP_LINE_UP + 0.001:
+		var at := Vector3(0.0, 0.5, foot_z + out)
+		var clear := floor_clear_at(at)
+		if clear > most + 0.001:
+			most = clear
+			best = at
+		out += 0.5
+	return best
+
 
 func _round_the_obstacles(from: Vector3, target: Vector3) -> Vector3:
 	if _obstacles.is_empty():

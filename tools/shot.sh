@@ -12,6 +12,8 @@
 #   tools/shot.sh 9 west.png --west-lane      # the courtyard's west lane, from 9 m outside it
 #   tools/shot.sh 9 ramp.png --ramp           # the ramp, from the side
 #   tools/shot.sh 9 plan.png --plan           # the whole bowl from straight above, north up
+#   tools/shot.sh 8 deck.png --deck           # the runner on the deck, and the floor in front of
+#                                             # the foot where the bot bus turns round to come up
 #   tools/shot.sh 9 beacon.png --beacon       # an admin's beacon: the runner's ring, the bus's column
 #   tools/shot.sh 9 beacon_bus.png --beacon --bus   # the beacon round a driver's bus
 #   tools/shot.sh 9 blind.png --blind         # an admin's blind, through the HUD

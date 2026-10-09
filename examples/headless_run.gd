@@ -33,7 +33,7 @@ const BfhStats := preload("../game/bfh_stats.gd")
 ## control, so `set_physics_process(false)` goes on first and every section advances
 ## the world itself.
 
-const CHECKS := 237
+const CHECKS := 238
 
 ## Sections that must run to their last line. Each calls `_done()` there, and before
 ## every early return.
@@ -2493,18 +2493,21 @@ func _line_room(arena: BfhArena, mouth: Vector3, out: Vector3, out_by: float) ->
 ## is that measurement, kept.
 ## [b]A bot bus chases a runner up the ramp onto the deck.[/b] Until 2026-10-01 none
 ## could: from every start here the bus wedged against the slab or circled the foot, and
-## a runner on the deck was safe from bots for as long as they stood there. Seven starts,
+## a runner on the deck was safe from bots for as long as they stood there. Eight starts,
 ## a runner standing still on the deck's middle, twenty seconds each; a start counts when
 ## the bus kills them.
 ##
-## [b]Five are asserted and two are printed.[/b] `spawn` (where a bus actually begins,
-## beside the slab facing the bowl) and `sw` still fail: see CLAUDE.md, "Up the ramp".
-## They are printed every run so the day they pass is seen.
+## [b]All eight are asserted since 2026-10-08.[/b] `spawn` and `spawn_west` are where the
+## buses actually begin (beside the slab, either side of it, facing the bowl), and with
+## `sw` they were printed and not asserted for a week: the bus has to turn round in front
+## of the foot, which the timed turn could not do, and `sw` came at the foot across the
+## line and wedged on the ramp's edge. `BfhGame._turn_round_for_the_ramp` is the answer;
+## see CLAUDE.md, "Up the ramp".
 func _test_up_onto_the_deck() -> void:
 	print("up the ramp onto the deck, driven by a bot")
-	var asserted := ["foot8", "south20", "east", "ne", "west"]
+	var asserted := ["spawn", "spawn_west", "foot8", "south20", "east", "ne", "sw", "west"]
 	var missed := PackedStringArray()
-	for start_kind: String in ["spawn", "foot8", "south20", "east", "ne", "sw", "west"]:
+	for start_kind: String in asserted:
 		var game := _world(func(c: BfhConfig) -> void:
 			c.crate_count = 0
 			c.barrel_count = 0
@@ -2522,6 +2525,17 @@ func _test_up_onto_the_deck() -> void:
 		var arena := game.arena
 		var foot := arena.ramp_foot()
 		var bus := game.vehicles.get_vehicle(game._bus_ids[0])
+		if start_kind == asserted[0]:
+			# The turning point is where a bus with its back to the ramp turns round, and a
+			# bus turning on the spot sweeps its half-diagonal; the legs keep
+			# RAMP_TURN_MARGIN of floor beyond that.
+			var turn_at := arena.ramp_turn_point()
+			var sweep := Vector2(BfhGame.BUS_HALF_WIDTH, BfhGame.BUS_HALF_LENGTH).length() \
+				+ BfhGame.RAMP_TURN_MARGIN
+			_check(arena.floor_clear_at(turn_at) >= sweep,
+				"the floor in front of the ramp's foot has room for a bus to turn round in",
+				"%.2f m clear at %.1f m out, a turning bus needs %.2f"
+					% [arena.floor_clear_at(turn_at), turn_at.z - foot.z, sweep])
 		var starts := {
 			"foot8": Vector3(0.0, 1.4, foot.z + 8.0),
 			"south20": Vector3(0.0, 1.4, foot.z + 20.0),
@@ -2530,11 +2544,17 @@ func _test_up_onto_the_deck() -> void:
 			"sw": Vector3(-8.0, 1.4, 3.0),
 			"west": Vector3(-6.0, 1.4, 0.0),
 		}
+		# The second bus's lane, west of the slab, faced the way `_place_buses` faces it.
+		var west_lane := arena.bus_start(1, 2)
+		var facing := Vector3.FORWARD
+		if start_kind == "spawn_west":
+			starts["spawn_west"] = west_lane
+			facing = Vector3(-west_lane.x, 0.0, -west_lane.z).normalized()
 		if starts.has(start_kind):
 			var body := bus.body()
 			body.linear_velocity = Vector3.ZERO
 			body.angular_velocity = Vector3.ZERO
-			body.global_transform = Transform3D(Basis.looking_at(Vector3.FORWARD), starts[start_kind])
+			body.global_transform = Transform3D(Basis.looking_at(facing), starts[start_kind])
 		driver.is_bot = true
 		var deck := arena.ledge_centre()
 		deck.y = arena.deck_top() + 0.05
@@ -2553,14 +2573,15 @@ func _test_up_onto_the_deck() -> void:
 				killed_at = float(i) * TICK
 				break
 			_watch_parked(bus, "up the ramp from %s" % start_kind, i == 0)
-		print("  ..    %-8s %s" % [start_kind,
+		print("  ..    %-10s %s" % [start_kind,
 			"on the deck, killed at %.2f s, peak %.1f m/s" % [killed_at, peak] if killed_at >= 0.0
 			else "never reached them (bus at %s)" % str(bus.position().snapped(Vector3(0.1, 0.1, 0.1)))])
 		if start_kind in asserted and killed_at < 0.0:
 			missed.append(start_kind)
 		await _dispose(game)
 
-	_check(missed.is_empty(), "a bot bus reaches a runner on the deck from in front of the ramp and from either side",
+	_check(missed.is_empty(),
+		"a bot bus reaches a runner on the deck from both spawn lanes, in front of the ramp and from either side",
 		"missed: %s" % ", ".join(missed))
 	# Every chase driven so far: the courtyard's lanes, the hook's gaps and these.
 	_check(_parked_longest < PARKED_LIMIT,
