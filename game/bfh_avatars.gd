@@ -107,7 +107,10 @@ static func _site_skin(foreign: DotAvatar, slot: StringName) -> String:
 	if foreign == null or foreign.schema_id != &"builtin":
 		return ""
 
-	var part := String(foreign.part_in(slot))
+	# [b]The site files a part as `<slot>.<option>`[/b] (`top.skin-k`; its GodotPartId), so
+	# the slot's own prefix comes off first. A bare `skin-k` is still read: checking only
+	# the bare form refused every real site avatar, and every member wore a stock look.
+	var part := String(foreign.part_in(slot)).trim_prefix(String(slot) + ".")
 
 	if part.length() != 6 or not part.begins_with("skin-"):
 		return ""
